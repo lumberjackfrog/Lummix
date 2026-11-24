@@ -43,7 +43,8 @@ def main(setup, silent=False):
     programs = Path(os.environ["LOCALAPPDATA"]) / "Programs/Lummix"
     shell = Dispatch("WScript.Shell")
     shortcut = Path(shell_api.SHGetFolderPath(0, shellcon.CSIDL_PROGRAMS, None, 0)) / "Lummix/Lummix.lnk"
-    if product_state(product) > 0 or programs.exists() or shortcut.exists() or cache.exists():
+    desktop_link = Path(shell_api.SHGetFolderPath(0, shellcon.CSIDL_DESKTOPDIRECTORY, None, 0)) / "Lummix.lnk"
+    if product_state(product) > 0 or programs.exists() or shortcut.exists() or desktop_link.exists() or cache.exists():
         raise RuntimeError("Run on a clean test account to preserve the existing Lummix installation.")
 
     user = ctypes.WinDLL("user32", use_last_error=True)
@@ -80,6 +81,7 @@ def main(setup, silent=False):
             assert product_state(product) == 5 and shortcut.is_file()
             executable = Path(shell.CreateShortcut(str(shortcut)).TargetPath)
             assert executable.is_relative_to(programs) and executable.is_file()
+            assert desktop_link.is_file() and Path(shell.CreateShortcut(str(desktop_link)).TargetPath) == executable
             if not silent:
                 deadline = time.monotonic() + 30
                 while not windows and time.monotonic() < deadline:
@@ -108,7 +110,7 @@ def main(setup, silent=False):
             subprocess.run(["msiexec.exe", "/x", product, "/qn", "/norestart"], check=True, timeout=120)
         if desktop:
             user.CloseDesktop(desktop)
-    assert product_state(product) < 1 and not shortcut.exists() and not cache.exists()
+    assert product_state(product) < 1 and not shortcut.exists() and not desktop_link.exists() and not cache.exists()
     print(json.dumps({"exeSha256": checksum(setup), "installedFiles": payload_count,
                       "normalLaunchOpenedStudio": None if silent else True, "repair": True,
                       "uninstallRemovedShortcutAndCachedMsi": True}, indent=2))

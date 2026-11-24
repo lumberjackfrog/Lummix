@@ -9,7 +9,7 @@ import zipfile
 import msilib
 from msilib import schema, sequence
 
-VERSION = "1.0.2"
+VERSION = "1.0.3"
 FAMILY = uuid.UUID("10e85f80-e023-4eb2-9170-71537d744202")
 def guid(text):
     return "{"+str(uuid.uuid5(FAMILY,text)).upper()+"}"
@@ -20,7 +20,7 @@ def ident(prefix,rel):
 def main(archive, target):
     release=sha256(archive.read_bytes()).hexdigest()
     target.parent.mkdir(parents=True,exist_ok=True)
-    product=guid("release/"+release)
+    product=guid("release/"+VERSION+"/"+release)
     db=msilib.init_database(str(target),schema,"Lummix",product,VERSION,"Lummix")
     info=db.GetSummaryInformation(4)
     info.SetProperty(msilib.PID_PAGECOUNT,500)
@@ -37,7 +37,8 @@ def main(archive, target):
     add("Directory",[("TARGETDIR",None,"SourceDir"),("LocalAppDataFolder","TARGETDIR","."),
                      ("Programs","LocalAppDataFolder","Programs"),("INSTALLDIR","Programs","Lummix"),
                      ("VERSIONDIR","INSTALLDIR",VERSION),("ProgramMenuFolder","TARGETDIR","."),
-                     ("SHORTCUTDIR","ProgramMenuFolder","Lummix"),("CacheBase","LocalAppDataFolder","Lummix"),
+                     ("SHORTCUTDIR","ProgramMenuFolder","Lummix"),("DesktopFolder","TARGETDIR","."),
+                     ("CacheBase","LocalAppDataFolder","Lummix"),
                      ("InstallerCache","CacheBase","Installer"),("ProductCache","InstallerCache",product)])
     add("Feature",[("Studio",None,"Lummix","Local desktop mixing studio",1,1,"INSTALLDIR",0)])
     with tempfile.TemporaryDirectory() as folder,zipfile.ZipFile(archive) as z:
@@ -67,7 +68,12 @@ def main(archive, target):
     add("Registry",[("StartMenuKey",1,r"Software\Lummix\Installer","StartMenu","[SHORTCUTDIR]","ShortcutComponent")])
     add("RegLocator",[("SavedMenu",1,r"Software\Lummix\Installer","StartMenu",18)])
     add("AppSearch",[("SHORTCUTDIR","SavedMenu")])
+    add("Component",[("DesktopShortcut",guid("desktop-shortcut"),"DesktopFolder",260,None,"DesktopKey")])
+    add("FeatureComponents",[("Studio","DesktopShortcut")])
+    add("Registry",[("DesktopKey",1,r"Software\Lummix\Installer","DesktopShortcut","1","DesktopShortcut")])
     add("Shortcut",[("OpenStudio","SHORTCUTDIR","Lummix","ShortcutComponent","[#"+exe_id+"]",None,
+                     "Open the Lummix studio",None,"LummixIcon",0,1,"VERSIONDIR"),
+                    ("OpenStudioDesktop","DesktopFolder","Lummix","DesktopShortcut","[#"+exe_id+"]",None,
                      "Open the Lummix studio",None,"LummixIcon",0,1,"VERSIONDIR")])
     add("RemoveFile",[("RemoveMenu","ShortcutComponent",None,"SHORTCUTDIR",2),
                       ("RemoveCachedMSI","ShortcutComponent","Lummix.msi","ProductCache",2),

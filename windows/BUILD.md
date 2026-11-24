@@ -31,7 +31,7 @@ The backend fixtures cover source selection, authorization, route ownership, gai
 
 Set `LUMMIX_TEST_CHROMIUM` to a compatible local Chrome/Chromium executable to use an existing browser for the gain test. The source tests use generated signals and disposable settings. The cable identity test reads the signed endpoint when available. The optional `-Frozen` check runs the actual packaged services on a second loopback address, reads device and Spotify status, verifies vendor signatures and waits for all three helpers to exit.
 
-Use a clean, interactive Windows test account for `windows/tests/verify_setup_exe.py`. Install and uninstall validation can create a real Start-menu shortcut and a per-user Windows Installer product. `verify_window.py` and `verify_tray.py` exercise Windows/WebView2 window and shell behavior.
+Use a clean, interactive Windows test account for `windows/tests/verify_setup_exe.py`. It installs a per-user Windows Installer product and checks both the desktop and Start menu shortcuts. The published installer smoke test also deletes the desktop shortcut and runs Setup again to verify repair. `verify_window.py` and `verify_tray.py` exercise Windows/WebView2 window and shell behavior.
 
 Unsigned local builds may be refused by an organization's Windows Application Control policy. A build hash proves the artifact's identity; a successful install and launch on the target policy is a separate release check. Keep code-signing and release approval with the publisher. Build tools, local paths and MSI package identifiers can affect the output hash.
 

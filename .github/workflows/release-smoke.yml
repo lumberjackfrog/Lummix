@@ -47,23 +47,38 @@ jobs:
           $setup = Join-Path $env:RUNNER_TEMP 'lummix-release/Lummix.Setup.exe'
           $exe = Join-Path $env:LOCALAPPDATA "Programs/Lummix/$version/Lummix.exe"
           $shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'Lummix/Lummix.lnk'
+          $shortcuts = @($shortcut)
+          if ([version]$version -ge [version]'1.0.3') {
+            $desktop = Join-Path ([Environment]::GetFolderPath('DesktopDirectory')) 'Lummix.lnk'
+            $shortcuts += $desktop
+          }
           $cacheDir = Join-Path $env:LOCALAPPDATA 'Lummix/Installer'
-          if ((Test-Path -LiteralPath $exe) -or (Test-Path -LiteralPath $shortcut) -or (Test-Path -LiteralPath $cacheDir)) { throw 'Expected a fresh runner.' }
+          if (Test-Path -LiteralPath (@($exe, $cacheDir) + $shortcuts) | Where-Object { $_ }) { throw 'Expected a fresh runner.' }
           $result = Start-Process -FilePath $setup -ArgumentList '/S' -WindowStyle Hidden -Wait -PassThru
           if ($result.ExitCode -ne 0) { throw "Setup exited $($result.ExitCode)." }
           $cache = @(Get-ChildItem -LiteralPath $cacheDir -Filter Lummix.msi -File -Recurse)
           if ($cache.Count -ne 1) { throw 'Expected exactly one registered MSI repair source.' }
           $product = [guid]::ParseExact($cache[0].Directory.Name,'B').ToString('B')
           try {
-            if (!(Test-Path -LiteralPath $exe -PathType Leaf) -or !(Test-Path -LiteralPath $shortcut -PathType Leaf)) { throw 'Installed executable or Start-menu shortcut is missing.' }
+            if (!(Test-Path -LiteralPath $exe -PathType Leaf)) { throw 'Installed executable is missing.' }
             $shell = New-Object -ComObject WScript.Shell
-            $target = $shell.CreateShortcut($shortcut).TargetPath
-            if ([IO.Path]::GetFullPath($target) -ne [IO.Path]::GetFullPath($exe)) { throw "Unexpected Start-menu target: $target" }
+            function Assert-Shortcut([string]$Path) {
+              if (!(Test-Path -LiteralPath $Path -PathType Leaf)) { throw "Shortcut missing: $Path" }
+              $target = $shell.CreateShortcut($Path).TargetPath
+              if ($target -ne $exe) { throw "Unexpected shortcut target: $target" }
+            }
+            foreach ($path in $shortcuts) { Assert-Shortcut $path }
+            if ($desktop) {
+              Remove-Item -LiteralPath $desktop
+              $repair = Start-Process -FilePath $setup -ArgumentList '/S' -WindowStyle Hidden -Wait -PassThru
+              if ($repair.ExitCode -ne 0) { throw "Repair exited $($repair.ExitCode)." }
+              foreach ($path in $shortcuts) { Assert-Shortcut $path }
+            }
             $verifier = Start-Process -FilePath $exe -ArgumentList 'verify-vendor' -WindowStyle Hidden -Wait -PassThru
             if ($verifier.ExitCode -ne 0) { throw "Packaged vendor verification exited $($verifier.ExitCode)." }
           } finally {
             $removed = Start-Process msiexec.exe -ArgumentList "/x $product /qn /norestart" -WindowStyle Hidden -Wait -PassThru
             if ($removed.ExitCode -ne 0) { throw "Uninstall exited $($removed.ExitCode)." }
           }
-          if ((Test-Path -LiteralPath $exe) -or (Test-Path -LiteralPath $shortcut) -or (Test-Path -LiteralPath $cache[0].FullName)) { throw 'Uninstall left a release file behind.' }
-          "Installed $version, resolved its Start-menu shortcut, verified the bundled driver package and uninstalled." >> $env:GITHUB_STEP_SUMMARY
+          if (Test-Path -LiteralPath (@($exe, $cache[0].FullName) + $shortcuts) | Where-Object { $_ }) { throw 'Uninstall left a release file behind.' }
+          "Installed $version, checked $($shortcuts.Count) shortcuts, verified the bundled driver package and uninstalled." >> $env:GITHUB_STEP_SUMMARY

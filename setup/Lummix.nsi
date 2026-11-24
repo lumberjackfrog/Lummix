@@ -1,4 +1,4 @@
-; One-file, per-user installer. Windows Installer owns the installed app and shortcut.
+; One-file, per-user installer. Windows Installer owns the app and both shortcuts.
 Unicode true
 RequestExecutionLevel user
 ManifestDPIAware true
@@ -41,9 +41,14 @@ Section
     Quit
   ${EndIf}
   DetailPrint "Installing Lummix for this Windows account…"
-  ; /i also handles maintenance on reruns. Launch from the verified shortcut on success.
+  ; Restore missing shortcuts when the same installer runs again.
+  System::Call 'msi::MsiQueryProductStateW(w "${PRODUCT_CODE}") i.r1'
+  StrCpy $2 ""
+  ${If} $1 = 5
+    StrCpy $2 "REINSTALL=ALL REINSTALLMODE=omus"
+  ${EndIf}
   ClearErrors
-  ExecWait '"$SYSDIR\msiexec.exe" /i "$OUTDIR\Lummix.msi" /qn /norestart' $0
+  ExecWait '"$SYSDIR\msiexec.exe" /i "$OUTDIR\Lummix.msi" $2 /qn /norestart' $0
   ${If} ${Errors}
     StrCpy $0 1601
   ${EndIf}

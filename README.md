@@ -2,7 +2,7 @@
 
 Lummix gives VRChat one microphone for your voice and music. It mixes your Windows microphone with your local Spotify player. Two faders set what reaches the game, and the music fades under your voice when you speak. Mixing runs on your PC without an AI service or a Lummix account.
 
-**[Download Lummix 1.0.2 for Windows x64](https://github.com/lumberjackfrog/Lummix/releases/download/v1.0.2/Lummix.Setup.exe)** · [Prerelease notes and SHA-256](https://github.com/lumberjackfrog/Lummix/releases/tag/v1.0.2)
+**[Download Lummix 1.0.3 for Windows x64](https://github.com/lumberjackfrog/Lummix/releases/download/v1.0.3/Lummix.Setup.exe)** · [Prerelease notes and SHA-256](https://github.com/lumberjackfrog/Lummix/releases/tag/v1.0.3)
 
 ![The Lummix desktop mixer, with album artwork, playback controls and separate microphone and music faders](docs/mixer.png)
 
@@ -10,7 +10,7 @@ Lummix gives VRChat one microphone for your voice and music. It mixes your Windo
 
 The Windows installer is unsigned. Windows may show a publisher warning, and a PC configured to require trusted publishers can block the install.
 
-1. Open **Lummix Setup.exe**. It installs Lummix for your Windows account and opens the mixer. You can reopen it from Start.
+1. Open **Lummix Setup.exe**. It installs Lummix for your Windows account and opens the mixer. Double-click **Lummix** on your desktop to reopen it. You can also find it in Start. If you delete the shortcut, run Setup again to restore it.
 2. Play a song in the Spotify desktop app and click **Set up Lummix**. Lummix finds your mic, reuses or installs VB-CABLE, and shows the recording device name. Approve the Windows driver prompt if it appears.
 3. In **VRChat → Settings → Audio & Voice → Microphone**, choose **Lummix (VB-Audio Virtual Cable)**, or the exact name shown by setup. Speak and watch the input meter. VRChat remembers the selection separately for desktop and VR mode.
 

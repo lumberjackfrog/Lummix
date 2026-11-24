@@ -2,6 +2,7 @@
 import ctypes
 from hashlib import sha256
 import json
+import msilib
 from pathlib import Path
 import subprocess
 import sys
@@ -10,14 +11,21 @@ import winreg
 import zipfile
 
 from win32com.client import Dispatch
-from installer import guid
+from win32com.shell import shell, shellcon
 
 HERE=Path(__file__).resolve().parent
 EVIDENCE = HERE.parents[1] / ".build/qa"
 EVIDENCE.mkdir(parents=True, exist_ok=True)
 def main(msi,archive):
     installer_hash=sha256(msi.read_bytes()).hexdigest()
-    product=guid("release/"+sha256(archive.read_bytes()).hexdigest())
+    db=msilib.OpenDatabase(str(msi),msilib.MSIDBOPEN_READONLY)
+    view=db.OpenView("SELECT Value FROM Property WHERE Property = 'ProductCode'")
+    view.Execute(None)
+    product=view.Fetch().GetString(1)
+    view.Close()
+    db.Close()
+    desktop_link=Path(shell.SHGetFolderPath(0,shellcon.CSIDL_DESKTOPDIRECTORY,None,0))/"Lummix.lnk"
+    assert not desktop_link.exists(),"A desktop shortcut already exists. Use an isolated user."
     state=ctypes.windll.msi.MsiQueryProductStateW
     assert state(product)<1,"This release is already installed"
     try:winreg.OpenKey(winreg.HKEY_CURRENT_USER,r"Software\Lummix\Installer").Close()
@@ -42,6 +50,7 @@ def main(msi,archive):
             shortcut=Dispatch("WScript.Shell").CreateShortCut(str(link))
             exe=Path(shortcut.TargetPath)
             assert exe.is_relative_to(target) and exe.name=="Lummix.exe" and exe.is_file()
+            assert desktop_link.is_file() and Path(Dispatch("WScript.Shell").CreateShortcut(str(desktop_link)).TargetPath)==exe
             with zipfile.ZipFile(archive) as z:
                 count=0
                 for entry in z.infolist():
@@ -63,7 +72,7 @@ def main(msi,archive):
                     "installUi":"quiet installation in disposable per-user paths; actual Windows UI tested from resulting EXE"}
         finally:
             if state(product)>0:run("/x")
-        assert state(product)<1 and not link.exists() and not exe.exists()
+        assert state(product)<1 and not link.exists() and not desktop_link.exists() and not exe.exists()
         assert sha256(msi.read_bytes()).hexdigest()==installer_hash
         report["removedAppAndShortcut"]=True
         (EVIDENCE/"verified-installer.json").write_text(json.dumps(report,indent=2)+"\n")
