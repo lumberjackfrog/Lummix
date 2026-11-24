@@ -25,6 +25,7 @@ from mix_duck_http import MixDucking
 from spotify_duck_http import DUCK_METHODS, DuckRoutes, native_controller
 from spotify_volume_http import VolumeError, VolumeRoutes
 from spotify_window_transport import WindowPlayer, transport as window_transport
+from spotify_artwork import ArtworkCache
 from spotify_peak import SpotifyPeak
 from spotify_locations import STORE_FAMILY, store_installed, website_installed
 
@@ -163,7 +164,9 @@ class WindowsSessions:
                 if separator and title.strip() and artist.strip():
                     result.update(title=title.strip()[:256], artist=artist.strip()[:256])
                 player = WindowPlayer(edition, (windows[0], pid, created))
-                result.update(window_transport(player), state="ready", transportSource="spotify_window", window=player)
+                result.update(window_transport(player))
+                if result.get("canPlay") or result.get("canPause"):
+                    result.update(state="ready", transportSource="spotify_window", window=player)
         except (OSError, VolumeError, win32gui.error):
             pass
         return result
@@ -331,6 +334,7 @@ class Player:
         self.installed = ([], False)
         self.inventory_expires = 0
         self.art_key = self.art_value = None
+        self.spotify_covers = ArtworkCache(encode_artwork)
         self.art_lock = asyncio.Lock()
         self.media_worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="LumSpotifyMedia")
 
@@ -401,6 +405,14 @@ class Player:
                     window = fields.pop("window", None)
                     if window is not None:
                         fields["token"] = self.issue(window, origin)
+                    if fields.get("itemUrl"):
+                        cover = await self.spotify_covers.get(fields["itemUrl"])
+                        if cover:
+                            fields["artworkId"], fields["artwork"] = cover
+                            if previous_artwork_id == cover[0]:
+                                reply = status(**fields, **installed)
+                                del reply["artwork"]
+                                return reply
                     return status(**fields, **installed)
             return status(state, **installed)
         edition = SPOTIFY_IDS[session.source_app_user_model_id.casefold()]
@@ -420,10 +432,20 @@ class Player:
             artwork = await self.artwork(labels, data, edition)
         except (AttributeError, OSError, RuntimeError, TimeoutError):
             pass  # Transport can work even when the player publishes no track metadata.
+        item_url = None
+        if not artwork and title and hasattr(self.sessions, "running_player"):
+            try:
+                window = await asyncio.to_thread(self.sessions.running_player)
+                if (window and window.get("edition") == edition and window.get("title", "").casefold() == title.casefold()
+                        and artist and window.get("artist", "").casefold() == artist.casefold()):
+                    item_url = window.get("itemUrl")
+                    artwork = await self.spotify_covers.get(item_url)
+            except (ImportError, OSError, RuntimeError):
+                pass
         artwork_id, url = artwork or (None, None)
         result = status("ready", playing=playing, canSeek=can_seek(controls,timeline), timeline=timeline, **capability,
                       title=title, artist=artist, token=self.issue(session, origin), edition=edition,
-                      artwork=url, artworkId=artwork_id, **installed)
+                      artwork=url, artworkId=artwork_id, itemUrl=item_url, **installed)
         if artwork_id and previous_artwork_id == artwork_id:
             del result["artwork"]
         return result
@@ -522,7 +544,7 @@ def create_app(sessions=None, *, expected_host=f"{HOST}:{PORT}", inventory=read_
     async def health(request):
         # Report API contracts, independent of whether Spotify or a physical mic is connected.
         paths = {r.resource.canonical for r in request.app.router.routes()}
-        caps = ["spotify-detection-v2"]
+        caps = ["spotify-detection-v2", "spotify-window-artwork-v1"]
         if "/spotify/volume" in paths:
             caps.append("spotify-player-volume-v1")
         if "/spotify/peak" in paths:

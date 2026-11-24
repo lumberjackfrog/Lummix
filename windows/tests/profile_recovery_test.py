@@ -3,8 +3,10 @@ import json
 import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Barrier
+from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, PropertyMock, patch
 
 from mic_routes import MicRoutes, write_selection
 from mix_duck_http import MixDucking
@@ -52,6 +54,27 @@ class Recovery(unittest.TestCase):
             self.assertEqual(path.name, profile_save.load(path, lambda data: data["id"])["id"])
         self.assertEqual(len(json.loads(self.backup.read_bytes())["settings"]), 3)
 
+    def test_nonfinite_backup_does_not_break_saving_and_recovery(self):
+        for number in ("NaN", "Infinity", "-1e999"):
+            with self.subTest(number=number):
+                self.backup.write_text('{"version":1,"settings":{"old.json":{"value":' + number + '}}}')
+                expected = {"revision": 8, "gains": {"musicGain": 140}}
+                profile_save.save(self.gains, expected)
+                self.gains.write_text('{"revision":8,"gains":{"musicGain":140},"extra":' + number + '}')
+                self.assertEqual(140, MixOutput(self.gains, Mock()).gains["musicGain"])
+                self.assertEqual(expected, json.loads(self.gains.read_bytes()))
+
+    def test_valid_recovery_read_when_primary_cannot_be_replaced(self):
+        expected = {"revision": 9, "gains": {"musicGain": 70}}
+        profile_save.save(self.gains, expected)
+        self.gains.write_text("null")
+        with patch.object(profile_save, "_atomic", side_effect=PermissionError("file in use")), \
+                self.assertLogs("profile_save"):
+            restored = MixOutput(self.gains, Mock())
+        self.assertFalse(restored.read_error)
+        self.assertEqual((9, 70), (restored.revision, restored.gains["musicGain"]))
+        self.assertEqual("null", self.gains.read_text())
+
     def test_spotify_moves_and_stale_or_invalid_paths_never_count(self):
         env = {"APPDATA": str(self.root / "roaming"), "LOCALAPPDATA": str(self.root / "local")}
         with patch.dict(os.environ, env), patch.object(spotify, "registered_desktop_paths", return_value=[]):
@@ -81,14 +104,21 @@ class Recovery(unittest.TestCase):
                "ProgramFiles": str(self.root / "programs"), "ProgramFiles(x86)": "", "ProgramW6432": ""}
         with patch.dict(os.environ, env):
             for version in ("1.2.3.0", "1.2.4.0"):
-                folder = self.root / "programs/WindowsApps" / f"SpotifyAB.SpotifyMusic_{version}_x64__zpdnekdrzrea0"
+                volume = self.root / ("programs" if version == "1.2.3.0" else "moved-volume")
+                folder = volume / "WindowsApps" / f"SpotifyAB.SpotifyMusic_{version}_x64__zpdnekdrzrea0"
                 folder.mkdir(parents=True)
                 exe = folder / "Spotify.exe"
                 exe.touch()
-                with patch.object(spotify, "store_packages", return_value=[Mock(installed_location=Mock(path=str(folder)))]):
+                unavailable = Mock(installed_path="")
+                type(unavailable).installed_location = PropertyMock(side_effect=PermissionError("old package"))
+                active = SimpleNamespace(installed_path=str(folder))
+                with patch.object(spotify, "store_packages", return_value=[unavailable, active]):
                     self.assertTrue(spotify.store_installed())
                     self.assertTrue(spotify.known_process_path(exe, os.environ))
                     self.assertEqual(spotify._saved()["store"], str(exe))
+            with patch.object(spotify, "store_packages", return_value=[]):
+                self.assertFalse(spotify.store_installed())
+                self.assertFalse(spotify.known_process_path(exe, os.environ))
             custom = self.root / "custom/Spotify.exe"
             custom.parent.mkdir()
             custom.touch()
@@ -98,6 +128,30 @@ class Recovery(unittest.TestCase):
             with patch.object(spotify, "registered_desktop_paths", return_value=[]):
                 self.assertFalse(spotify.website_installed())
                 self.assertFalse(spotify.known_process_path(custom, os.environ))
+
+    def test_simultaneous_desktop_and_store_discovery_keep_both_locations(self):
+        env = {"APPDATA": str(self.root / "roaming"), "LOCALAPPDATA": str(self.root / "local")}
+        desktop = Path(env["APPDATA"]) / "Spotify/Spotify.exe"
+        store = self.root / "alternate/WindowsApps/spotify-package/Spotify.exe"
+        for path in (desktop, store):
+            path.parent.mkdir(parents=True)
+            path.touch()
+        ready = Barrier(2)
+        remember = spotify._remember
+
+        def simultaneous_write(*args):
+            ready.wait(timeout=10)
+            remember(*args)
+
+        with patch.dict(os.environ, env), patch.object(spotify, "registered_desktop_paths", return_value=[]), \
+                patch.object(spotify, "store_packages", return_value=[SimpleNamespace(installed_path=str(store.parent))]), \
+                patch.object(spotify, "_remember", side_effect=simultaneous_write), \
+                concurrent.futures.ThreadPoolExecutor(max_workers=2) as workers:
+            self.assertTrue(all(workers.map(lambda detect: detect(), [spotify.website_installed, spotify.store_installed])))
+            expected = {"desktop": str(desktop), "store": str(store)}
+            self.assertEqual(expected, spotify._saved())
+            spotify._file().unlink()
+            self.assertEqual(expected, spotify._saved())
 
 
 if __name__ == "__main__":

@@ -12,15 +12,127 @@ import threading
 import time
 from types import SimpleNamespace as NS
 import unittest
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, call, patch
 from PIL import Image
 
 from aiohttp.test_utils import TestClient, TestServer
+import spotify_artwork
+from spotify_window_transport import artwork_bar, now_playing
 
 spec = importlib.util.spec_from_file_location("spotify_helper", Path(__file__).resolve().parents[1]/"spotify-helper.py")
 mod = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = mod
 spec.loader.exec_module(mod)
+
+
+SPOTIFY_OPEN = "https://open.spotify.com"
+TRACK = f"{SPOTIFY_OPEN}/track/{'A' * 22}"
+ALBUM = f"{SPOTIFY_OPEN}/album/{'B' * 22}"
+
+
+def cover_png(color):
+    out = BytesIO()
+    with Image.new("RGB", (30, 30), color) as image:
+        image.save(out, format="PNG")
+    return out.getvalue()
+
+
+class ArtworkTests(unittest.IsolatedAsyncioTestCase):
+    def test_spotify_item_requires_an_exact_https_item(self):
+        for item in (TRACK, ALBUM, f"{SPOTIFY_OPEN}/episode/{'C' * 22}"):
+            with self.subTest(item=item):
+                raw = item.replace("open.spotify.com", "xpui.app.spotify.com") + "?si=opaque"
+                self.assertEqual(spotify_artwork.spotify_item(raw), item)
+        invalid = (
+            None, "spotify:track:" + "A" * 22, TRACK.replace("https:", "http:"),
+            TRACK.replace(".com/", ".com.invalid/"), TRACK.replace(".com/", ".com@invalid/"),
+            TRACK.replace(".com/", ".com:443/"), TRACK.replace("track", "playlist"),
+            TRACK + "/", TRACK + "#fragment", TRACK[:-1], TRACK + "A",
+        )
+        for raw in invalid:
+            with self.subTest(raw=raw):
+                self.assertIsNone(spotify_artwork.spotify_item(raw))
+
+    def test_now_playing_uses_only_unique_item_in_the_player_region(self):
+        def elements(*items):
+            return NS(Length=len(items), GetElement=lambda index: items[index])
+
+        def link(name, url):
+            return NS(CurrentName=name, GetCurrentPropertyValue=Mock(return_value=url))
+
+        uia = NS(TreeScope_Children=1, UIA_AriaRolePropertyId=2, UIA_HyperlinkControlTypeId=3,
+                 UIA_ValueValuePropertyId=4)
+        region = object()
+        bar = NS(CurrentAriaRole="complementary", FindAll=Mock(return_value=elements(region)))
+        ui = NS(CreatePropertyCondition=Mock(return_value="region condition"))
+        title = link(" Fixture track ", ALBUM.replace("open.spotify.com", "xpui.app.spotify.com"))
+        artist = link("Fixture artist", f"{SPOTIFY_OPEN}/artist/{'D' * 22}")
+        unrelated = link("Another title", TRACK.replace("open.spotify.com", "unrelated.invalid"))
+        with patch("spotify_window_transport.controls", return_value=[title, artist, unrelated]) as controls:
+            self.assertEqual(now_playing(ui, uia, bar),
+                             {"itemUrl": ALBUM, "title": "Fixture track", "artist": "Fixture artist"})
+            bar.FindAll.assert_called_once_with(uia.TreeScope_Children, "region condition")
+            controls.assert_called_once_with(ui, uia, region, uia.UIA_HyperlinkControlTypeId)
+            controls.return_value.append(link("Second item", TRACK))
+            self.assertEqual(now_playing(ui, uia, bar), {})
+            controls.reset_mock()
+            bar.FindAll.return_value = elements(region, object())
+            self.assertEqual(now_playing(ui, uia, bar), {})
+            controls.assert_not_called()
+
+    def test_artwork_bar_requires_one_player_with_a_seek_slider(self):
+        uia = NS(TreeScope_Children=1, TreeScope_Descendants=2, UIA_AriaRolePropertyId=3,
+                 UIA_GroupControlTypeId=4, UIA_SliderControlTypeId=5)
+        ui = NS(CreatePropertyCondition=Mock(return_value="bar condition"))
+        sidebar, player, seek_group = object(), object(), object()
+        bars = (sidebar, player)
+        root = NS(FindAll=Mock(return_value=NS(Length=len(bars), GetElement=bars.__getitem__)))
+        controls_by_root = {sidebar: [], player: [seek_group], seek_group: [object()]}
+        metadata = {"itemUrl": TRACK, "title": "Track", "artist": "Artist"}
+        with patch("spotify_window_transport.controls", side_effect=lambda ui, uia, root, kind, scope=None:
+                   controls_by_root[root]), patch("spotify_window_transport.now_playing", return_value=metadata) as read:
+            self.assertEqual(artwork_bar(ui, uia, root), metadata)
+            root.FindAll.assert_called_once_with(uia.TreeScope_Descendants, "bar condition")
+            read.assert_called_once_with(ui, uia, player)
+            controls_by_root[sidebar] = [seek_group]
+            self.assertEqual(artwork_bar(ui, uia, root), {})
+
+    async def test_oembed_only_fetches_allowed_thumbnail_urls_without_redirects(self):
+        endpoint = f"{SPOTIFY_OPEN}/oembed"
+        thumbnail = "https://i.scdn.co/image/FixtureCover1"
+        session = MagicMock()
+        session.__aenter__.return_value = session
+        session.get.return_value.__aenter__.return_value = object()
+        with patch.object(spotify_artwork.aiohttp, "ClientSession", return_value=session), \
+             patch.object(spotify_artwork, "read_limited", new_callable=AsyncMock) as read:
+            read.side_effect = [b'{"thumbnail_url":"https://i.scdn.co/image/FixtureCover1"}', b"cover"]
+            self.assertEqual(await spotify_artwork.fetch_cover(TRACK), b"cover")
+            self.assertEqual(session.get.call_args_list,
+                             [call(endpoint, params={"url": TRACK}, allow_redirects=False),
+                              call(thumbnail, allow_redirects=False)])
+            for value in ("https://i.scdn.co.invalid/image/FixtureCover1", "https://i.scdn.co@invalid/image/FixtureCover1",
+                          "https://i.scdn.co/image/not/a/thumbnail", "http://i.scdn.co/image/FixtureCover1"):
+                with self.subTest(value=value):
+                    session.get.reset_mock()
+                    read.side_effect = [f'{{"thumbnail_url":"{value}"}}'.encode()]
+                    with self.assertRaises(ValueError):
+                        await spotify_artwork.fetch_cover(TRACK)
+                    session.get.assert_called_once_with(endpoint, params={"url": TRACK}, allow_redirects=False)
+
+    async def test_failed_cover_retries_without_repeated_fetches(self):
+        cache = spotify_artwork.ArtworkCache(lambda _: "encoded cover")
+        clock = NS(monotonic=Mock(return_value=5))
+        with patch.object(spotify_artwork, "time", clock), \
+             patch.object(spotify_artwork, "fetch_cover", side_effect=[TimeoutError(), b"a", b"b"]) as fetch:
+            self.assertIsNone(await cache.get(TRACK))
+            self.assertIsNone(await cache.get(TRACK + "?si=same-item"))
+            fetch.assert_awaited_once_with(TRACK)
+            clock.monotonic.return_value += 21
+            first, duplicate = await asyncio.gather(cache.get(TRACK), cache.get(TRACK))
+            self.assertEqual(first, duplicate)
+            self.assertEqual(first[1], "encoded cover")
+            self.assertNotEqual(first, await cache.get(ALBUM))
+            self.assertEqual(fetch.await_args_list, [call(TRACK), call(TRACK), call(ALBUM)])
 
 
 class Session:
@@ -438,6 +550,68 @@ class Tests(unittest.IsolatedAsyncioTestCase):
         with patch.object(mod, "window_transport", side_effect=mod.VolumeError("selection_changed")):
             self.assertEqual((await self.post(snap["token"], "previous")).status, 409)
             previous.Invoke.assert_not_called()
+
+    async def test_window_only_cover_switches_and_resends_to_a_fresh_client(self):
+        self.sessions.items.remove(self.spotify)
+        window = dict(state="ready", edition="desktop", itemUrl=TRACK, title="First track", artist="Artist")
+        self.sessions.running_player = lambda: window
+        with patch.object(spotify_artwork, "fetch_cover", side_effect=[cover_png("red"), cover_png("blue")]) as fetch:
+            original = await self.get()
+            identifier = original["artworkId"]
+            self.assertRegex(identifier, r"^[0-9a-f]{24}$")
+            self.assertEqual((original["itemUrl"], original["title"]), (TRACK, "First track"))
+            self.assertTrue(original["artwork"].startswith("data:image/jpeg;base64,"))
+            repeated = await self.get(identifier)
+            self.assertEqual(repeated["artworkId"], identifier)
+            self.assertNotIn("artwork", repeated)
+            self.assertEqual((await self.get())["artwork"], original["artwork"])
+
+            window.update(itemUrl=ALBUM, title="Second track")
+            changed = await self.get(identifier)
+            self.assertEqual((changed["itemUrl"], changed["title"]), (ALBUM, "Second track"))
+            self.assertNotEqual(changed["artworkId"], identifier)
+            self.assertNotEqual(changed["artwork"], original["artwork"])
+
+            window["state"] = "detected"
+            detected = await self.get(changed["artworkId"])
+            self.assertEqual(detected["state"], "detected")
+            self.assertIsNone(detected["token"])
+            self.assertFalse(detected["canPlay"] or detected["canPause"])
+            self.assertNotIn("artwork", detected)
+            self.assertEqual((await self.get())["artwork"], changed["artwork"])
+
+            del window["itemUrl"]
+            missing = await self.get(changed["artworkId"])
+            self.assertIsNone(missing["artworkId"])
+            self.assertIsNone(missing["artwork"])
+            self.assertEqual(fetch.await_args_list, [call(TRACK), call(ALBUM)])
+
+    async def test_native_cover_wins_and_window_fallback_requires_matching_media(self):
+        window = dict(state="ready", edition="desktop", itemUrl=TRACK, title="fixture track", artist="fixture artist")
+        self.sessions.running_player = Mock(return_value=window)
+        self.spotify.thumbnail = object()
+        with patch.object(mod, "thumbnail_bytes", new_callable=AsyncMock, return_value=cover_png("red")), \
+             patch.object(spotify_artwork, "fetch_cover", new_callable=AsyncMock, return_value=cover_png("blue")) as fetch:
+            native = await self.get()
+            self.assertTrue(native["artwork"].startswith("data:image/jpeg;base64,"))
+            fetch.assert_not_awaited()
+
+            self.spotify.thumbnail = None
+            for mismatch in (dict(edition="store"), dict(title="Other track"), dict(artist="Other artist")):
+                with self.subTest(mismatch=mismatch):
+                    self.sessions.running_player.return_value = dict(window, **mismatch)
+                    rejected = await self.get(native["artworkId"])
+                    self.assertEqual(rejected["title"], "Fixture track")
+                    self.assertIsNone(rejected["artworkId"])
+                    self.assertIsNone(rejected["artwork"])
+            fetch.assert_not_awaited()
+
+            self.sessions.running_player.return_value = window
+            recovered = await self.get(native["artworkId"])
+            self.assertEqual(recovered["itemUrl"], TRACK)
+            self.assertNotEqual(recovered["artworkId"], native["artworkId"])
+            self.assertNotEqual(recovered["artwork"], native["artwork"])
+            fetch.assert_awaited_once_with(TRACK)
 
     async def test_inventory_independent_failures(self):
         for desktop, store, expected in [(False, False, ([],True)), (True, True, (["desktop","store"],True)),

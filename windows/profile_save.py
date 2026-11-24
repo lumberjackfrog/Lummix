@@ -2,6 +2,7 @@
 from contextlib import contextmanager
 import json
 import logging
+import math
 import msvcrt
 import os
 from pathlib import Path
@@ -39,7 +40,20 @@ def _read(path):
         if len(fields) != len(pairs):
             raise ValueError("Duplicate settings field")
         return fields
-    data = json.loads(path.read_text(encoding="utf-8-sig"), object_pairs_hook=unique)
+    def invalid_number(value):
+        raise ValueError(f"Non-finite settings number: {value}")
+
+    def finite_float(value):
+        decoded = float(value)
+        if not math.isfinite(decoded):
+            invalid_number(value)
+        return decoded
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"), object_pairs_hook=unique,
+                          parse_float=finite_float, parse_constant=invalid_number)
+    except RecursionError as error:
+        raise ValueError("Settings are nested too deeply") from error
     if not isinstance(data, dict):
         raise ValueError("Expected a settings object")
     return data
@@ -72,21 +86,42 @@ def save(path, data):
         _mirror(path, data)
 
 
+def _load_locked(path, validate):
+    try:
+        data = _read(path)
+        validate(data)
+    except (FileNotFoundError, ValueError, TypeError, KeyError):
+        sections = _sections(path.with_name("settings-backup.json"))
+        if path.name not in sections:
+            raise
+        data = sections[path.name]
+        if not isinstance(data, dict):
+            raise ValueError("Invalid backup section")
+        validate(data)
+        try:
+            _atomic(path, data)
+        except OSError as error:
+            logging.getLogger(__name__).warning("Could not restore %s: %s", path.name, error)
+    else:
+        _mirror(path, data)
+    return data
+
+
 def load(path, validate):
     """Validate before mirroring, and repair missing or invalid originals from the local backup."""
     with _locked(path.parent):
+        return _load_locked(path, validate)
+
+
+def update(path, changes, validate):
+    """Merge changes with the latest valid settings under the same lock as the write."""
+    with _locked(path.parent):
         try:
-            data = _read(path)
-            validate(data)
+            previous = _load_locked(path, validate)
         except (FileNotFoundError, ValueError, TypeError, KeyError):
-            sections = _sections(path.with_name("settings-backup.json"))
-            if path.name not in sections:
-                raise
-            data = sections[path.name]
-            if not isinstance(data, dict):
-                raise ValueError("Invalid backup section")
-            validate(data)
+            previous = {}
+        data = previous | changes
+        validate(data)
+        if data != previous:
             _atomic(path, data)
-        else:
             _mirror(path, data)
-        return data

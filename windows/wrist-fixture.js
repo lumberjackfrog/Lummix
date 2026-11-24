@@ -250,7 +250,7 @@ function keepNativeCoverStable() {
 function sendMedia(){
   if(!mediaInitialized || socket?.readyState!==FixtureSocket.OPEN)return;
   appearanceTransport();
-  const hasTrack=liveMedia?.state==='ready' && Boolean(liveMedia.title);
+  const hasTrack=['ready','detected'].includes(liveMedia?.state) && Boolean(liveMedia.title);
   const native=embedded ? {
     title:hasTrack?nativeText(liveMedia.title,180):'Spotify',
     artist:hasTrack?nativeText(liveMedia.artist,160):liveMedia?.state==='ready'?'No track':'Playback unavailable',

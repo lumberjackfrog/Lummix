@@ -33,6 +33,14 @@
     title.textContent = track || 'Spotify artwork';
     artist.textContent = track ? performer : 'Cover art appears when Spotify shares a track.';
     artist.hidden = Boolean(track && !performer);
+    const link = host.querySelector('.lum-cover-link');
+    if (/^https:\/\/open\.spotify\.com\/(album|track|episode)\/[a-zA-Z0-9]{22}$/.test(detail.itemUrl || '')) {
+      link.href = detail.itemUrl;
+      link.setAttribute('aria-label', 'Open in Spotify');
+    } else {
+      link.removeAttribute('href');
+      link.removeAttribute('aria-label');
+    }
     artworkStatus.textContent = track && detail.state === 'ready' ? detail.playing ? 'Playing' : 'Paused' : 'Spotify';
     updateArtwork(art);
   }
@@ -52,7 +60,7 @@
     host.innerHTML = '<div class="lum-viz-body">'+
       '<div class="lum-cover-ambient" aria-hidden="true"></div>'+
       '<div class="lum-cover-content">'+
-      '<div class="lum-cover-plate"><div class="lum-cover-empty" aria-hidden="true"></div><img class="lum-cover-image" alt="Album cover" hidden></div>'+
+      '<div class="lum-cover-plate"><div class="lum-cover-empty" aria-hidden="true"></div><a class="lum-cover-link" target="_blank" rel="noopener noreferrer"><img class="lum-cover-image" alt="Album cover" hidden></a></div>'+
       '<div class="lum-cover-meta"><span class="lum-cover-status">Spotify</span><strong class="lum-cover-title">Spotify artwork</strong>'+
       '<span class="lum-cover-artist">Cover art appears when Spotify shares a track.</span></div>'+
       '</div></div>';

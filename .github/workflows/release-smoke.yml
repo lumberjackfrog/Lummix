@@ -6,42 +6,92 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing release tag, for example v1.0.2
+        description: Release tag or candidate version, for example v1.0.5
         type: string
         required: true
+      build_run:
+        description: Optional successful Windows installer workflow run from the selected ref
+        type: string
+      candidate_sha256:
+        description: SHA-256 printed by that build when testing a candidate
+        type: string
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   install:
     runs-on: windows-2022
-    timeout-minutes: 12
+    timeout-minutes: 20
     env:
       RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
     defaults:
       run:
         shell: pwsh
     steps:
-      - name: Download and check the exact release
+      - name: Download and check the exact installer
+        id: package
         env:
           GH_TOKEN: ${{ github.token }}
+          BUILD_RUN: ${{ inputs.build_run }}
+          CANDIDATE_SHA256: ${{ inputs.candidate_sha256 }}
         run: |
           if ($env:RELEASE_TAG -cnotmatch '\Av[0-9]+\.[0-9]+\.[0-9]+\z') { throw 'Expected a release tag such as v1.0.2.' }
+          $version = [version]$env:RELEASE_TAG.Substring(1)
           $dest = Join-Path $env:RUNNER_TEMP 'lummix-release'
           New-Item -ItemType Directory -Path $dest | Out-Null
-          gh release download $env:RELEASE_TAG --repo lumberjackfrog/Lummix --dir $dest --pattern Lummix.Setup.exe --pattern SHA256SUMS.txt
-          if ($LASTEXITCODE -ne 0) { throw 'Could not download both release assets.' }
-          $line = [IO.File]::ReadAllText((Join-Path $dest 'SHA256SUMS.txt'))
-          if ($line -cnotmatch '\A([a-fA-F0-9]{64})  Lummix\.Setup\.exe(?:\r?\n)?\z') { throw 'Unexpected checksum file format.' }
-          $expected = $Matches[1]
           $setup = Join-Path $dest 'Lummix.Setup.exe'
+          $ref = "refs/tags/$env:RELEASE_TAG"
+          $source = 'Published release'
+          if ($env:BUILD_RUN) {
+            if ($env:BUILD_RUN -cnotmatch '\A[0-9]+\z' -or $env:CANDIDATE_SHA256 -cnotmatch '\A[0-9a-fA-F]{64}\z') {
+              throw 'Provide a Windows installer workflow run ID and its installer SHA-256.'
+            }
+            $runJson = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:BUILD_RUN"
+            if ($LASTEXITCODE -ne 0) { throw 'Could not read the candidate build run.' }
+            $run = $runJson | ConvertFrom-Json
+            if ($run.path -ne '.github/workflows/windows-installer.yml' -or $run.conclusion -ne 'success' -or $run.head_sha -ne $env:GITHUB_SHA) {
+              throw 'Use a successful Windows installer workflow run for the selected commit.'
+            }
+            gh run download $env:BUILD_RUN --repo $env:GITHUB_REPOSITORY --dir $dest --name Lummix-Windows-x64
+            if ($LASTEXITCODE -ne 0) { throw 'Could not download the candidate installer artifact.' }
+            Move-Item -LiteralPath (Join-Path $dest 'Lummix Setup.exe') -Destination $setup
+            $expected = $env:CANDIDATE_SHA256
+            $ref = $run.head_sha
+            $source = "Candidate from build run $env:BUILD_RUN"
+          } else {
+            if ($env:CANDIDATE_SHA256) { throw 'A candidate SHA-256 requires a build run ID.' }
+            gh release download $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --dir $dest --pattern Lummix.Setup.exe --pattern SHA256SUMS.txt
+            if ($LASTEXITCODE -ne 0) { throw 'Could not download both release assets.' }
+            $line = [IO.File]::ReadAllText((Join-Path $dest 'SHA256SUMS.txt'))
+            if ($line -cnotmatch '\A([a-fA-F0-9]{64})  Lummix\.Setup\.exe(?:\r?\n)?\z') { throw 'Unexpected checksum file format.' }
+            $expected = $Matches[1]
+          }
           $actual = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash
-          if ($actual -ne $expected) { throw 'Published installer SHA-256 differs from SHA256SUMS.txt.' }
+          if ($actual -ne $expected) { throw 'The tested installer does not match the expected SHA-256.' }
           $signature = (Get-AuthenticodeSignature -LiteralPath $setup).Status
-          "Release $env:RELEASE_TAG — SHA-256 $actual — Authenticode $signature" >> $env:GITHUB_STEP_SUMMARY
+          "$source $env:RELEASE_TAG — SHA-256 $actual — Authenticode $signature" >> $env:GITHUB_STEP_SUMMARY
+          "ref=$ref" >> $env:GITHUB_OUTPUT
+          "runtime=$(($version -ge [version]'1.0.5').ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
 
-      - name: Install, open the packaged verifier and uninstall
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        if: steps.package.outputs.runtime == 'true'
+        with:
+          ref: ${{ steps.package.outputs.ref }}
+          persist-credentials: false
+      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        if: steps.package.outputs.runtime == 'true'
+        with:
+          python-version: '3.12'
+      - name: Prepare installed runtime verification
+        if: steps.package.outputs.runtime == 'true'
+        run: |
+          python -m pip install --only-binary=:all: -r windows/requirements-test.txt
+
+      - name: Install, verify, repair and uninstall
+        env:
+          VERIFY_RUNTIME: ${{ steps.package.outputs.runtime }}
         run: |
           $version = $env:RELEASE_TAG.Substring(1)
           $setup = Join-Path $env:RUNNER_TEMP 'lummix-release/Lummix.Setup.exe'
@@ -74,11 +124,34 @@ jobs:
               if ($repair.ExitCode -ne 0) { throw "Repair exited $($repair.ExitCode)." }
               foreach ($path in $shortcuts) { Assert-Shortcut $path }
             }
-            $verifier = Start-Process -FilePath $exe -ArgumentList 'verify-vendor' -WindowStyle Hidden -Wait -PassThru
-            if ($verifier.ExitCode -ne 0) { throw "Packaged vendor verification exited $($verifier.ExitCode)." }
+            if ($env:VERIFY_RUNTIME -eq 'true') {
+              $env:PYTHONPATH = "$(Join-Path $PWD 'windows');$(Join-Path $PWD 'windows/runtime')"
+              python -B windows/tests/test_runtime.py --installed-exe $exe
+              if ($LASTEXITCODE -ne 0) { throw 'Installed runtime verification failed.' }
+              $report = Get-Content -Raw -LiteralPath .build/qa/verified-runtime.json | ConvertFrom-Json
+              if ($report.mediaCapabilities -notcontains 'spotify-process-mix-v1') { throw 'Installed process capture capability is missing.' }
+              "Checked $($report.studioAssetsExact) installed studio assets. Spotify status was $($report.spotify.state) and capture was $($report.readOnlyMic.spotifyCapture)." >> $env:GITHUB_STEP_SUMMARY
+              if ($report.spotifyArtworkPixels) {
+                "Spotify artwork decoded at $($report.spotifyArtworkPixels -join ' × ') pixels." >> $env:GITHUB_STEP_SUMMARY
+              } else {
+                'The runner returned no Spotify artwork to decode.' >> $env:GITHUB_STEP_SUMMARY
+              }
+            } else {
+              $verifier = Start-Process -FilePath $exe -ArgumentList 'verify-vendor' -WindowStyle Hidden -Wait -PassThru
+              if ($verifier.ExitCode -ne 0) { throw "Packaged vendor verification exited $($verifier.ExitCode)." }
+            }
           } finally {
             $removed = Start-Process msiexec.exe -ArgumentList "/x $product /qn /norestart" -WindowStyle Hidden -Wait -PassThru
             if ($removed.ExitCode -ne 0) { throw "Uninstall exited $($removed.ExitCode)." }
           }
           if (Test-Path -LiteralPath (@($exe, $cache[0].FullName) + $shortcuts) | Where-Object { $_ }) { throw 'Uninstall left a release file behind.' }
           "Installed $version, checked $($shortcuts.Count) shortcuts, verified the bundled driver package and uninstalled." >> $env:GITHUB_STEP_SUMMARY
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always() && steps.package.outputs.runtime == 'true'
+        with:
+          name: Lummix-installed-runtime
+          include-hidden-files: true
+          path: |
+            .build/qa/verified-runtime.json
+            .build/qa/private-runtime-test.log

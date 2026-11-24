@@ -42,7 +42,7 @@
   }
   function busy(button,yes){button.disabled=yes;button.setAttribute('aria-busy',String(yes));}
   function drawPlayer(info){
-    if(info?.state==='ready' && info.artworkId && info.artworkId===lastArtworkId && info.artwork===undefined){
+    if(info?.artworkId && info.artworkId===lastArtworkId && info.artwork===undefined){
       info={...info,artwork:lastArtwork};
     }
     currentPlayer=info;
@@ -71,7 +71,7 @@
     icon(shortcut.querySelector('.glyph'),info?.playing?'pause':'play');shortcut.disabled=actionPending || !ready || transport.disabled;
     for(const [id,[,cap]] of Object.entries(transportActions)){el(id).disabled=actionPending || !ready || !info[cap];}
     window.LumGlobalPulse?.bind(info);
-    const media={state:info?.state||'unavailable',playing:Boolean(info?.playing),canPlay:Boolean(info?.canPlay),canPause:Boolean(info?.canPause),canPrevious:Boolean(info?.canPrevious),canNext:Boolean(info?.canNext),title:info?.title||'',artist:info?.artist||'',artwork:info?.artwork||''};
+    const media={state:info?.state||'unavailable',playing:Boolean(info?.playing),canPlay:Boolean(info?.canPlay),canPause:Boolean(info?.canPause),canPrevious:Boolean(info?.canPrevious),canNext:Boolean(info?.canNext),title:info?.title||'',artist:info?.artist||'',artwork:info?.artwork||'',itemUrl:info?.itemUrl||''};
     const prev=window.LumSpotifyMedia;
     if(!prev || Object.keys(media).some(key=>media[key]!==prev[key])){
       window.LumSpotifyMedia=media;
@@ -459,6 +459,12 @@
     async function check(){
       let delay=0;
       try{
+        if(currentPlayer?.state==='detected' || currentPlayer?.transportSource==='spotify_window'){
+          if(await scanPlayer(true))lastRefresh=Date.now();
+          revision=null;
+          if(!controller.signal.aborted)nextWatch=setTimeout(check,3000);
+          return;
+        }
         const url=spotifyOrigin+'/spotify/changes'+(revision?'?since='+encodeURIComponent(revision):'');
         const signal=AbortSignal.any([controller.signal,AbortSignal.timeout(28500)]);
         const change=await query(url,{signal});

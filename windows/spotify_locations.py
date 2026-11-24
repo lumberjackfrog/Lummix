@@ -48,9 +48,27 @@ def registered_desktop_paths():
 
 
 def store_packages():
-    from winsdk.windows.management.deployment import PackageManager
-    return [pkg for pkg in PackageManager().find_packages_for_user("", STORE_FAMILY)
-            if pkg.id.family_name.casefold() == STORE_FAMILY.casefold()]
+    from winsdk.windows.management.deployment import PackageManager, PackageTypes
+    packages = PackageManager().find_packages_for_user_with_package_types("", STORE_FAMILY, PackageTypes.MAIN)
+    return list(packages or ())
+
+
+def _store_paths(packages):
+    for package in packages:
+        try:
+            install_path = package.installed_path
+        except (AttributeError, NotImplementedError, OSError, RuntimeError):
+            install_path = ""
+        try:
+            if not install_path:
+                folder = package.installed_location
+                install_path = folder.path if folder else ""
+            if install_path:
+                candidate = PureWindowsPath(install_path) / "Spotify.exe"
+                if local_executable(candidate):
+                    yield candidate
+        except (AttributeError, OSError, RuntimeError):
+            continue
 
 
 def known_process_path(candidate, env):
@@ -68,8 +86,7 @@ def known_process_path(candidate, env):
         if env.get("ProgramFiles") and path.parent.parent == PureWindowsPath(env["ProgramFiles"]) / "WindowsApps":
             return True
         try:
-            return env is os.environ and any(path.parent == PureWindowsPath(pkg.installed_location.path)
-                                             for pkg in store_packages() if pkg.installed_location)
+            return env is os.environ and path in _store_paths(store_packages())
         except (AttributeError, ImportError, OSError, RuntimeError):
             return False
     return env is os.environ and path in registered_desktop_paths()
@@ -91,11 +108,9 @@ def _saved():
         return {}
 
 
-def _remember(edition, path, saved):
-    if saved.get(edition) == str(path):
-        return
+def _remember(edition, path):
     try:
-        profile_save.save(_file(), {**saved, edition: str(path)})
+        profile_save.update(_file(), {edition: str(path)}, validate_locations)
     except OSError:
         pass  # A read-only profile must still discover an installed player.
 
@@ -109,25 +124,32 @@ def website_installed():
         regular.remove(old)
         regular.insert(0, old)
     for path in chain(regular, registered_desktop_paths()):
+        if not local_executable(path):
+            continue
         try:
             present = Path(path).is_file()
         except OSError:
             continue
         if present:
-            _remember("desktop", path, saved)
+            _remember("desktop", path)
             return True
     return False
 
 
 def store_installed():
     packages = store_packages()
-    if packages:
+    registered = None
+    for candidate in _store_paths(packages):
         try:
-            folder = packages[0].installed_location
-            if folder:
-                candidate = PureWindowsPath(folder.path) / "Spotify.exe"
-                if local_executable(candidate) and Path(candidate).is_file():
-                    _remember("store", candidate, _saved())
-        except (AttributeError, OSError, RuntimeError):
-            pass  # A registered package can be visible even if Windows restricts its directory.
+            if Path(candidate).is_file():
+                _remember("store", candidate)
+                return True
+        except PermissionError:
+            # The main package is registered even if Windows restricts access to its files.
+            if registered is None:
+                registered = candidate
+        except OSError:
+            continue
+    if registered is not None:
+        _remember("store", registered)
     return bool(packages)
