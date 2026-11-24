@@ -48,20 +48,21 @@
     currentPlayer=info;
     lastArtworkId=info?.artworkId||null;lastArtwork=info?.artwork||null;
     const ready=info?.state==='ready', editions=info?.installations||[];
-    el('player-connection').hidden=!ready;
-    if(ready){
+    const detected=info?.state==='detected';
+    el('player-connection').hidden=!(ready || detected);
+    if(ready || detected){
       el('player-edition').textContent=info.edition==='store'?'Microsoft Store':info.edition==='desktop'?'Spotify desktop':'Spotify';
-      el('player-playback-state').textContent=info.playing?'Playing':'Not playing';
+      el('player-playback-state').textContent=detected?'Running on this PC':info.playing?'Playing':'Not playing';
     }
     const missing=info?.state==='no_session' && info.installationKnown && editions.length===0;
     const song=ready ? [info.title,info.artist].filter(Boolean).join(' · ') : '';
-    el('spotify-summary').textContent=ready?'':missing?'Get Spotify for Windows':editions.length?'Open your player':'Personal player';
+    el('spotify-summary').textContent=ready?'':detected?'Local player running':missing?'Get Spotify for Windows':editions.length?'Installed on this PC':'Personal player';
     el('spotify-summary').hidden=ready;
-    el('connect-spotify').querySelector('strong').textContent=ready?'Spotify connected':'Connect Spotify';
+    el('connect-spotify').querySelector('strong').textContent=ready?'Spotify connected':detected?'Spotify detected':editions.length?'Spotify installed':'Connect Spotify';
     const states={no_session:editions.length?'Open Spotify and play a track to connect.':'Open Spotify, then check again.',unsupported:'Windows media controls are unavailable on this PC.',ambiguous:'Pause the other Spotify player, then check again.',unavailable:'The local player is unavailable.'};
-    el('player-result').textContent=ready?(song||'Spotify is connected.') : missing?'Spotify isn’t installed on this PC.':states[info?.state]||'Couldn’t reach the local player connection.';
+    el('player-result').textContent=ready?(song||'Spotify is connected.') : detected?'Lummix found Spotify. You can start a mix and use Spotify’s playback controls while Windows reconnects.':missing?'Spotify isn’t installed on this PC.':states[info?.state]||'Couldn’t reach the local player connection.';
     el('download-player').hidden=!missing;
-    el('open-player').hidden=ready || !editions.length || info?.state!=='no_session';
+    el('open-player').hidden=!(detected || info?.transportSource==='spotify_window' || (editions.length && info?.state==='no_session'));
     const transport=el('personal-transport'), shortcut=el('spotify-play');
     transport.hidden=!ready;transport.disabled=!ready || (info.playing?!info.canPause:!info.canPlay);
     transport.textContent=ready && info.playing?'Pause Spotify':'Play Spotify';
@@ -77,7 +78,7 @@
       document.dispatchEvent(new CustomEvent('lum-spotify-media',{detail:media}));
       publishWristMedia();
     }
-    const track=ready?JSON.stringify([media.title,media.artist]):'';
+    const track=ready && info.transportSource!=='spotify_window'?JSON.stringify([media.title,media.artist]):'';
     if(track!==retryTrack){clearTimeout(artworkRetry);artworkRetry=0;retries=0;retryTrack=track;}
     if(media.artwork || !track){clearTimeout(artworkRetry);artworkRetry=0;}
     else if(!artworkRetry && retries<2 && !document.hidden){

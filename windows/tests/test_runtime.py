@@ -116,7 +116,7 @@ def main(installed_exe=None):
                     report["alreadyNamedEndpoint"]=alias["captureName"]
                 player = fetch(41838,"/spotify/status").json()
                 report["spotify"] = {k:player[k] for k in ("state","edition","installationKnown")}
-                assert player["state"] in {"ready","unsupported","unavailable","no_session","ambiguous"}
+                assert player["state"] in {"ready","detected","unsupported","unavailable","no_session","ambiguous"}
                 if player.get("artwork"):
                     from PIL import Image
                     encoded = player["artwork"].partition(",")[2]

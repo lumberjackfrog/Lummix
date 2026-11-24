@@ -6,7 +6,7 @@ Lummix gives VRChat one microphone for your voice and music. It mixes your Windo
 | --- | --- |
 | [![Lummix desktop mixer with album artwork and separate microphone and Spotify faders](docs/mixer.png)](docs/mixer.png) | [![XSOverlay music drawer with mic mute, music mute, and the music gain slider beside the clock](docs/xsoverlay-wrist.png)](docs/xsoverlay-wrist.png) |
 
-**[Download Lummix 1.0.3 for Windows x64](https://github.com/lumberjackfrog/Lummix/releases/download/v1.0.3/Lummix.Setup.exe)** · [Prerelease notes and SHA-256](https://github.com/lumberjackfrog/Lummix/releases/tag/v1.0.3)
+**[Download Lummix 1.0.4 for Windows x64](https://github.com/lumberjackfrog/Lummix/releases/download/v1.0.4/Lummix.Setup.exe)** · [Prerelease notes and SHA-256](https://github.com/lumberjackfrog/Lummix/releases/tag/v1.0.4)
 
 ## Start a mix
 
@@ -41,6 +41,10 @@ If the mixer reports that Spotify is already playing directly into the cable, op
 ## Compatibility
 
 Use 64-bit Windows 11, or an x64 Windows build numbered 20348 or later, with Microsoft Edge WebView2. Install the Spotify desktop app from Spotify’s website or the Microsoft Store. Playback on a phone or another Spotify Connect device supplies no local audio to mix. The optional wrist view requires the user’s own XSOverlay installation. A first-time VB-CABLE install can require a Windows restart.
+
+Lummix saves your Spotify locations, microphone choice, gains, ducking, window placement and appearance for your Windows account. A local recovery copy in `%LOCALAPPDATA%\Lummix\settings-backup.json` restores saved settings if an individual file goes missing or becomes invalid. After reinstalling Spotify, Lummix checks its current installation.
+
+If Windows media controls stop responding, Lummix can still detect the desktop or Store player. When Spotify exposes its playback buttons, Lummix can use them for Play/Pause, Previous and Next. Album artwork and seeking return when Windows supplies them again.
 
 ## Build and test
 

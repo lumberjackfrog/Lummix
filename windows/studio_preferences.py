@@ -2,10 +2,7 @@
 import asyncio
 import base64
 import hmac
-import json
-import os
-import tempfile
-from pathlib import Path
+import profile_save
 
 from aiohttp import web
 
@@ -46,21 +43,12 @@ class StudioPreferences:
 
     def read(self):
         try:
-            return checked(load_json(self.path.read_text("utf-8"))["settings"])
+            return profile_save.load(self.path, lambda row: checked(row["settings"]))["settings"]
         except FileNotFoundError:
             return {}
 
     def save(self, settings):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        fd, name = tempfile.mkstemp(dir=self.path.parent)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as stream:
-                json.dump({"settings": settings}, stream, separators=(",", ":"))
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(name, self.path)
-        finally:
-            Path(name).unlink(missing_ok=True)
+        profile_save.save(self.path, {"settings": settings})
 
     async def handle(self, request):
         if request.headers.getall("Cookie", []):

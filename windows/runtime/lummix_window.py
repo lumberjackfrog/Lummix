@@ -15,7 +15,7 @@ import time
 ORIGIN = "http://127.0.0.1:41835"
 SERVICES = {"studio":41835, "wrist":41836, "spotify":41838}
 MEDIA_CAPABILITIES = {"spotify-session-peak-v1", "mic-route-v1", "mixer-duck-v1", "studio-preferences-v1",
-                      "mix-setup-alias-v1"}
+                      "mix-setup-alias-v1", "spotify-detection-v2"}
 if sys.getwindowsversion().build >= 20348:
     MEDIA_CAPABILITIES.add("spotify-process-mix-v1")
 MEDIA_CONFLICT = ("Port 41838 is already in use by an incompatible service. Close any earlier Lummix "

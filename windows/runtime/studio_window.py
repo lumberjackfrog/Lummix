@@ -8,6 +8,7 @@ import secrets
 import sys
 from urllib.parse import urlsplit
 from studio_assets import attach_installed_assets
+import profile_save
 
 import comtypes
 from comtypes.gen import WebView2 as wv
@@ -54,11 +55,18 @@ def notify(operation,hwnd,icon):
 def local_dir():
     return Path(os.environ["LOCALAPPDATA"])/"LumMix"
 
+def window_settings(data):
+    for key in ("x", "y", "width", "height"):
+        if type(data.get(key)) not in (int, float) or not abs(data[key]) < 20000:
+            raise ValueError("Invalid saved window dimensions")
+
 def read_json(path):
     try:
-        data=json.loads(path.read_text(encoding="utf-8-sig"))
-        return data if isinstance(data,dict) else {}
-    except (OSError, ValueError):
+        if path.name == "studio-preferences.json":
+            from studio_preferences import checked
+            return profile_save.load(path, lambda data: checked(data["settings"]))
+        return profile_save.load(path, window_settings)
+    except (OSError, ValueError, KeyError, TypeError):
         return {}
 
 def close_to_tray():
@@ -233,8 +241,7 @@ class StudioWindow:
         data=dict(zip(("x","y","width","height"),vals),screen=info["Device"],maximized=bool(USER.IsZoomed(self.hwnd)))
         file=local_dir()/"window-placement.json"
         try:
-            file.parent.mkdir(parents=True,exist_ok=True);tmp=file.with_suffix(".tmp")
-            tmp.write_text(json.dumps(data),encoding="utf8");os.replace(tmp,file)
+            profile_save.save(file, data)
         except OSError:pass
 
     def fullscreen(self):

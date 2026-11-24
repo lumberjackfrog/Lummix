@@ -5,7 +5,7 @@ import math
 import os
 from pathlib import Path
 import secrets
-import tempfile
+import profile_save
 import time
 
 from aiohttp import web
@@ -40,6 +40,12 @@ def load_json(text):
     return json.loads(text, object_pairs_hook=unique_fields)
 
 
+def saved_gains(data):
+    if type(data.get("revision")) is not int or data["revision"] < 0:
+        raise ValueError("Invalid saved revision")
+    checked_patch(data["gains"])
+
+
 class MixOutput:
     """One native CableMixer is shared by gain setters and the explicit-start route host."""
     def __init__(self, path=None, mixer=None):
@@ -57,10 +63,8 @@ class MixOutput:
         self.tokens = {}
         self.lock = asyncio.Lock()
         try:
-            saved = load_json(self.path.read_text(encoding="utf-8"))
-            if not isinstance(saved,dict) or type(saved.get("revision")) is not int or saved["revision"] < 0:
-                raise ValueError("Invalid saved revision")
-            settings = checked_patch(saved["gains"])
+            saved = profile_save.load(self.path, saved_gains)
+            settings = saved["gains"]
             self.gains.update(settings)
             self.revision = saved["revision"]
         except FileNotFoundError:
@@ -76,18 +80,7 @@ class MixOutput:
                                     mute_mic=gains["micMuted"], mute_file=gains["musicMuted"])
 
     def persist(self, gains, revision):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        name = None
-        try:
-            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=self.path.parent, delete=False) as f:
-                name = f.name
-                json.dump({"revision": revision, "gains": gains}, f, allow_nan=False)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(name, self.path)
-        finally:
-            if name is not None:
-                Path(name).unlink(missing_ok=True)
+        profile_save.save(self.path, {"revision": revision, "gains": gains})
 
     def snapshot(self, token):
         stream = self.mixer.stream if self.mixer is not None else None

@@ -38,7 +38,6 @@ if ($LASTEXITCODE -ne 0) { throw 'Unsupported Python environment.' }
 if ($LASTEXITCODE -ne 0) { throw 'Pinned package restore failed.' }
 & $Python (Join-Path $windows 'runtime\build_runtime.py')
 if ($LASTEXITCODE -ne 0) { throw 'Runtime build failed.' }
-Sign-ReleaseFile (Join-Path $root '.build\frozen\runtime\_internal\lummix_process_audio.dll')
 Sign-ReleaseFile (Join-Path $root '.build\frozen\runtime\Lummix Helper.exe')
 & $Python (Join-Path $windows 'packaging\package.py')
 if ($LASTEXITCODE -ne 0) { throw 'Runtime archive packaging failed.' }

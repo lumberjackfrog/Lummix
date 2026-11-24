@@ -159,6 +159,27 @@ def main():
         import cable_setup
         with cable_setup.package((DATA/"VBCABLE_Driver_Pack46.zip").read_bytes):
             print("Original signed VB-CABLE archive and catalogs verified.")
+    elif mode == ["check-spotify"]:
+        # A bounded capture check for support. Never open a mic, deliver audio, or touch playback.
+        import time
+        from spotify_process_feed import AmbiguousTarget, Capture, spotify_target, supported
+        result = dict(supported=supported(), playerFound=False, attached=False, signal=False)
+        try:
+            target = spotify_target()
+            if target:
+                result.update(playerFound=True, edition=target[2])
+            if target and result["supported"]:
+                probe = Capture(target)
+                try:
+                    end = time.monotonic() + 4
+                    while time.monotonic() < end and probe.code is None and not probe.last_signal:
+                        time.sleep(.04)
+                    result.update(attached=probe.attached, signal=bool(probe.last_signal), error=probe.code)
+                finally:
+                    probe.close()
+        except (AmbiguousTarget, OSError) as error:
+            result["error"] = type(error).__name__
+        print(json.dumps(result))
     else:
         raise SystemExit("Usage: Lummix Helper.exe studio|wrist|spotify")
 

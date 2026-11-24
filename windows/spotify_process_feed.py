@@ -15,16 +15,13 @@ from cable_mixer import BLOCK
 from spotify_cable_guard import direct_to_cable
 from spotify_duck import spotify_path
 
-DLL = (Path(__file__).resolve().parent if getattr(sys,"frozen",False) else Path(__file__).resolve().parents[1]/".build") / "lummix_process_audio.dll"
-CALLBACK = ctypes.WINFUNCTYPE(None,ctypes.POINTER(ctypes.c_int16),ctypes.c_uint32,ctypes.c_uint32)
-
 
 class AmbiguousTarget(Exception):
     pass
 
 
 def supported():
-    return os.name=="nt" and sys.getwindowsversion().build>=20348 and DLL.is_file()
+    return os.name=="nt" and sys.getwindowsversion().build>=20348
 
 
 def spotify_target():
@@ -80,16 +77,12 @@ class Capture:
             actual=((stamp.dwHighDateTime<<32)|stamp.dwLowDateTime)/10_000_000-11644473600
             if abs(actual-created)>.001:
                 raise OSError("Target restarted")
-            self.dll=ctypes.WinDLL(str(DLL))
-            self.dll.LumCaptureProcess.argtypes=[wintypes.HANDLE,wintypes.HANDLE,CALLBACK]
-            self.dll.LumCaptureProcess.restype=ctypes.c_long
             self.event=self.k.CreateEventW(None,True,False,None)
             if not self.event:
                 raise OSError("Capture unavailable")
         except BaseException:
             self.k.CloseHandle(self.process)
             raise
-        self.callback=CALLBACK(self.packet)
         self.thread=threading.Thread(target=self.run,name="LumAppAudio",daemon=True)
         self.thread.start()
 
@@ -119,7 +112,12 @@ class Capture:
         self.tail=block[complete:]
 
     def run(self):
-        self.code=self.dll.LumCaptureProcess(self.process,self.event,self.callback)
+        try:
+            from process_loopback import capture_process
+            capture_process(self.process,self.event,self.packet)
+            self.code=0
+        except Exception as exc:
+            self.code=getattr(exc,"hresult",None) or getattr(exc,"winerror",None) or -1
 
     def next(self):
         try:return self.blocks.popleft()

@@ -2,14 +2,14 @@
 
 No capture, playback, networking, Spotify login, endpoint volume or mute API.
 """
+from spotify_locations import known_process_path as spotify_path
 import atexit
 import ctypes
 import hashlib
 import json
 import math
 import os
-from pathlib import Path, PureWindowsPath
-import re
+from pathlib import Path
 import threading
 import time
 
@@ -22,24 +22,6 @@ def valid_depth(db):
 
 
 from duck_envelope import Envelope
-
-
-def spotify_path(path, env):
-    path = PureWindowsPath(path)
-    if path.name.lower() != "spotify.exe":
-        return False
-    if any(path == PureWindowsPath(env[key]) / "Spotify" / "Spotify.exe"
-           for key in ("APPDATA", "LOCALAPPDATA", "ProgramFiles", "ProgramFiles(x86)") if env.get(key)):
-        return True
-    if not env.get("ProgramFiles"):
-        return False
-    try:
-        relative = path.relative_to(PureWindowsPath(env["ProgramFiles"]) / "WindowsApps")
-    except ValueError:
-        return False
-    return len(relative.parts) >= 2 and bool(re.fullmatch(
-        r"spotifyab\.spotifymusic_[0-9.]+_(x86|x64|arm64|neutral)__zpdnekdrzrea0",
-        relative.parts[0], re.IGNORECASE))
 
 
 class NativeSession:

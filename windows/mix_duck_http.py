@@ -1,9 +1,6 @@
 """Saved duck settings and passive status of the native mixer music bus."""
-import json
-import os
 import secrets
-import tempfile
-from pathlib import Path
+import profile_save
 from aiohttp import web
 from mix_gains_http import load_json
 
@@ -25,7 +22,7 @@ class MixDucking:
         self.settings = {"enabled":True,"depthDb":12}
         self.configured = self.bad_file = False
         try:
-            self.settings.update(validate(load_json(self.path.read_text("utf-8"))))
+            self.settings.update(profile_save.load(self.path, validate))
             self.configured = True
         except FileNotFoundError:
             pass
@@ -39,18 +36,7 @@ class MixDucking:
             self.output.mixer.set_controls(duck_enabled=self.settings["enabled"],duck_depth=self.settings["depthDb"])
 
     def write(self, settings):
-        self.path.parent.mkdir(parents=True,exist_ok=True)
-        name = None
-        try:
-            with tempfile.NamedTemporaryFile("w",encoding="utf-8",delete=False,dir=self.path.parent) as f:
-                name = f.name
-                json.dump(settings,f)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(name,self.path)
-        finally:
-            if name:
-                Path(name).unlink(missing_ok=True)
+        profile_save.save(self.path, settings)
 
     def snapshot(self,token):
         mixer = self.output.mixer

@@ -12,7 +12,7 @@ import threading
 import time
 from types import SimpleNamespace as NS
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 from PIL import Image
 
 from aiohttp.test_utils import TestClient, TestServer
@@ -402,6 +402,42 @@ class Tests(unittest.IsolatedAsyncioTestCase):
         info = await self.get()
         self.assertEqual((info["state"], info["installations"], info["installationKnown"], info["edition"]),
                          ("unsupported", ["store"], True, "unknown"))
+
+    async def test_running_player_survives_broker_failure_and_recovers(self):
+        self.sessions.failure = OSError("Media service unavailable")
+        self.sessions.running_player = lambda: {"state": "detected", "edition": "desktop", "title": "Fixture"}
+        offline = await self.get()
+        self.assertEqual(("detected", "Fixture"), (offline["state"], offline["title"]))
+        self.assertFalse(offline["canPause"] or offline["token"])
+        self.sessions.failure = None
+        self.assertEqual((await self.get())["state"], "ready")
+
+    async def test_window_transport_is_bound_to_player_and_origin(self):
+        from spotify_window_transport import dispatch
+        pause, previous, next_track = Mock(), Mock(), Mock()
+        controls = {"pause": pause, "previous": previous, "next": next_track}
+        window = mod.WindowPlayer("desktop", (123, 456, 7.8))
+        self.sessions.failure = OSError("Media service unavailable")
+        self.sessions.running_player = lambda: dict(state="ready", edition="desktop", window=window,
+                                                     **dispatch(controls, None))
+        snap = await self.get()
+        self.assertTrue(snap["canPause"] and snap["canNext"])
+        self.assertNotIn("window", snap)
+        with patch.object(mod, "window_transport", side_effect=lambda p, a: dispatch(controls, a)) as invoked:
+            denied = await self.post(snap["token"], "next", Origin="http://localhost:41835")
+            self.assertEqual(denied.status, 403)
+            invoked.assert_not_called()
+            self.assertEqual((await self.post(snap["token"], "play")).status, 200)
+            pause.Invoke.assert_not_called()
+            self.assertEqual((await self.post(snap["token"], "pause")).status, 200)
+            pause.Invoke.assert_called_once()
+            self.assertEqual((await self.post(snap["token"], "next")).status, 200)
+            next_track.Invoke.assert_called_once()
+            self.assertEqual((await self.post(snap["token"], "seekBack15")).status, 409)
+            invoked.assert_called_with(window, "seekBack15")
+        with patch.object(mod, "window_transport", side_effect=mod.VolumeError("selection_changed")):
+            self.assertEqual((await self.post(snap["token"], "previous")).status, 409)
+            previous.Invoke.assert_not_called()
 
     async def test_inventory_independent_failures(self):
         for desktop, store, expected in [(False, False, ([],True)), (True, True, (["desktop","store"],True)),

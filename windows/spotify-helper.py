@@ -14,9 +14,7 @@ import hmac
 from io import BytesIO
 import math
 import os
-from pathlib import Path
 import secrets
-import stat
 import time
 
 from aiohttp import web
@@ -25,13 +23,15 @@ from studio_preferences import StudioPreferences
 from mic_routes import MicRoutes
 from mix_duck_http import MixDucking
 from spotify_duck_http import DUCK_METHODS, DuckRoutes, native_controller
-from spotify_volume_http import VolumeRoutes
+from spotify_volume_http import VolumeError, VolumeRoutes
+from spotify_window_transport import WindowPlayer, transport as window_transport
 from spotify_peak import SpotifyPeak
+from spotify_locations import STORE_FAMILY, store_installed, website_installed
 
 HOST = "127.0.0.1"
 PORT = 41838
 ORIGINS = {"http://127.0.0.1:41835", "http://localhost:41835"}
-STORE_FAMILY = "SpotifyAB.SpotifyMusic_zpdnekdrzrea0"
+
 SPOTIFY_IDS = {"spotify.exe": "desktop", STORE_FAMILY.casefold() + "!spotify": "store"}
 TOKEN_LIFETIME = 600
 MAX_ART_BYTES = 4 * 1024 * 1024
@@ -53,51 +53,6 @@ def status(state, **fields):
                  "canNext": False, "canPrevious": False, "canStop": False, "canSeek": False, "timeline": None,
                  "title": "", "artist": "", "token": None, "edition": "unknown",
                  "installations": [], "installationKnown": False, "artwork": None, "artworkId": None}, **fields)
-
-
-def website_executable(candidate):
-    path = Path(os.path.expandvars(candidate.strip('"')))
-    if (not path.is_absolute() or path.name.casefold() != "spotify.exe"
-            or any(part.casefold() == "windowsapps" for part in path.parts)):
-        return False
-    try:
-        return stat.S_ISREG(path.stat().st_mode)
-    except (FileNotFoundError, NotADirectoryError):
-        return False
-
-
-def website_installed():
-    import winreg
-    for base in ("APPDATA", "LOCALAPPDATA", "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"):
-        if os.environ.get(base) and website_executable(str(Path(os.environ[base]) / "Spotify" / "Spotify.exe")):
-            return True
-    # Validate the registered executable. Leftover uninstall entries, Store aliases and empty
-    # application-data folders are insufficient evidence of the website edition.
-    app_paths = r"Software\Microsoft\Windows\CurrentVersion\App Paths\Spotify.exe"
-    uninstall = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Spotify"
-    for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
-        for view in (winreg.KEY_WOW64_64KEY, winreg.KEY_WOW64_32KEY):
-            for key, value in ((app_paths, ""), (uninstall, "InstallLocation"), (uninstall, "DisplayIcon")):
-                try:
-                    with winreg.OpenKey(hive, key, 0, winreg.KEY_READ | view) as handle:
-                        path, _ = winreg.QueryValueEx(handle, value)
-                except FileNotFoundError:
-                    continue
-                if not isinstance(path, str) or not path.strip():
-                    continue
-                if value == "InstallLocation":
-                    path = str(Path(path.strip('"')) / "Spotify.exe")
-                elif value == "DisplayIcon":
-                    path = path.rsplit(",", 1)[0] if path.rpartition(",")[2].strip().lstrip("-").isdigit() else path
-                if website_executable(path):
-                    return True
-    return False
-
-
-def store_installed():
-    from winsdk.windows.management.deployment import PackageManager
-    return any(pkg.id.family_name.casefold() == STORE_FAMILY.casefold()
-               for pkg in PackageManager().find_packages_for_user("", STORE_FAMILY))
 
 
 def read_installations():
@@ -184,6 +139,34 @@ class WindowsSessions:
 
     async def spotify(self):
         return spotify_sessions(await self.manager())
+
+    @staticmethod
+    def running_player():
+        """Identify the local player even while Windows media controls are starting or unavailable."""
+        from spotify_process_feed import AmbiguousTarget, spotify_target
+        from spotify_volume_http import VolumeError, spotify_windows
+        import win32gui
+
+        try:
+            target = spotify_target()
+        except AmbiguousTarget:
+            return {"state": "ambiguous"}
+        if not target:
+            return None
+        pid, created, edition = target
+        result = {"state": "detected", "edition": edition}
+        try:
+            windows = [hwnd for hwnd, owner, started in spotify_windows(edition)
+                       if owner == pid and started == created]
+            if len(windows) == 1:
+                artist, separator, title = win32gui.GetWindowText(windows[0]).partition(" - ")
+                if separator and title.strip() and artist.strip():
+                    result.update(title=title.strip()[:256], artist=artist.strip()[:256])
+                player = WindowPlayer(edition, (windows[0], pid, created))
+                result.update(window_transport(player), state="ready", transportSource="spotify_window", window=player)
+        except (OSError, VolumeError, win32gui.error):
+            pass
+        return result
 
 
 def session_timeline(session, info):
@@ -407,6 +390,18 @@ class Player:
         (session, state), installed = await asyncio.gather(self.selected(), self.installation_status())
         if session is None:
             self.art_key = self.art_value = None
+            if state != "ambiguous":
+                detect = getattr(self.sessions, "running_player", None)
+                try:
+                    running = await asyncio.to_thread(detect) if detect else None
+                except (ImportError, OSError, RuntimeError):
+                    running = None
+                if running:
+                    fields = dict(running)
+                    window = fields.pop("window", None)
+                    if window is not None:
+                        fields["token"] = self.issue(window, origin)
+                    return status(**fields, **installed)
             return status(state, **installed)
         edition = SPOTIFY_IDS[session.source_app_user_model_id.casefold()]
         try:
@@ -437,6 +432,8 @@ class Player:
         selection = self.tokens.get(token)
         if not selection or selection.expires <= time.monotonic() or not hmac.compare_digest(selection.origin, origin):
             return 403, "refresh_selection"
+        if isinstance(selection.session, WindowPlayer):
+            return 409, "windows_media_unavailable"
         current, _ = await self.selected()
         if current is None or current.source_app_user_model_id.casefold() != selection.session.source_app_user_model_id.casefold():
             return 409, "selection_changed"
@@ -447,6 +444,12 @@ class Player:
             selected = self.tokens.get(token)
             if not selected or selected.expires <= time.monotonic() or not hmac.compare_digest(selected.origin, origin):
                 return 403, status("unavailable", error="refresh_selection")
+            if isinstance(selected.session, WindowPlayer):
+                try:
+                    await asyncio.to_thread(window_transport, selected.session, action)
+                except VolumeError as error:
+                    return error.http, status("unavailable", error=error.reason)
+                return 200, await self.snapshot(origin)
             current, state = await self.selected()
             if current is None:
                 self.tokens.pop(token, None)
@@ -519,7 +522,9 @@ def create_app(sessions=None, *, expected_host=f"{HOST}:{PORT}", inventory=read_
     async def health(request):
         # Report API contracts, independent of whether Spotify or a physical mic is connected.
         paths = {r.resource.canonical for r in request.app.router.routes()}
-        caps = ["spotify-player-volume-v1"] if "/spotify/volume" in paths else []
+        caps = ["spotify-detection-v2"]
+        if "/spotify/volume" in paths:
+            caps.append("spotify-player-volume-v1")
         if "/spotify/peak" in paths:
             caps.append("spotify-session-peak-v1")
         from spotify_process_feed import supported as process_mix_supported
@@ -543,6 +548,19 @@ def create_app(sessions=None, *, expected_host=f"{HOST}:{PORT}", inventory=read_
         origin = request.headers["Origin"]
         token = request.headers.get("X-Lum-Spotify-Token", "")
         selection = player.tokens.get(token)
+        if selection and isinstance(selection.session, WindowPlayer):
+            if selection.expires <= time.monotonic() or not hmac.compare_digest(selection.origin, origin):
+                return web.json_response({"state": "unavailable", "error": "refresh_selection"}, status=403)
+            try:
+                from spotify_volume_http import spotify_windows
+                window = selection.session
+                if await asyncio.to_thread(spotify_windows, window.edition) != [window.identity]:
+                    return web.json_response({"state": "unavailable", "error": "selection_changed"}, status=409)
+                level = await peak_meter.read(window.edition)
+            except (ImportError, OSError, RuntimeError, VolumeError):
+                level = None
+            return web.json_response({"state":"no_local_signal"} if level is None else
+                                     {"state":"ready", "peak":round(level, 3)})
         code, error = await player.validate_duck_start(origin, token)
         if error:
             return web.json_response({"state": "unavailable", "error": error}, status=code)

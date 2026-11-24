@@ -2,10 +2,8 @@
 import asyncio
 import ctypes
 import json
-import os
-from pathlib import Path
 import secrets
-import tempfile
+import profile_save
 import time
 from aiohttp import web
 from mix_gains_http import load_json
@@ -134,21 +132,12 @@ def native_indexes(input_id, cable_ids):
 
 
 def write_selection(path, selected):
-    path.parent.mkdir(parents=True,exist_ok=True)
-    with tempfile.NamedTemporaryFile("w",dir=path.parent,encoding="utf-8",delete=False) as f:
-        tmp=Path(f.name)
-        try:
-            json.dump({"schema":1,"id":selected},f)
-            f.flush()
-            os.fsync(f.fileno())
-        except BaseException:
-            f.close()
-            tmp.unlink(missing_ok=True)
-            raise
-    try:
-        os.replace(tmp,path)
-    finally:
-        tmp.unlink(missing_ok=True)
+    profile_save.save(path, {"schema": 1, "id": selected})
+
+
+def validate_selection(state):
+    if state.get("schema") != 1 or (state["id"] is not None and not isinstance(state["id"], str)):
+        raise ValueError("Invalid microphone selection")
 
 
 class MicRoutes:
@@ -166,9 +155,7 @@ class MicRoutes:
         self.cache_until = 0
         self.watch = None
         try:
-            state = load_json(self.path.read_text(encoding="utf-8"))
-            if state.get("schema")!=1 or state["id"] is not None and not isinstance(state["id"],str):
-                raise ValueError()
+            state = profile_save.load(self.path, validate_selection)
             self.saved = state["id"]
         except FileNotFoundError:
             pass

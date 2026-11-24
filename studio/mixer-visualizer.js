@@ -33,7 +33,7 @@
     title.textContent = track || 'Spotify artwork';
     artist.textContent = track ? performer : 'Cover art appears when Spotify shares a track.';
     artist.hidden = Boolean(track && !performer);
-    artworkStatus.textContent = track ? detail.playing ? 'Playing' : 'Paused' : 'Spotify';
+    artworkStatus.textContent = track && detail.state === 'ready' ? detail.playing ? 'Playing' : 'Paused' : 'Spotify';
     updateArtwork(art);
   }
 

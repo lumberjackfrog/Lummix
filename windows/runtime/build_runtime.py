@@ -100,9 +100,6 @@ def main():
                    "tkinter","PySide6","PyQt6","cv2","openpyxl","sklearn","sphinx","cryptography",
                    "av","soundfile","numba","onnx","fsspec","Cython"):
         args += ["--exclude-module",module]
-    process_audio = BUILD / "lummix_process_audio.dll"
-    subprocess.run([sys.executable, str(SRC/"process-audio/build_loopback.py"), str(process_audio)], check=True)
-    args += ["--add-binary", str(process_audio)+";."]
     for path in (SRC/"wrist-tile.html",SRC/"wrist-fixture.js",SRC/"cable_setup_install.ps1",
                  SRC/"cable_setup_status.ps1",SRC/"xsoverlay-icon.png",SRC/"xsoverlay-live.js",
                  SRC/"xsoverlay-panel.html",archive):
