@@ -28,3 +28,6 @@ jobs:
           ./.venv/Scripts/python.exe -m playwright install chromium
       - shell: pwsh
         run: ./scripts/test-windows.ps1
+      - name: Test XSOverlay add-on installation and removal
+        shell: pwsh
+        run: ./.venv/Scripts/python.exe -m unittest discover -s tests -p test_xsoverlay_install.py -v

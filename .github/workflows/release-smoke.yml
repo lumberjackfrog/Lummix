@@ -1,0 +1,69 @@
+name: Check published Windows setup
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag, for example v1.0.2
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  install:
+    runs-on: windows-2022
+    timeout-minutes: 12
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Download and check the exact release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ($env:RELEASE_TAG -cnotmatch '\Av[0-9]+\.[0-9]+\.[0-9]+\z') { throw 'Expected a release tag such as v1.0.2.' }
+          $dest = Join-Path $env:RUNNER_TEMP 'lummix-release'
+          New-Item -ItemType Directory -Path $dest | Out-Null
+          gh release download $env:RELEASE_TAG --repo lumberjackfrog/Lummix --dir $dest --pattern Lummix.Setup.exe --pattern SHA256SUMS.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Could not download both release assets.' }
+          $line = [IO.File]::ReadAllText((Join-Path $dest 'SHA256SUMS.txt'))
+          if ($line -cnotmatch '\A([a-fA-F0-9]{64})  Lummix\.Setup\.exe(?:\r?\n)?\z') { throw 'Unexpected checksum file format.' }
+          $expected = $Matches[1]
+          $setup = Join-Path $dest 'Lummix.Setup.exe'
+          $actual = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash
+          if ($actual -ne $expected) { throw 'Published installer SHA-256 differs from SHA256SUMS.txt.' }
+          $signature = (Get-AuthenticodeSignature -LiteralPath $setup).Status
+          "Release $env:RELEASE_TAG — SHA-256 $actual — Authenticode $signature" >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Install, open the packaged verifier and uninstall
+        run: |
+          $version = $env:RELEASE_TAG.Substring(1)
+          $setup = Join-Path $env:RUNNER_TEMP 'lummix-release/Lummix.Setup.exe'
+          $exe = Join-Path $env:LOCALAPPDATA "Programs/Lummix/$version/Lummix.exe"
+          $shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'Lummix/Lummix.lnk'
+          $cacheDir = Join-Path $env:LOCALAPPDATA 'Lummix/Installer'
+          if ((Test-Path -LiteralPath $exe) -or (Test-Path -LiteralPath $shortcut) -or (Test-Path -LiteralPath $cacheDir)) { throw 'Expected a fresh runner.' }
+          $result = Start-Process -FilePath $setup -ArgumentList '/S' -WindowStyle Hidden -Wait -PassThru
+          if ($result.ExitCode -ne 0) { throw "Setup exited $($result.ExitCode)." }
+          $cache = @(Get-ChildItem -LiteralPath $cacheDir -Filter Lummix.msi -File -Recurse)
+          if ($cache.Count -ne 1) { throw 'Expected exactly one registered MSI repair source.' }
+          $product = [guid]::ParseExact($cache[0].Directory.Name,'B').ToString('B')
+          try {
+            if (!(Test-Path -LiteralPath $exe -PathType Leaf) -or !(Test-Path -LiteralPath $shortcut -PathType Leaf)) { throw 'Installed executable or Start-menu shortcut is missing.' }
+            $shell = New-Object -ComObject WScript.Shell
+            $target = $shell.CreateShortcut($shortcut).TargetPath
+            if ([IO.Path]::GetFullPath($target) -ne [IO.Path]::GetFullPath($exe)) { throw "Unexpected Start-menu target: $target" }
+            $verifier = Start-Process -FilePath $exe -ArgumentList 'verify-vendor' -WindowStyle Hidden -Wait -PassThru
+            if ($verifier.ExitCode -ne 0) { throw "Packaged vendor verification exited $($verifier.ExitCode)." }
+          } finally {
+            $removed = Start-Process msiexec.exe -ArgumentList "/x $product /qn /norestart" -WindowStyle Hidden -Wait -PassThru
+            if ($removed.ExitCode -ne 0) { throw "Uninstall exited $($removed.ExitCode)." }
+          }
+          if ((Test-Path -LiteralPath $exe) -or (Test-Path -LiteralPath $shortcut) -or (Test-Path -LiteralPath $cache[0].FullName)) { throw 'Uninstall left a release file behind.' }
+          "Installed $version, resolved its Start-menu shortcut, verified the bundled driver package and uninstalled." >> $env:GITHUB_STEP_SUMMARY

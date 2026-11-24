@@ -88,17 +88,20 @@ def chromium_probe(directory):
     browser=subprocess.Popen(command,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     hwnd=None
     try:
-        matches=[]
-        def visit(h,_):
-            if win32process.GetWindowThreadProcessId(h)[1]==browser.pid and win32gui.GetWindowText(h).startswith(initial):
-                matches.append(h)
-            return True
+        # A private hosted-runner desktop can have no top-level windows while
+        # Chromium is starting. FindWindowEx returns NULL for this normal case.
+        find=ctypes.windll.user32.FindWindowExW
+        find.argtypes=(wintypes.HWND,wintypes.HWND,wintypes.LPCWSTR,wintypes.LPCWSTR)
+        find.restype=wintypes.HWND
         deadline=time.monotonic()+12
-        while time.monotonic()<deadline and not matches:
-            win32gui.EnumWindows(visit,None)
-            time.sleep(.08)
-        assert matches, "private Chromium window not ready"
-        hwnd=matches[0]
+        while time.monotonic()<deadline and not hwnd:
+            child=None
+            while child:=find(None,child,"Chrome_WidgetWin_1",None):
+                if win32process.GetWindowThreadProcessId(child)[1]==browser.pid and win32gui.GetWindowText(child).startswith(initial):
+                    hwnd=child
+                    break
+            if not hwnd:time.sleep(.08)
+        assert hwnd, "private Chromium window not ready"
         ids=[(hwnd,browser.pid,psutil.Process(browser.pid).create_time())]
         def call(key=None, change=None):
             return apply_target(volume_target(ui,mod,ids),key,change,mod)
