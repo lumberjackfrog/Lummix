@@ -213,7 +213,11 @@ class StudioTests(unittest.TestCase):
                 browser.close()
 
     def verify_chrome(self,browser,width):
-        context=browser.new_context(viewport={"width":width,"height":865},has_touch=width<500,service_workers="block")
+        # Exercise the one-time migration of a legacy appearance into an empty native store.
+        legacy_storage={"origins":[{"origin":ORIGIN,"localStorage":[
+            {"name":"lum-mix-appearance","value":'{"follow":false,"dark":true}'}]}],"cookies":[]}
+        context=browser.new_context(viewport={"width":width,"height":865},has_touch=width<500,
+                                    service_workers="block",storage_state=legacy_storage)
         try:
             services=LocalServices()
             context.route("**/*",services.intercept)
@@ -229,7 +233,8 @@ class StudioTests(unittest.TestCase):
               };
             """)
             page=context.new_page()
-            page.goto(ORIGIN+"/?view=desktop&app=1")
+            with page.expect_response(lambda r:r.url.endswith("/mix/preferences") and r.request.method=="POST"):
+                page.goto(ORIGIN+"/?view=desktop&app=1")
             frame=page.frame_locator("#canvas")
             group=frame.get_by_role("group",name="Window controls")
             expect(group).to_be_visible()
@@ -261,9 +266,13 @@ class StudioTests(unittest.TestCase):
             page.mouse.move(x,y);page.mouse.down();page.mouse.move(x+7,y);page.mouse.up()
             self.assertEqual(page.evaluate("window.commands"),
                              ["window-state","minimize","maximize","maximize","fullscreen","fullscreen","close","maximize","drag"])
-            page.goto(ORIGIN+"/?view=wrist&app=1")
+            with page.expect_response(lambda r:r.url.endswith("/mix/preferences") and r.request.method=="GET"):
+                page.goto(ORIGIN+"/?view=wrist&app=1")
+            expect(frame.locator("#close-to-tray")).to_be_enabled()
             expect(frame.locator("#window-controls")).to_be_hidden()
-            self.assertFalse(services.commands)
+            self.assertEqual(services.commands,[
+                ("/mix/preferences",{"settings":{"followTheme":False,"dark":True},"migrate":True})])
+            self.assertEqual(services.addon_commands,[])
             self.assertFalse(services.unexpected)
         finally:
             context.close()
