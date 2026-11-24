@@ -1,0 +1,203 @@
+:root {
+  --lum-bg: #141318;
+  --lum-panel: #211f26;
+  --lum-field: #27242d;
+  --lum-raised: #302c38;
+  --lum-text: #f6f3fa;
+  --lum-dim: #c1b9ca;
+  --lum-accent: #7a0aa6;
+  --lum-contrast-on-accent: #fff;
+  --lum-line: color-mix(in srgb, var(--lum-text) 15%, var(--lum-panel));
+  --lum-cue: color-mix(in srgb, var(--lum-accent) 40%, var(--lum-text));
+  --lum-danger: #ffbaaf;
+  --lum-music: #9fbcde;
+  color-scheme: dark;
+}
+
+:root[data-theme=light] {
+  --lum-bg: #eceaf0;
+  --lum-panel: #fdfbff;
+  --lum-field: #f1edf5;
+  --lum-raised: #e8e0ef;
+  --lum-text: #252030;
+  --lum-dim: #574f62;
+  --lum-accent: #7a0aa6;
+  --lum-contrast-on-accent: #fff;
+  --lum-danger: #962e34;
+  --lum-music: #466a92;
+  color-scheme: light;
+}
+
+body {
+  background: var(--lum-bg);
+  color: var(--lum-text);
+  font: 14px/1.45 "Segoe UI", system-ui, sans-serif;
+}
+
+.frame { max-width: 1250px; padding: 30px 34px 25px; }
+.frame .mast { gap: 11px; margin-bottom: 20px; }
+.frame .mast .logo {
+  width: 34px; height: 34px; border-radius: 9px;
+  background: var(--lum-accent); color: var(--lum-contrast-on-accent);
+  font-size: 20px;
+}
+.frame .mast h1 { font-size: 23px; letter-spacing: -.035em; }
+.frame .mast small {
+  color: var(--lum-dim); border-color: var(--lum-line);
+  border-radius: 6px; padding: 4px 8px;
+}
+
+.frame .layout { grid-template-columns: minmax(0, 1.43fr) minmax(0, 1fr); gap: 21px; }
+.frame .layout.desktop-only { grid-template-columns: minmax(0, 1fr); }
+.frame .layout.background .mixer { max-width: 610px; }
+
+.frame .mixer {
+  background: var(--lum-panel);
+  color: var(--lum-text);
+  border: 1px solid var(--lum-line);
+  border-radius: 14px;
+  padding: 14px;
+  box-shadow: 0 12px 28px #0002;
+}
+
+.frame .mixer .top { padding: 2px 2px 13px; gap: 15px; }
+.frame .mixer .top h2 { font-size: 21px; letter-spacing: -.025em; }
+.frame .mixer .top .sub { font-size: 13px; margin-top: 2px; }
+.frame .mixer .top .primary { min-width: 100px; }
+.frame .mixer .route,
+.frame .mixer .tray-summary {
+  border: 1px solid var(--lum-line);
+  background: var(--lum-field);
+  border-radius: 10px;
+  padding: 11px 13px;
+}
+.frame .mixer .route span { color: var(--lum-cue); font-size: 14px; }
+.frame .mixer .route small { font-size: 11px; }
+.frame .mixer .route .status { font-size: 12px; }
+.frame .status::before { background: var(--lum-dim); box-shadow: none; }
+.frame .status[data-live=true]::before {
+  background: var(--lum-cue);
+  box-shadow: 0 0 0 3px color-mix(in srgb,var(--lum-accent) 25%,transparent);
+}
+
+.frame .mixer .channels { gap: 9px; margin: 10px 0 0; }
+.frame .mixer .channel {
+  min-width: 0; border: 1px solid var(--lum-line);
+  border-radius: 10px; padding: 13px 12px 12px;
+  background: var(--lum-field);
+}
+.frame .mixer .channel h3 { font-size: 15px; }
+.frame .mixer .channel small { font-size: 11px; text-align: right; }
+.frame .mixer .channel select { margin: 9px 0 8px; }
+.frame .mixer .channel .meter {
+  height: 10px; margin: 3px 0 7px;
+  background: repeating-linear-gradient(90deg,var(--lum-raised) 0 6px,var(--lum-field) 6px 9px);
+}
+.frame .mixer .channel .meter span {
+  background: repeating-linear-gradient(90deg,var(--lum-cue) 0 6px,var(--lum-field) 6px 9px);
+  transition: none;
+}
+.frame .mixer .channel:nth-child(2) .meter span {
+  background: repeating-linear-gradient(90deg,var(--lum-music) 0 6px,var(--lum-field) 6px 9px);
+}
+.frame .mixer .fader { font-size: 12px; gap: 6px; padding: 4px 0; }
+.frame .mixer .fader output { min-width: 36px; }
+.frame .mixer .fader input { min-width: 0; margin: 0; accent-color: var(--lum-accent); }
+.frame .mixer .channel button { margin-top: 7px; }
+.frame .mixer .ducking {
+  margin: 10px 0 0; padding: 8px 12px;
+  display: flex; gap: 6px 12px; flex-wrap: wrap; align-items: center;
+  border: 1px solid var(--lum-line); border-radius: 9px;
+  background: var(--lum-field);
+}
+.frame .mixer .ducking[hidden] { display: none; }
+.frame .mixer .ducking input { accent-color: var(--lum-accent); }
+.frame .mixer .ducking button { min-height: 28px; padding: 4px 8px; font-size: 11px; }
+
+.frame .mixer .sources { padding: 13px 0 0; }
+.frame .mixer .sources h3 { font-size: 14px; }
+.frame .mixer .sources .section-title { margin-bottom: 7px; }
+.frame .mixer .media {
+  display: flex; flex-wrap: wrap; gap: 8px 10px; min-height: 51px;
+  background: var(--lum-field); border-color: var(--lum-line); padding: 8px 9px;
+}
+.frame .mixer .media .mark {
+  width: 33px; height: 33px; border-radius: 6px;
+  background: color-mix(in srgb,var(--lum-accent) 22%,var(--lum-raised));
+  color: var(--lum-cue); font-size: 18px;
+}
+.frame .mixer .media strong { font-size: 13px; }
+.frame .mixer .media small { font-size: 11px; }
+.frame .mixer .media select { max-width: 100%; }
+.frame .mixer .footer {
+  justify-content: flex-start;
+  margin: 13px -14px -14px;
+  padding: 9px 13px; gap: 6px 8px;
+  border: 0; border-top: 1px solid var(--lum-line);
+  background: var(--lum-field);
+}
+.frame .mixer .footer > div { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.frame .mixer .footer .mode-tools { margin-left: auto; }
+.frame .mixer .footer button { min-height: 31px; font-size: 12px; padding: 4px 8px; }
+
+.frame button, .frame select, dialog button, dialog select {
+  color: var(--lum-text); background: var(--lum-raised);
+  border: 1px solid var(--lum-line); border-radius: 6px;
+  min-height: 33px; padding: 6px 9px; font-size: 12px; line-height: 1.25;
+  transition: none;
+}
+.frame button:active:not(:disabled) { transform: none; }
+.frame button:hover:not(:disabled), dialog button:hover:not(:disabled) { border-color: var(--lum-cue); }
+.frame :focus-visible, dialog :focus-visible { outline-color: var(--lum-cue); }
+.frame .mixer .primary {
+  color: var(--lum-contrast-on-accent);
+  background: var(--lum-accent);
+  border-color: var(--lum-accent);
+}
+.frame .mixer .stop, .frame .muted { color: var(--lum-danger); }
+.frame .mixer .tabs button {
+  min-height: 28px; padding: 4px 7px; font-size: 11px;
+  background: transparent;
+}
+.frame .mixer .tabs button[aria-selected=true] {
+  color: var(--lum-cue); border-color: var(--lum-line); background: var(--lum-raised);
+}
+.frame .sub, .frame small, .frame .wrist-detail, .frame .page-note, dialog .sub { color: var(--lum-dim); }
+.frame .page-note { margin-top: 15px; font-size: 11px; }
+.frame .wrist-detail #wrist-state { color: var(--lum-text); }
+.frame .wrist-title h2 { font-size: 16px; }
+.frame .wrist-view { border: 1px solid var(--lum-line); }
+dialog {
+  border: 1px solid var(--lum-line);
+  color: var(--lum-text); background: var(--lum-panel);
+}
+
+.frame .layout.background .mixer .tray-summary {
+  display: flex; flex-wrap: wrap; align-items: center; column-gap: 12px;
+}
+.frame .layout.background .mixer .tray-summary button { margin-left: auto; }
+.frame .layout.background .mixer .sources { padding-top: 11px; }
+
+@media (max-width: 880px) {
+  .frame { padding-inline: 20px; }
+  .frame .layout { gap: 14px; }
+  .frame .mixer .footer .mode-tools { margin-left: 0; }
+}
+@media (max-width: 690px) {
+  .frame { padding: 19px 12px 20px; }
+  .frame .mast { margin-bottom: 14px; }
+  .frame .wrist-area { align-self: start; }
+  .frame .mixer { padding: 11px; }
+  .frame .mixer .footer { margin: 12px -11px -11px; padding: 8px 10px; }
+  .frame .mixer .channel { padding: 10px 8px; }
+  .frame .mixer .channel button, .frame .mixer .primary, .frame .mixer select { min-height: 39px; }
+  .frame .mixer .footer button { min-height: 36px; }
+  .frame .mixer .media button { margin-left: 0; }
+}
+
+/* The vendor document uses a light browser scheme with a transparent canvas. */
+.frame #native-wrist { color-scheme: light; }
+.frame .layout.background .mixer .ducking { display: none; }
+@media (max-width: 420px) {
+  .frame .mixer .channel select { padding-inline: 5px; }
+}

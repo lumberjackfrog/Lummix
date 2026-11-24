@@ -1,0 +1,20 @@
+Lummix â€¢ Quick start
+
+1. Open Lummix Setup.exe. Open Lummix from Start.
+2. Play a song in Spotify, then click Set up Lummix. If Windows asks to install the VB-Audio driver, choose Yes. Lummix shows the microphone name when setup finishes.
+3. In VRChat, open Settings > Audio & Voice > Microphone. Pick the Lummix device shown in setup. Speak and watch the input meter. VRChat remembers its selection separately in desktop and VR mode.
+
+Next time, open Lummix and start the mix. The two tall faders control how much voice and music your friends hear. The speaker volume in Spotify controls your own player. Lower music while I talk starts at 12 dB and eases the music back up between phrases.
+
+Close the window to keep mixing in the system tray. Open it again from Start or the tray icon. Choose Exit Lummix to stop and quit. F11 enters full screen. Escape goes back.
+
+If you need to pick a different headset, open Settings > Audio. If Spotify is already playing straight to VB-CABLE, set just Spotify's output device to Default in Windows Settings > System > Sound > Volume mixer. Then check the music input in Lummix.
+
+If you hear your own voice twice in your headphones, check the Lummix recording device's Properties > Listen in Windows Sound. Turn off Listen to this device if you do not want Windows to play a second copy locally.
+
+Windows x64. Capturing Spotify by app requires Windows build 20348 or later, including Windows 11. Install the Spotify desktop app from Spotifyâ€™s website or the Microsoft Store. Lummix uses the Microsoft Edge WebView2 runtime. The optional wrist view uses your installed XSOverlay. Windows may require a restart after a first-time driver installation.
+
+Portable ZIP users can extract the entire folder and open Lummix.exe.
+
+VB-CABLE is donationware by VB-Audio. https://vb-audio.com/Cable/
+Contributions: https://vb-audio.com/Services/licensing.htm

@@ -1,0 +1,11 @@
+.frame .mixer {position:relative;}
+.frame .mixer > .lum-pulse-layer {
+  position:absolute;inset:0;z-index:2;pointer-events:none;
+  border-radius:inherit;opacity:0;
+  box-shadow:inset 0 0 0 2px color-mix(in srgb,var(--lum-control-accent,#ce91e1) 60%,transparent),
+             inset 0 0 26px color-mix(in srgb,var(--lum-control-accent,#ce91e1) 38%,transparent);
+  transition:opacity 560ms ease-out;
+}
+@media (prefers-reduced-motion:reduce) {
+  .frame .mixer > .lum-pulse-layer {display:none;}
+}

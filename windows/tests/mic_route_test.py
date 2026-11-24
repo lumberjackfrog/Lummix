@@ -1,0 +1,132 @@
+"""Mic route qualification. Writes use a synthetic callback stream and temporary settings."""
+import asyncio
+from pathlib import Path
+from tempfile import TemporaryDirectory
+import unittest
+from unittest.mock import patch
+import numpy as np
+import sounddevice as sd
+from aiohttp import web
+from aiohttp.test_utils import TestClient, TestServer
+from cable_mixer import CableMixer, BLOCK
+from mix_gains_http import MixOutput
+from mic_routes import MicRoutes, capture_kind, recommended, HW, INSTANCE
+
+
+def row(id, name, kind, comm=False, default=False):
+    return dict(id=id,name=name,kind=kind,headset=kind!="physical",defaultCommunications=comm,defaultInput=default)
+
+
+class Stream:
+    def __init__(self, **opts):
+        self.opts=opts
+        self.active=False
+        self.closed=False
+        self.latency=(.011,.014)
+    def start(self): self.active=True
+    def abort(self): self.active=False
+    def close(self): self.closed=True
+    def generated(self, amplitude=.15):
+        mic=np.full((BLOCK,1),amplitude,dtype=np.float32)
+        out=np.empty((BLOCK,2),dtype=np.float32)
+        for i in range(4):
+            self.opts["callback"](mic,out,BLOCK,None,0)
+        return out
+
+
+class RouteTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        tmp=self.enterContext(TemporaryDirectory())
+        self.mixer=CableMixer(process_feed_factory=lambda _:None)
+        self.output=MixOutput(Path(tmp)/"output-gains.json",self.mixer)
+        self.rows=[row("phys","Physical", "physical",default=True),
+                   row("vr","Pico microphone","headsetBridge",comm=True)]
+        self.cables={"Render":["signed-render"],"Capture":["signed-capture"]}
+        self.calls=[]
+        def resolve(id,cables):
+            assert id in {r["id"] for r in self.rows}
+            assert cables==self.cables
+            self.calls.append(("indexes",id))
+            return 31,71
+        self.mic=MicRoutes(self.output,inventory=lambda:self.rows,cables=lambda:self.cables,
+                           headsets=lambda:"",indexes=resolve,alias=lambda ids:{"captureName":"Lummix (fixture)","captureAlias":"ready","aliasError":None})
+        app=web.Application();self.output.install(app);self.mic.install(app)
+        self.client=TestClient(TestServer(app));await self.client.start_server()
+        self.addAsyncCleanup(self.client.close)
+        self.origin={"Origin":"http://127.0.0.1:41835"}
+        self.enterContext(patch("cable_mixer.sd.Stream",side_effect=self.stream))
+        self.streams=[]
+        self.low_failure=False
+
+    def stream(self,**opts):
+        self.calls.append(("open",opts["latency"]))
+        if self.low_failure and opts["latency"]=="low":
+            raise sd.PortAudioError("simulated latency rejection")
+        opened=Stream(**opts);self.streams.append(opened);return opened
+
+    async def get(self):
+        response=await self.client.get("/mix/mic",headers=self.origin)
+        self.assertEqual(response.status,200)
+        return await response.json()
+
+    async def post(self,token,body):
+        response=await self.client.post("/mix/mic",json=body,headers=self.origin|{"X-Lum-Mix-Token":token})
+        return response.status,await response.json()
+
+    async def test_end_to_end_selected_callback_gain_mute_release_without_hardware(self):
+        s=await self.get();t=s["token"]
+        self.assertFalse(s["routeActive"]);self.assertEqual(s["selectedId"],"phys")
+        self.assertEqual((await self.post("x",{"action":"start","id":"phys"}))[0],403)
+        self.assertEqual((await self.post(t,{"action":"select","id":"vr"}))[0],200)
+        self.assertFalse(self.calls)
+        self.assertEqual(MicRoutes(self.output).saved,"vr")
+        self.assertEqual((await self.post(t,{"action":"start","id":"phys"}))[0],409)
+        self.assertFalse(self.calls)
+        code,active=await self.post(t,{"action":"setup","id":"vr"})
+        self.assertEqual(code,200);o=active["ownerToken"]
+        self.assertTrue(active["routeActive"]);self.assertEqual(active["activeId"],"vr")
+        self.assertEqual(self.calls,[("indexes","vr"),("open","low")])
+        stream=self.streams[0]
+        self.assertEqual(stream.opts["device"],(31,71)); self.assertEqual(active["latencyMs"],{"input":11,"output":14})
+        np.testing.assert_allclose(stream.generated(),.15,atol=.0001)
+        self.assertAlmostEqual((await self.get())["micRms"],.15,places=4)
+        h=self.origin|{"X-Lum-Mix-Token":t}
+        for body,value in [({"micGain":175},.2625),({"micMuted":True},0)]:
+            self.assertEqual((await self.client.post("/mix/gains",json=body,headers=h)).status,200)
+            np.testing.assert_allclose(stream.generated(),value,atol=.0001)
+        for action in ({"action":"start","id":"vr"},{"action":"select","id":None},
+                       {"action":"release","ownerToken":"wrong"}):
+            self.assertEqual((await self.post(t,action))[0],409)
+        self.output.tokens[self.origin["Origin"]]=(t,0)
+        self.assertTrue((await self.get())["routeActive"])
+        self.assertEqual((await self.post(t,{"action":"release","ownerToken":o}))[0],200)
+        self.assertTrue(stream.closed);self.assertFalse((await self.get())["routeActive"])
+
+    async def test_disconnected_saved_device_latency_fallback_and_no_auto_resume(self):
+        t=(await self.get())["token"]
+        await self.post(t,{"action":"select","id":"vr"});self.low_failure=True
+        code,active=await self.post(t,{"action":"start","id":"vr"})
+        self.assertEqual((code,active["latencyMode"]),(200,"high"))
+        self.rows.pop()
+        await asyncio.sleep(2.15)
+        s=await self.get();self.assertEqual(s["error"],"input_disconnected")
+        self.assertFalse(s["routeActive"]);self.assertEqual(s["savedId"],"vr");self.assertIsNone(s["selectedId"])
+        self.assertTrue(self.streams[0].closed)
+        self.rows.append(row("vr","renamed microphone","headsetBridge"))
+        self.assertFalse((await self.get())["routeActive"])
+        await self.post(t,{"action":"select","id":None})
+        self.cables.clear()
+        self.assertEqual((await self.post(t,{"action":"start","id":"phys"}))[1]["error"],"cable_unavailable")
+        self.assertEqual(len(self.streams),1)
+
+    def test_device_recommendation_and_exclusion(self):
+        self.assertEqual(recommended(self.rows,None,"pico 4"),"vr")
+        self.assertEqual(recommended(self.rows,None,""),"phys")
+        self.assertEqual(recommended(self.rows,"phys","pico 4"),"phys")
+        self.assertIsNone(capture_kind("Renamed cable",{HW:"VBAudioVACWDM"}))
+        self.assertIsNone(capture_kind("Renamed Steam",{HW:r"ROOT\SteamStreamingMicrophone"}))
+        self.assertEqual(capture_kind("Line microphone",{HW:r"USB\Class_01"}),"physical")
+
+
+if __name__=="__main__":
+    unittest.main()

@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Lummix wrist controls</title>
+<style>
+:root{color-scheme:dark;--surface:#35333b;--ink:#fff;--accent:#c1a4ff;font:600 14px/1.2 "Segoe UI",sans-serif}
+*{box-sizing:border-box}html,body{margin:0;height:100%;background:transparent;color:var(--ink)}
+body{display:grid;place-items:center}main{width:min(100%,420px);height:min(100%,300px);display:grid;grid-template-columns:minmax(0,2fr) minmax(32px,1fr);grid-template-rows:1fr 1fr;background:var(--surface);border-radius:16px;overflow:hidden}
+button,label{display:grid;place-items:center;color:inherit;background:transparent;border:0}
+button{width:100%;height:100%;position:relative;cursor:pointer}button+button{grid-column:1;border-top:1px solid color-mix(in srgb,var(--ink) 20%,transparent)}
+button svg{width:min(55%,52px);height:auto;aspect-ratio:1;display:block;fill:currentColor}
+button[aria-pressed="true"] .slash{display:block}.slash{display:none;stroke:var(--ink);stroke-width:2.7;paint-order:stroke}
+button[aria-pressed="true"]{background:color-mix(in srgb,var(--accent) 22%,transparent)}
+button:disabled,input:disabled{opacity:.45}button:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:-3px}
+label{grid-column:2;grid-row:1/3;border-left:1px solid color-mix(in srgb,var(--ink) 20%,transparent);grid-template-rows:minmax(0,1fr) 1.1em;padding:8px 1px 5px}
+input{writing-mode:vertical-lr;direction:rtl;width:30px;height:100%;min-height:0;margin:0;accent-color:var(--accent);cursor:pointer}
+output{font-size:clamp(9px,5vw,15px);line-height:1;font-variant-numeric:tabular-nums}
+#status{position:absolute;bottom:3px;inset-inline:3px;text-align:center;margin:0;background:var(--surface);color:var(--ink);padding:3px;border-radius:4px}
+</style>
+<main aria-label="Lummix controls">
+<button id="mic" type="button" aria-label="Mute microphone" aria-pressed="false" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="2" width="6" height="13" rx="3"/><path d="M5 11h2a5 5 0 0 0 10 0h2a7 7 0 0 1-6 6.93V21h3v2H8v-2h3v-3.07A7 7 0 0 1 5 11Z"/><path class="slash" d="M2 2l20 20"/></svg></button>
+<button id="music" type="button" aria-label="Mute music in the mix" aria-pressed="false" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 4.7 21 2v14.2c0 2-1.8 3.6-4 3.6s-3.7-1.1-3.7-2.8c0-2 2.5-3.8 5.2-3.4V7L12 8.6v10c0 2-1.9 3.7-4.2 3.7s-3.8-1.2-3.8-3c0-2 2.8-3.7 6-3.2Z"/><path class="slash" d="M2 2l20 20"/></svg></button>
+<label><input id="gain" type="range" min="0" max="200" step="10" value="100" aria-label="Music output gain" disabled><output for="gain">—</output></label>
+</main><p id="status" role="status">Connecting to Lummix…</p>
+<script>
+'use strict';
+const mic=document.querySelector('#mic'), music=document.querySelector('#music'), gain=document.querySelector('#gain');
+const value=document.querySelector('output'), status=document.querySelector('#status'), nested=window.parent!==window;
+let current={}, pending={}, busy=false, dragging=false, lastStep=0, lastBeat=0, online=false;
+function heartbeat(type){if(nested)parent.postMessage({type},'*');}
+window.addEventListener('message',event=>{
+  if(!nested || event.source!==parent || event.data?.type!=='lummix-wrist-theme')return;
+  for(const [key,prop] of [['surface','surface'],['text','ink'],['accent','accent']]){
+    const color=event.data[key];
+    if(typeof color==='string' && /^(#|rgba?\()/i.test(color) && CSS.supports('color',color))
+      document.documentElement.style.setProperty('--'+prop,color);
+  }
+});
+function draw(){
+  const shown={...current,...pending};
+  mic.setAttribute('aria-pressed',String(!!shown.micMuted));
+  music.setAttribute('aria-pressed',String(!!shown.musicMuted));
+  mic.setAttribute('aria-label',shown.micMuted?'Unmute microphone':'Mute microphone');
+  music.setAttribute('aria-label',shown.musicMuted?'Unmute music in the mix':'Mute music in the mix');
+  if(!dragging && Number.isInteger(shown.musicGain))gain.value=String(shown.musicGain);
+  value.textContent=online?gain.value+'%':'—';
+  mic.disabled=music.disabled=gain.disabled=!online;
+  status.hidden=online;if(!online)status.textContent='Open the Lummix desktop app';
+}
+async function request(path,patch){
+  const headers={'X-Lummix-Panel':'1'};
+  const options={headers,cache:'no-store',credentials:'omit',signal:AbortSignal.timeout(3000)};
+  if(patch){headers['Content-Type']='application/json';options.method='POST';options.body=JSON.stringify(patch);}
+  const res=await fetch(path,options);if(!res.ok)throw Error('Mixer unavailable');return res.json();
+}
+async function exchange(){
+  if(busy)return;
+  busy=true;
+  try{
+    do{
+      const patch=pending;pending={};
+      current=await request('/controls',Object.keys(patch).length?patch:null);
+      online=true;draw();
+    }while(Object.keys(pending).length);
+    const now=Date.now();
+    if(now-lastBeat>4000){heartbeat('lummix-wrist-ready');lastBeat=now;}
+    if(now-lastStep>5000){lastStep=now;const data=await request('/step');gain.dataset.step=String(data.step);}
+  }catch{online=false;pending={};lastBeat=0;heartbeat('lummix-wrist-unavailable');draw();}
+  finally{busy=false;if(Object.keys(pending).length)exchange();}
+}
+function send(patch){Object.assign(current,patch);Object.assign(pending,patch);draw();exchange();}
+mic.onclick=()=>send({micMuted:mic.getAttribute('aria-pressed')!=='true'});
+music.onclick=()=>send({musicMuted:music.getAttribute('aria-pressed')!=='true'});
+gain.step='1';
+function snapped(){const step=Number(gain.dataset.step)||10;return Math.max(0,Math.min(200,Math.round(Number(gain.value)/step)*step));}
+gain.onpointerdown=()=>{dragging=true;};
+gain.oninput=()=>{value.textContent=snapped()+'%';};
+gain.onchange=()=>{dragging=false;send({musicGain:snapped()});};
+gain.onpointerup=gain.onpointercancel=gain.onblur=()=>{dragging=false;};
+gain.onkeydown=e=>{
+  if(!['ArrowUp','ArrowRight','ArrowDown','ArrowLeft'].includes(e.key))return;
+  e.preventDefault();const step=Number(gain.dataset.step)||10,direction=['ArrowUp','ArrowRight'].includes(e.key)?1:-1;
+  const base=Number(gain.value)/step;
+  send({musicGain:Math.max(0,Math.min(200,(direction===1?Math.floor(base)+1:Math.ceil(base)-1)*step))});
+};
+setInterval(()=>{if(!document.hidden)exchange();},800);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)exchange();});exchange();
+</script></html>

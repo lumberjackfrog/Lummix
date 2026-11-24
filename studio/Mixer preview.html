@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lummix | Interactive preview</title>
+<style>
+:root{color-scheme:dark;--bg:#10161a;--panel:#192226;--line:#334348;--ink:#f1f5f2;--dim:#a5b8b9;--mint:#9de7cb;--warn:#ffbfac;--blue:#a7bce9}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 "Segoe UI",system-ui,sans-serif}button,input,select{font:inherit}button,select{border:1px solid var(--line);background:#242f34;color:var(--ink);border-radius:7px;padding:10px 13px;font-weight:600}button{cursor:pointer}button:hover:not(:disabled){border-color:var(--mint)}button:disabled{opacity:.45;cursor:default}:focus-visible{outline:3px solid var(--blue);outline-offset:3px}h1,h2,h3,p{margin:0}small,.sub{color:var(--dim)}.frame{max-width:1180px;margin:auto;padding:38px 32px 28px}.mast{display:flex;align-items:center;gap:13px;margin-bottom:28px}.logo{height:40px;width:40px;display:grid;place-items:center;background:var(--mint);color:#081f18;border-radius:11px;font-weight:800;font-size:24px}.mast h1{font-size:24px;letter-spacing:-.035em}.mast small{border:1px solid var(--line);padding:4px 8px;border-radius:5px;margin-left:auto}.layout{display:grid;grid-template-columns:minmax(0,1fr) 282px;gap:26px;align-items:start}.mixer{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}.top,.route,.footer{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:17px 20px}.top h2{font-size:20px}.primary{color:#10241c;background:var(--mint);border-color:var(--mint)}.stop{color:var(--warn)}.route,.footer{background:#151e21;border-block:1px solid var(--line)}.route span{color:var(--mint);font-weight:650}.route small{display:block;margin-top:2px}.status,.link{display:inline-flex;align-items:center;gap:8px;white-space:nowrap}.status:before,.link:before{content:"";width:8px;height:8px;border-radius:50%;background:#8a9b9e}.status[data-live=true]:before,.link[data-live=true]:before{background:var(--mint);box-shadow:0 0 10px #9de7cb50}.channels{display:grid;grid-template-columns:1fr 1fr}.channel{padding:20px}.channel+.channel{border-left:1px solid var(--line)}.head,.fader,.section-title{display:flex;align-items:center;justify-content:space-between;gap:8px}.head h3{font-size:17px}.channel select{width:100%;margin:14px 0;color:var(--dim);font-weight:500}.meter{height:13px;overflow:hidden;border-radius:3px;background:repeating-linear-gradient(90deg,#334347 0 6px,#192226 6px 9px);margin:3px 0 13px}.meter span{display:block;height:100%;width:0;background:repeating-linear-gradient(90deg,var(--mint) 0 6px,#192226 6px 9px);transition:width .16s}.channel:nth-child(2) .meter span{background:repeating-linear-gradient(90deg,var(--blue) 0 6px,#192226 6px 9px)}.fader input{width:100%;accent-color:var(--mint)}output{min-width:37px;text-align:right;font-variant-numeric:tabular-nums}.channel button{width:100%;margin-top:15px}.sources{padding:17px 20px}.section-title{margin-bottom:10px}.tabs{display:flex;gap:5px;flex-wrap:wrap}.tabs button{padding:5px 9px;font-size:13px}.tabs button[aria-selected=true]{color:var(--mint);border-color:#6da897}.media{min-height:67px;display:flex;align-items:center;gap:12px;background:#151e21;border:1px solid var(--line);border-radius:7px;padding:9px}.media .mark{width:38px;height:38px;display:grid;place-items:center;border-radius:6px;background:#2b3c44;color:var(--blue);font-size:21px}.media small{display:block}.media button{margin-left:auto;white-space:nowrap}.media select{max-width:46%;margin-left:auto}.footer{border-bottom:0;flex-wrap:wrap;padding-block:11px}.footer button{padding:6px 9px;font-size:13px}.wrist-area>h2{font-size:17px;margin-bottom:14px}.disconnect{margin-top:9px;font-size:13px;padding:7px 9px}.muted{color:var(--warn)}dialog{background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:12px;max-width:460px;padding:24px;margin:auto}dialog::backdrop{background:#000a}dialog h2{margin-bottom:12px}dialog li{margin-bottom:9px}dialog button{margin-top:8px}.page-note{margin-top:19px;font-size:13px;color:var(--dim)}
+@media(max-width:880px){.layout{grid-template-columns:1fr 244px;gap:18px}.frame{padding-inline:20px}.channel,.top,.route,.sources,.footer{padding-inline:13px}}@media(max-width:690px){.frame{padding:22px 14px}.layout{display:flex;flex-direction:column}.mixer{width:100%}.wrist-area{width:100%;max-width:295px;align-self:center}.top,.route,.section-title{flex-wrap:wrap}.channel{min-width:0}.media{flex-wrap:wrap}.wrist-area>h2{text-align:center}}@media(prefers-reduced-motion:reduce){*{transition:none!important}}
+
+:root[data-theme=light]{color-scheme:light;--bg:#eef2ef;--panel:#fff;--line:#c7d2cd;--ink:#192b25;--dim:#536862;--mint:#236950;--warn:#a23929;--blue:#4266a3}
+[data-theme=light] button,[data-theme=light] select{background:#f0f5f2}
+[data-theme=light] .primary,[data-theme=light] .logo{background:#b3f4d9;color:#112c22}
+[data-theme=light] .route,[data-theme=light] .footer,[data-theme=light] .media{background:#f5f8f5}
+[data-theme=light] .meter{background:repeating-linear-gradient(90deg,#cad7d0 0 6px,#eef4f0 6px 9px)}
+[data-theme=light] .meter span{background:repeating-linear-gradient(90deg,var(--mint) 0 6px,#eef4f0 6px 9px)}
+[data-theme=light] .channel:nth-child(2) .meter span{background:repeating-linear-gradient(90deg,var(--blue) 0 6px,#eef4f0 6px 9px)}
+[data-theme=light] .media .mark{background:#daece7}
+.mode-tools{display:flex;gap:7px;flex-wrap:wrap}.mode-tools button{padding:6px 9px;font-size:13px}.toggle{display:block;margin:12px 0}.toggle input{accent-color:var(--mint)}
+.layout.desktop-only{grid-template-columns:minmax(0,1fr)}.layout.desktop-only .wrist-area{display:none}
+.layout.background .channels,.layout.background .route{display:none}
+.tray-summary{padding:16px 20px;background:var(--panel)}[hidden]{display:none!important}
+button:active:not(:disabled){outline-offset:2px}
+
+/* The installed vendor page keeps its native size and aspect ratio inside the preview. */
+.layout{grid-template-columns:minmax(0,1fr) minmax(370px,43%)}
+.wrist-area{min-width:0}
+.wrist-title{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:12px}
+.wrist-title h2{font-size:17px;margin:0}.wrist-title small{font-size:11px}
+.wrist-view{position:relative;min-height:120px;overflow:hidden;border-radius:10px;background:linear-gradient(148deg,#2d2930,#191923);box-shadow:inset 0 0 0 1px #ffffff30}
+.wrist-view iframe{position:absolute;top:0;left:0;width:100%;height:100%;border:0}
+.wrist-detail{display:flex;gap:6px;justify-content:space-between;flex-wrap:wrap;margin-top:12px;color:var(--dim);font-size:12px}
+.wrist-detail #wrist-state{font-weight:700;color:var(--ink)}
+.wrist-area>.sub{font-size:12px;margin:11px 0 0}
+.wrist-error{color:#f5e5ed;padding:16px;position:relative;z-index:1}
+@media(max-width:880px){.layout{grid-template-columns:minmax(0,1fr) minmax(305px,43%)}}
+@media(max-width:690px){.wrist-area{max-width:490px;align-self:stretch}}
+</style>
+<style>
+.ducking{margin:0 20px 14px;border-top:1px solid var(--line);padding-top:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.ducking label{font-weight:600}.ducking input{accent-color:var(--mint)}.ducking button{font-size:13px;padding:5px 10px}.ducking small{min-width:8ch;font-variant-numeric:tabular-nums}
+.layout.background .ducking{margin-top:6px}
+.tray-summary button{margin-top:8px}
+.mixer{box-shadow:0 10px 40px #162b2609}.channel button,.primary,.footer button,.tray-summary button{transition:background-color .13s,border-color .13s,box-shadow .13s}
+@media(prefers-reduced-motion:reduce){.channel button,.primary,.footer button,.tray-summary button{transition:none}}
+</style>
+<style>button,button:hover,button:focus-visible,button:active{translate:none!important;scale:none!important;transform:none!important;animation:none!important;transition:none!important}</style>
+<link rel="stylesheet" href="desktop-theme.css">
+<link rel="stylesheet" href="mixer-console.css?v=transport-only">
+<link rel="stylesheet" href="mixer-visualizer.css">
+<link rel="stylesheet" href="mixer-settings.css?v=single-setup4">
+<link rel="stylesheet" href="transport-layout.css?v=window-chrome1">
+<link rel="stylesheet" href="global-pulse.css">
+<script src="global-pulse.js?v=media2" defer></script>
+<script src="mixer-visualizer.js" defer></script>
+<script src="output-gains.js?v=media2" defer></script>
+<script src="mixer-console.js?v=single-setup4" defer></script>
+<script src="spotify-ducking.js?v=mix-bus3" defer></script>
+<script src="idle-art.js" defer></script>
+<script src="live-theme.js" defer></script>
+<script src="studio-preferences.js?v=xs-addon1" defer></script>
+</head>
+<body><main class="frame">
+<div class="layout" id="layout">
+<section class="mixer" aria-labelledby="desk-title">
+<header class="top studio-header">
+  <div class="studio-brand">
+    <span class="studio-mark" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
+    <h1 id="desk-title">Lummix</h1>
+    <span id="window-drag" aria-hidden="true" hidden></span>
+  </div>
+  <button type="button" id="settings" title="Settings" aria-label="Settings">Settings</button>
+  <div id="window-controls" role="group" aria-label="Window controls" hidden>
+    <button type="button" id="window-minimize" aria-label="Minimize window" title="Minimize window"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10h12"/></svg></button>
+    <button type="button" id="window-maximize" aria-label="Maximize window" title="Maximize window"><svg viewBox="0 0 20 20" aria-hidden="true"><path class="window-expand" d="M4.5 4.5h11v11h-11z"/><path class="window-restore" d="M4 7.5h8.5V16H4z M7.5 5.5V4h8.5v8.5h-1.5"/></svg></button>
+    <button type="button" id="window-fullscreen" aria-label="Enter fullscreen" title="Enter fullscreen" aria-pressed="false"><svg viewBox="0 0 20 20" aria-hidden="true"><path class="window-expand" d="M3 7V3h4m6 0h4v4m0 6v4h-4m-6 0H3v-4"/><path class="window-restore" d="M7 3v4H3m14 0h-4V3m0 14v-4h4M3 13h4v4"/></svg></button>
+    <button type="button" id="window-close" aria-label="Close window" title="Close window"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10m0-10L5 15"/></svg></button>
+  </div>
+</header>
+<div id="lum-visualizer"></div>
+<section class="transport-panel" aria-label="Spotify playback controls">
+<div class="transport-buttons">
+<button type="button" id="media-previous" aria-label="Previous track" title="Previous track" disabled><i class="glyph" data-glyph="previous"></i></button>
+<button type="button" id="media-back" aria-label="Back 15 seconds" title="Back 15 seconds" disabled><i class="glyph" data-glyph="back15"></i></button>
+<button type="button" id="spotify-play" aria-label="Play Spotify" title="Play Spotify" disabled><i class="glyph" data-glyph="play"></i></button>
+<button type="button" id="media-forward" aria-label="Forward 15 seconds" title="Forward 15 seconds" disabled><i class="glyph" data-glyph="forward15"></i></button>
+<button type="button" id="media-next" aria-label="Next track" title="Next track" disabled><i class="glyph" data-glyph="next"></i></button>
+<button type="button" id="media-stop" aria-label="Stop Spotify playback" title="Stop playback" disabled><i class="glyph" data-glyph="stop"></i></button>
+</div>
+</section>
+<div class="connections"><button id="connect-spotify" class="connect-card" type="button"><i data-glyph="music"></i><span><strong>Connect Spotify</strong><small id="spotify-summary">Checking player…</small><small id="transport-message" role="status"></small></span><i data-glyph="arrow"></i></button>
+<button id="set-up-lummix" class="connect-card" type="button" aria-label="Set up Lummix" aria-describedby="headset-summary"><i data-glyph="headset"></i><span><strong id="quick-mix-label">Set up Lummix</strong><small id="headset-summary">Start mic + Spotify</small><small id="gain-feedback" role="status"></small></span></button></div>
+<div class="channels">
+<section class="channel"><div class="head"><h3>Microphone</h3><small id="mic-state">Ready</small></div>
+<div class="strip-content"><label class="fader channel-fader"><input id="mic" aria-label="Microphone output gain" aria-orientation="vertical" type="range" min="0" max="200" value="100"><span class="fader-scale" aria-hidden="true"></span><output id="mic-read" for="mic">100%</output></label>
+<div class="strip-actions"><div class="meter" aria-hidden="true"><span id="mic-meter"></span></div><button id="mic-mute" class="pad" aria-pressed="false">Mute mic</button></div></div></section>
+<section class="channel"><div class="head"><h3>Spotify</h3><small id="music-state">Ready</small></div>
+<div class="strip-content"><label class="fader channel-fader"><input id="music" aria-label="Music output gain" aria-orientation="vertical" type="range" min="0" max="200" value="100"><span class="fader-scale" aria-hidden="true"></span><output id="music-read" for="music">100%</output></label>
+<div class="strip-actions"><div class="meter" aria-hidden="true"><span id="music-meter"></span></div><button type="button" id="personal-volume" class="pad" aria-pressed="false">Mute Spotify</button></div></div></section>
+</div>
+<section class="ducking" aria-label="Voice ducking"><div class="duck-caption"><label for="duck">Lower music while I talk</label><button type="button" id="duck-enable" role="switch" aria-label="Lower music while I talk" aria-checked="false"><span class="switch-light" aria-hidden="true"></span><span id="duck-switch-word">Off</span></button></div><div class="duck-depth"><input id="duck" type="range" min="1" max="24" value="12" step="1" aria-label="Music reduction depth"><output id="duck-value" for="duck">−12 dB</output></div><small id="duck-state" class="duck-feedback" role="status">350 ms fade down · 1 s return</small></section>
+
+<span id="route-state" hidden></span>
+</section>
+<aside class="wrist-area" id="wrist-preview">
+  <div class="wrist-title"><h2>XSOverlay wrist</h2><small>Installed UI preview</small></div>
+  <div class="wrist-view" id="wrist-view">
+    <iframe id="native-wrist" src="http://127.0.0.1:41836/preview" title="Installed XSOverlay wrist with adjacent Lummix toggle" allow="autoplay 'none'"></iframe>
+    <p class="wrist-error" id="wrist-error" hidden>The local wrist renderer is unavailable.</p>
+  </div>
+  <div class="wrist-detail"><span id="wrist-state">Mic ready</span><span id="wrist-summary">Output stopped</span></div>
+  <span id="link" hidden></span>
+</aside>
+</div>
+</main>
+<dialog class="studio-sheet" id="settings-dialog" aria-labelledby="settings-title">
+<header class="sheet-head"><span class="sheet-icon" aria-hidden="true"><i data-glyph="settings"></i></span><h2 id="settings-title">Settings</h2><form method="dialog"><button class="close-settings sheet-close" aria-label="Close settings">×</button></form></header>
+<div class="sheet-scroll"><div class="sheet-grid settings-body">
+<section class="settings-group"><h3>Audio</h3>
+<div id="settings-mic-controls"></div><details id="settings-device-details"><summary>Virtual mic &amp; device details</summary><div id="settings-device-panels"></div></details>
+<div class="setting-line"><span>Lower music while I talk</span><button type="button" id="duck-live" aria-pressed="false">Ducking</button></div><small id="duck-live-state" role="status">Waiting for mixer audio.</small>
+<label class="setting-line"><span>Button sounds</span><input type="checkbox" id="sounds" role="switch"></label>
+<label class="setting-line"><span>Slider snapping</span><select id="slider-snapping" aria-describedby="snap-hint"><option value="0">Smooth (off)</option><option value="5">5 percentage points</option><option value="10" selected>10 percentage points</option><option value="20">20 percentage points</option></select></label>
+<small id="snap-hint">Applies to all Lummix sliders. Ducking snaps across its range, rounded to the nearest dB.</small>
+</section>
+<section class="settings-group" id="xs-addon-panel" aria-labelledby="xs-addon-title">
+<h3 id="xs-addon-title">XSOverlay</h3>
+<strong id="xs-addon-name">Lummix wrist add-on</strong>
+<p id="xs-addon-state" role="status">Checking installation…</p>
+<p id="xs-addon-instruction" hidden></p>
+<div class="sheet-actions">
+<button type="button" id="xs-addon-install" hidden>Install add-on</button>
+<button type="button" id="xs-addon-remove" hidden>Remove add-on</button>
+<button type="button" id="xs-addon-refresh">Check again</button>
+</div>
+</section>
+<section class="settings-group"><h3>Appearance</h3>
+<label class="setting-line"><span>Show wrist preview</span><input type="checkbox" id="companion" role="switch" checked></label>
+<label class="setting-line"><span>Global pulse</span><input type="checkbox" id="global-pulse" role="switch" aria-describedby="global-pulse-note"></label>
+<small id="global-pulse-note">Gently lights desktop and wrist edges with local Spotify playback.</small>
+<label class="setting-line"><span>Follow XSOverlay colors</span><input type="checkbox" id="follow-theme" role="switch" checked></label>
+<small id="theme-status" role="status">Saved XSOverlay theme</small>
+<label class="setting-line" id="manual-appearance" hidden><span>Dark desktop</span><input type="checkbox" id="dark" role="switch" checked></label>
+<label class="setting-line"><span>Background</span><select id="idle-style"><option value="album">Album artwork</option><option value="custom">My image</option></select></label>
+<label class="art-upload" id="background-picker" hidden>Background image<input type="file" id="idle-image" accept="image/png,image/jpeg,image/webp"></label><small id="art-message" role="status"></small>
+</section>
+<section class="settings-group" id="app-settings"><h3>Application</h3>
+<div class="setting-line" id="fullscreen-row" hidden><span>Display</span><button type="button" id="app-fullscreen">Toggle fullscreen</button></div>
+<label class="setting-line" id="tray-row" hidden><span>Close to system tray</span><input type="checkbox" id="close-to-tray" role="switch" checked></label>
+<div class="setting-line" id="exit-row" hidden><span>Quit Lummix completely</span><button type="button" id="app-exit">Exit app</button></div>
+<small id="preferences-status" role="status" hidden></small>
+</section>
+<details class="settings-lab"><summary>Preview tools</summary><div><label>Mic input <select id="input"><option>Headset microphone</option><option>USB microphone</option><option value="lost">Simulate device loss</option></select></label><button id="talk" type="button" aria-pressed="false">Test speech fade</button><button id="monitor" aria-pressed="false">Monitor test</button><button id="connection">Simulate disconnect</button><button id="details">Mix details</button></div></details>
+</div></div>
+</dialog>
+<dialog class="studio-sheet connect-dialog" id="mic-connect-dialog" aria-labelledby="mic-connect-title">
+<header class="sheet-head"><span class="sheet-icon" aria-hidden="true"><i data-glyph="mic"></i></span><h2 id="mic-connect-title">Lummix mix</h2><form method="dialog"><button class="close-settings sheet-close" aria-label="Close mix status">×</button></form></header>
+<div class="sheet-scroll"><div class="sheet-grid" id="mix-progress-panels">
+<section class="sheet-panel sheet-feature" id="mic-input-panel"><h3>Microphone + Spotify</h3>
+<label for="mic-recording-source">Microphone input</label>
+<select id="mic-recording-source" disabled><option value="">Auto detect</option></select>
+<p id="mic-source-note"></p>
+<div class="sheet-actions mic-live-actions"><button type="button" id="mic-live-action" disabled>Start mix</button><span id="mic-live-status" role="status">Checking the audio route…</span></div>
+<p id="mix-spotify-status" role="status">Start the mix to send your microphone and available Spotify audio to VRChat.</p>
+<p id="mic-live-error" role="status" hidden></p>
+</section>
+<section class="sheet-panel" id="cable-panel"><h3>VRChat microphone</h3>
+<p class="sheet-result" id="mic-status-title" role="status">Checking VB-CABLE…</p>
+<p id="cable-status"></p>
+<div id="mic-route" hidden><p id="mic-route-note">In VRChat → Settings → Audio &amp; Voice → Microphone, choose <strong id="mic-endpoint"></strong>.</p></div>
+<div class="sheet-actions"><button id="redetect" type="button">Check again</button></div></section>
+<section class="sheet-panel" id="headset-panel"><h3>Your VR headset</h3><p class="sheet-secondary" id="detect-result" role="status">Checking for a connected headset…</p>
+<div id="device-list"></div><p id="headset-context"></p><details id="device-evidence"><summary>Windows &amp; SteamVR details</summary><div id="device-details"></div></details></section>
+<p class="sheet-credit">VB-CABLE is donationware by <a href="https://vb-audio.com/Cable/" target="_blank" rel="noopener">VB-Audio</a>. <a href="https://vb-audio.com/Services/licensing.htm" target="_blank" rel="noopener">Support VB-CABLE</a></p>
+</div></div></dialog>
+<dialog class="studio-sheet connect-dialog" id="player-connect-dialog" aria-labelledby="player-connect-title">
+<header class="sheet-head"><span class="sheet-icon" aria-hidden="true"><i data-glyph="music"></i></span><h2 id="player-connect-title">Spotify</h2><form method="dialog"><button class="close-settings sheet-close" aria-label="Close spotify">×</button></form></header>
+<div class="sheet-scroll"><div class="sheet-grid">
+<section class="sheet-panel sheet-feature"><h3>Personal player</h3><p class="sheet-result" id="player-result" role="status">Looking for your player…</p>
+<div class="sheet-actions"><button type="button" id="personal-transport" hidden>Play</button>
+<a id="open-player" href="spotify:" hidden>Open Spotify</a><a id="download-player" href="https://www.spotify.com/download/windows/" target="_blank" rel="noopener" hidden>Download Spotify for Windows</a>
+<button type="button" id="retry-player">Check again</button></div></section>
+<section class="sheet-panel" id="player-connection" hidden><h3>Connection</h3><dl class="sheet-facts"><dt>Windows player</dt><dd id="player-edition"></dd><dt>Playback</dt><dd id="player-playback-state"></dd></dl></section></div></div></dialog>
+<dialog class="studio-sheet" id="details-dialog" aria-labelledby="details-title">
+<header class="sheet-head"><span class="sheet-icon" aria-hidden="true"><i data-glyph="settings"></i></span><h2 id="details-title">Mix details</h2><form method="dialog"><button class="close-settings sheet-close" aria-label="Close mix details">×</button></form></header>
+<div class="sheet-scroll"><div class="sheet-grid"><section class="sheet-panel sheet-feature"><h3>Current mix</h3><p class="sheet-result" id="details-state" role="status"></p></section>
+<section class="sheet-panel"><h3>Audio routing</h3><p>The faders set the mic and Spotify levels sent to VRChat. The player volume sets your own listening level.</p></section></div></div></dialog>
+<script>
+// The existing design board hot-reloads this frame. Upgrade its older three-view shell once.
+if(location.href==='about:srcdoc' && parent.location.origin==='http://127.0.0.1:41835' && parent.document.querySelector('[data-view="background"]') && !sessionStorage.getItem('lum-two-view-shell')){
+  sessionStorage.setItem('lum-two-view-shell','1');
+  parent.location.reload();
+}
+document.documentElement.dataset.theme = 'light';
+const get = id => document.getElementById(id);
+const snapPreference=get('slider-snapping'), snapKey='lum-pref-slider-snap';
+function validSnap(raw){return raw!==null && ['0','5','10','20'].includes(raw)?Number(raw):10;}
+try{snapPreference.value=String(validSnap(localStorage.getItem(snapKey)));}catch{}
+function sliderStops(min,max,isDepth){
+  const preference=Number(snapPreference.value);
+  const increment=isDepth && preference ? (max-min)*preference/100 : (preference||1);
+  const stops=[];
+  for(let offset=0;offset<max-min;offset+=increment){
+    const stop=Math.round(min+offset);
+    if(stops.at(-1)!==stop)stops.push(stop);
+  }
+  if(stops.at(-1)!==max)stops.push(max);
+  return stops;
+}
+function nearestStop(value,stops){
+  return stops.reduce((best,stop)=>Math.abs(value-stop)<=Math.abs(value-best)?stop:best);
+}
+function snapPercent(value,max){return nearestStop(value,sliderStops(0,max,false));}
+function bindSlider(input){
+  // Native step=any preserves off-grid saved values until the user moves the control.
+  input.step='any';
+  const min=Number(input.min),max=Number(input.max),isDepth=input.id==='duck';
+  const stops=()=>sliderStops(min,max,isDepth);
+  input.addEventListener('input',()=>{input.value=nearestStop(input.valueAsNumber,stops());},true);
+  input.addEventListener('keydown',event=>{
+    if(event.altKey||event.ctrlKey||event.metaKey)return;
+    const v=input.valueAsNumber, points=stops();
+    const up=points.find(stop=>stop>v)??max, down=points.findLast(stop=>stop<v)??min;
+    const page=(max-min)/10;
+    const values={ArrowRight:up,ArrowUp:up,ArrowLeft:down,ArrowDown:down,Home:min,End:max,
+      PageUp:Math.max(up,nearestStop(v+page,points)),PageDown:Math.min(down,nearestStop(v-page,points))};
+    if(!Object.hasOwn(values,event.key))return;
+    event.preventDefault();
+    const next=values[event.key];
+    if(next===v)return;
+    input.value=next;
+    for(const name of ['input','change'])input.dispatchEvent(new Event(name,{bubbles:true}));
+  });
+}
+for(const id of ['mic','music','duck'])bindSlider(get(id));
+snapPreference.addEventListener('change',()=>{
+  try{localStorage.setItem(snapKey,snapPreference.value);}catch{}
+  sendWristState();
+});
+window.addEventListener('storage',event=>{
+  if(event.key===snapKey){snapPreference.value=String(validSnap(event.newValue));sendWristState();}
+});
+const state = {active:false, micMuted:false, spotifyMuted:false, duckEnabled:false, linked:true, monitor:false};
+const usable = () => (state.linked || !get('companion').checked) && get('input').value !== 'lost';
+const write = (id, text) => { const el=get(id); (el.querySelector(':scope > .button-label')||el).textContent = text; };
+for(const name of ['sounds','follow-theme','dark','companion']){
+  const control=get(name);
+  try{
+    const saved=localStorage.getItem('lum-pref-'+name);
+    if(saved==='true'||saved==='false')control.checked=saved==='true';
+  }catch{}
+  control.addEventListener('change',()=>{try{localStorage.setItem('lum-pref-'+name,String(control.checked));}catch{}});
+}
+const fade={value:0,from:0,target:0,start:0,span:0,frame:0};
+function paintFade(time){
+  const t=Math.max(0,Math.min(1,(time-fade.start)/Math.max(1,fade.span)));
+  fade.value=fade.from+(fade.target-fade.from)*t*t*(3-2*t);
+  const volume=Number(get('music').value)*Math.pow(10,-fade.value/20);
+  if(state.active && !state.spotifyMuted)get('music-meter').style.width=Math.min(100,volume)+'%';
+  get('duck-state').dataset.reduction=fade.value.toFixed(2);
+  if(t<1)fade.frame=requestAnimationFrame(paintFade);
+  else fade.frame=0;
+}
+function updateFade(target,audible){
+  const depth=Number(get('duck').value);
+  write('duck-state',state.duckNote || (state.demoSpeaking?'Test speech active':'350 ms fade down · 1 s return'));
+  if(!audible){cancelAnimationFrame(fade.frame);Object.assign(fade,{value:0,from:0,target:0,frame:0});get('duck-state').dataset.reduction='0';return;}
+  if(target===fade.target)return;
+  const down=target>fade.value;
+  cancelAnimationFrame(fade.frame);
+  Object.assign(fade,{from:fade.value,target,start:performance.now()+(down?0:450),span:down?350:1000});
+  fade.frame=requestAnimationFrame(paintFade);
+}
+function render() {
+  const ready = usable(), active = state.active && ready;
+  const voice = active && !state.micMuted;
+  const song = active && !state.spotifyMuted;
+  const depth=Number(get('duck').value);
+  get('duck-enable').setAttribute('aria-checked',String(state.duckEnabled));
+  write('duck-switch-word',state.duckEnabled?'On':'Off');
+  get('talk').disabled=Boolean(state.liveDuck || !ready || state.micMuted || state.spotifyMuted || Number(get('mic').value)===0);
+  if(get('talk').disabled)state.demoSpeaking=false;
+  get('talk').setAttribute('aria-pressed',String(Boolean(state.demoSpeaking)));
+  write('talk',state.demoSpeaking?'End test speech':'Test speech fade');
+  const depthLabel=depth?'−'+depth+' dB':'Off';
+  write('duck-value',depthLabel);
+  get('duck').setAttribute('aria-valuetext',depth?depth+' decibels of reduction':'Off');
+  get('duck').style.setProperty('--depth',((depth-1)/23*100)+'%');
+  updateFade(state.duckEnabled && voice && song && state.demoSpeaking ? depth : 0,active && song);
+  const status = ready ? active ? 'Preview running' : 'Preview stopped' : get('input').value === 'lost' ? 'Mic disconnected' : 'Link disconnected';
+  write('route-state', status);
+  const liveStatus=state.nativeMixActive===true?'Mix running':state.nativeMixActive===false?'Mix stopped':'Checking mix';
+  write('details-state', liveStatus + ' · ' + (state.micMuted ? 'Mic muted' : 'Mic unmuted') + ' · ' + (state.spotifyMuted ? 'Music output muted' : state.spotifyRouteLabel||'Checking Spotify'));
+  if(!get('follow-theme').checked || !document.documentElement.dataset.theme) document.documentElement.dataset.theme = get('dark').checked ? 'dark' : 'light';
+  get('layout').classList.toggle('desktop-only', !get('companion').checked);
+  get('route-state').dataset.live = active;
+  write('mic-state', state.micMuted ? 'Output muted' : 'Output gain');
+  write('music-state', state.spotifyMuted ? 'Output muted' : (state.spotifyRouteLabel||'Output gain'));
+  write('wrist-state', !ready ? 'Output safe' : state.micMuted ? 'Mic muted' : voice ? 'Mic live' : 'Mic ready');
+  write('wrist-summary', song ? 'Music continues in the mix' : status);
+  write('link', state.linked ? 'Linked to desktop' : 'Desktop link offline');
+  get('link').dataset.live = state.linked;
+  { const id='mic-mute';
+    write(id, state.micMuted ? 'Unmute mic' : 'Mute mic');
+    get(id).setAttribute('aria-pressed', state.micMuted);
+    get(id).classList.toggle('muted', state.micMuted);
+    get(id).disabled = !ready;
+  }
+  for (const [id, sounding] of [['mic',voice],['music',song]]) {
+    const val = Number(get(id).value);
+    write(id+'-read', val+'%');
+    const shownLevel = id==='music'?val*Math.pow(10,-fade.value/20):val;
+    const shown=sounding?shownLevel:state.monitor && !active && ready && (id==='mic'?!state.micMuted:!state.spotifyMuted)?val*.72:0;
+    get(id+'-meter').style.width = Math.min(100,shown)+'%';
+    get(id).setAttribute('aria-valuetext',val===100?'100 percent, unity gain':val+' percent output gain');
+  }
+  sendWristState();
+  write('monitor',state.monitor ? 'End monitor test' : 'Monitor test');
+  get('monitor').setAttribute('aria-pressed',state.monitor);
+  get('monitor').disabled = !ready;
+  write('connection',state.linked ? 'Simulate disconnect' : 'Reconnect wrist');
+  write('personal-volume',state.spotifyMuted?'Unmute Spotify':'Mute Spotify');get('personal-volume').setAttribute('aria-pressed',String(state.spotifyMuted));
+  for(const channel of ['mic','music'])get(channel).style.setProperty('--level',(Number(get(channel).value)/2)+'%');
+  window.LumVisualizer?.setState({suspended:document.documentElement.dataset.boardView==='wrist',enabled:true});
+}
+let soundContext;
+function cue() {
+  if (!get('sounds').checked) return;
+  soundContext ??= new AudioContext();
+  void soundContext.resume();
+  const oscillator = soundContext.createOscillator(), gain = soundContext.createGain();
+  const now = soundContext.currentTime;
+  oscillator.frequency.setValueAtTime(540, now);
+  oscillator.frequency.exponentialRampToValueAtTime(370, now+.045);
+  gain.gain.setValueAtTime(.025, now);
+  gain.gain.exponentialRampToValueAtTime(.0001, now+.05);
+  oscillator.connect(gain).connect(soundContext.destination);
+  oscillator.onended = () => { oscillator.disconnect(); gain.disconnect(); };
+  oscillator.start(now); oscillator.stop(now+.055);
+}
+function act(id, change) {
+  get(id).addEventListener('click', () => {change(); render(); cue();});
+}
+act('talk',()=>{state.demoSpeaking=!state.demoSpeaking;state.active=state.demoSpeaking;});
+get('duck').addEventListener('input',render);
+act('monitor',()=>state.monitor=!state.monitor);
+act('connection',()=>{state.linked=!state.linked;state.active=false;state.monitor=false;});
+act('settings',()=>get('settings-dialog').showModal());
+act('details',()=>get('details-dialog').showModal());
+for (const id of ['dark', 'companion', 'sounds']) get(id).addEventListener('change',()=>{if (!usable()) {state.active=false;state.monitor=false;} render();cue();});
+get('input').addEventListener('change',()=>{state.active=false;state.monitor=false;render();});
+for(const id of ['mic','music']) get(id).addEventListener('input',render);
+const wristOrigin = 'http://127.0.0.1:41836';
+const nativeWrist = get('native-wrist');
+let wristReady = false;
+function sendWristState() {
+  nativeWrist.contentWindow?.postMessage({
+    type:'lum-wrist-state', micMuted:state.micMuted, musicMuted:state.spotifyMuted, musicTarget:'spotify',musicLevel:Number(get('music').value),
+    snapPoints:Number(snapPreference.value),linked:state.linked && usable(), outputActive:state.active && usable()
+  }, wristOrigin);
+}
+function sizeWrist() {
+  const panel = get('wrist-view');
+  const scale = panel.clientWidth/740;
+  if (scale<=0) return;
+  panel.style.height = Math.ceil(378*scale)+'px';
+}
+new ResizeObserver(sizeWrist).observe(get('wrist-view'));
+nativeWrist.addEventListener('load',sendWristState);
+window.addEventListener('message',event=>{
+  if(event.origin!==wristOrigin || event.source!==nativeWrist.contentWindow)return;
+  if(event.data?.type==='lum-wrist-ready'){
+    wristReady=true;
+    get('wrist-error').hidden=true;
+    sendWristState();
+  } else if(event.data?.type==='lum-wrist-music-level' && state.linked && usable() && Number.isInteger(event.data.value) && event.data.value>=0 && event.data.value<=200){
+    window.LumOutputGains?.set({musicGain:snapPercent(event.data.value,200)});
+  } else if(event.data?.type==='lum-wrist-toggle-music' && state.linked && usable()){
+    window.LumOutputGains?.set({musicMuted:!state.spotifyMuted});cue();
+  } else if(event.data?.type==='lum-wrist-toggle-mic' && state.linked && usable()){
+    window.LumOutputGains?.set({micMuted:!state.micMuted});
+    cue();
+  }
+});
+setTimeout(()=>{if(!wristReady)get('wrist-error').hidden=false;},2500);
+render();
+</script>
+</body></html>
