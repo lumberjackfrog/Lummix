@@ -2,9 +2,11 @@
 
 Lummix gives VRChat one microphone for your voice and music. It mixes your Windows microphone with your local Spotify player. Two faders set what reaches the game, and the music fades under your voice when you speak. Mixing runs on your PC without an AI service or a Lummix account.
 
-**[Download Lummix 1.0.3 for Windows x64](https://github.com/lumberjackfrog/Lummix/releases/download/v1.0.3/Lummix.Setup.exe)** · [Prerelease notes and SHA-256](https://github.com/lumberjackfrog/Lummix/releases/tag/v1.0.3)
+| Desktop mixer | XSOverlay wrist preview |
+| --- | --- |
+| [![Lummix desktop mixer with album artwork and separate microphone and Spotify faders](docs/mixer.png)](docs/mixer.png) | [![XSOverlay music drawer with mic mute, music mute, and the music gain slider beside the clock](docs/xsoverlay-wrist.png)](docs/xsoverlay-wrist.png) |
 
-![The Lummix desktop mixer, with album artwork, playback controls and separate microphone and music faders](docs/mixer.png)
+**[Download Lummix 1.0.3 for Windows x64](https://github.com/lumberjackfrog/Lummix/releases/download/v1.0.3/Lummix.Setup.exe)** · [Prerelease notes and SHA-256](https://github.com/lumberjackfrog/Lummix/releases/tag/v1.0.3)
 
 ## Start a mix
 
