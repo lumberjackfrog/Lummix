@@ -265,6 +265,57 @@ jobs:
             'Each uninstall preserved app settings, gains, and their backup byte for byte. The final cycle restored a corrupt primary settings file from backup.' >> $env:GITHUB_STEP_SUMMARY
           }
 
+      - name: Open the mixer from the Desktop and Start menu
+        if: inputs.upgrade_from != ''
+        shell: python
+        run: |
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import time
+
+          import psutil
+          import win32con
+          import win32gui
+          import win32process
+          from win32com.shell import shell, shellcon
+
+          local = Path(os.environ["LOCALAPPDATA"])
+          version = os.environ["RELEASE_TAG"].removeprefix("v")
+          exe = local / "Programs" / "Lummix" / version / "Lummix.exe"
+          setup = Path(os.environ["RUNNER_TEMP"]) / "lummix-release" / "Lummix.Setup.exe"
+          links = {"Desktop": (shellcon.CSIDL_DESKTOPDIRECTORY, "Lummix.lnk"),
+                   "Start": (shellcon.CSIDL_PROGRAMS, "Lummix/Lummix.lnk")}
+          subprocess.run([str(setup), "/S"], check=True, timeout=120)
+          msi, = (local / "Lummix" / "Installer").glob("*/Lummix.msi")
+          launched = {}
+          try:
+              for location, (folder, filename) in links.items():
+                  shortcut = Path(shell.SHGetFolderPath(0, folder, None, 0)) / filename
+                  os.startfile(shortcut)
+                  deadline = time.monotonic() + 45
+                  while time.monotonic() < deadline:
+                      hwnd = win32gui.FindWindow("LumMixStudioHost", None)
+                      if hwnd and win32gui.IsWindowVisible(hwnd):
+                          break
+                      time.sleep(.2)
+                  else:
+                      raise RuntimeError(f"{location} shortcut did not open a visible mixer window")
+                  pid = win32process.GetWindowThreadProcessId(hwnd)[1]
+                  process = psutil.Process(pid)
+                  assert Path(process.exe()) == exe and win32gui.GetWindowText(hwnd) == "Lummix"
+                  width, height = win32gui.GetClientRect(hwnd)[2:]
+                  assert width > 0 and height > 0
+                  launched[location] = {"pid": pid, "visibleClient": [width, height]}
+                  win32gui.PostMessage(hwnd, win32con.WM_COMMAND, 0x7140, 0)
+                  process.wait(30)
+              report = Path(".build/qa/shortcut-launch.json")
+              report.write_text(json.dumps(launched, indent=2) + "\n", encoding="utf-8")
+              print(launched)
+          finally:
+              subprocess.run(["msiexec.exe", "/x", msi.parent.name, "/qn", "/norestart"], check=True, timeout=120)
+
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always() && steps.package.outputs.runtime == 'true'
         with:
@@ -278,3 +329,4 @@ jobs:
             .build/qa/msi-uninstall-*.log
             .build/qa/first-driver.*
             .build/qa/upgrade.json
+            .build/qa/shortcut-launch.json
