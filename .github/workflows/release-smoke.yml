@@ -269,6 +269,7 @@ jobs:
         if: inputs.upgrade_from != ''
         shell: python
         run: |
+          import ctypes
           import json
           import os
           from pathlib import Path
@@ -281,6 +282,8 @@ jobs:
           import win32process
           from win32com.shell import shell, shellcon
 
+          user32 = ctypes.windll.user32
+          user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
           local = Path(os.environ["LOCALAPPDATA"])
           version = os.environ["RELEASE_TAG"].removeprefix("v")
           exe = local / "Programs" / "Lummix" / version / "Lummix.exe"
@@ -298,7 +301,10 @@ jobs:
                   while time.monotonic() < deadline:
                       hwnd = win32gui.FindWindow("LumMixStudioHost", None)
                       if hwnd and win32gui.IsWindowVisible(hwnd):
-                          break
+                          classes = []
+                          win32gui.EnumChildWindows(hwnd, lambda child, _: classes.append(win32gui.GetClassName(child)) or True, None)
+                          if any("Chrome" in name for name in classes):
+                              break
                       time.sleep(.2)
                   else:
                       raise RuntimeError(f"{location} shortcut did not open a visible mixer window")
@@ -307,12 +313,19 @@ jobs:
                   assert Path(process.exe()) == exe and win32gui.GetWindowText(hwnd) == "Lummix"
                   width, height = win32gui.GetClientRect(hwnd)[2:]
                   assert width > 0 and height > 0
-                  launched[location] = {"pid": pid, "visibleClient": [width, height]}
+                  left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+                  launched[location] = {"pid": pid, "visibleClient": [width, height],
+                                        "nativeWindow": [right - left, bottom - top],
+                                        "maximized": bool(user32.IsZoomed(hwnd)), "webViewAttached": True}
                   win32gui.PostMessage(hwnd, win32con.WM_COMMAND, 0x7140, 0)
-                  process.wait(30)
+                  assert process.wait(30) == 0, f"{location} mixer exited with an error"
               report = Path(".build/qa/shortcut-launch.json")
               report.write_text(json.dumps(launched, indent=2) + "\n", encoding="utf-8")
               print(launched)
+              for window in launched.values():
+                  if not window["maximized"]:
+                      assert window["visibleClient"] == window["nativeWindow"], "The restored window has a frame inset"
+              assert launched["Desktop"]["visibleClient"] == launched["Start"]["visibleClient"], "Reopening changed the mixer size"
           finally:
               subprocess.run(["msiexec.exe", "/x", msi.parent.name, "/qn", "/norestart"], check=True, timeout=120)
 
