@@ -19,6 +19,9 @@ on:
         description: Exercise first-time VB-CABLE installation on the disposable Windows VM
         type: boolean
         default: false
+      upgrade_from:
+        description: Optional earlier published version to install and configure before upgrading
+        type: string
 
 permissions:
   contents: read
@@ -30,6 +33,7 @@ jobs:
     timeout-minutes: 20
     env:
       RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      UPGRADE_FROM: ${{ inputs.upgrade_from }}
     defaults:
       run:
         shell: pwsh
@@ -48,6 +52,13 @@ jobs:
           $setup = Join-Path $dest 'Lummix.Setup.exe'
           $ref = "refs/tags/$env:RELEASE_TAG"
           $source = 'Published release'
+          function Get-PublishedChecksum([string]$Tag, [string]$Folder) {
+            gh release download $Tag --repo $env:GITHUB_REPOSITORY --dir $Folder --pattern Lummix.Setup.exe --pattern SHA256SUMS.txt
+            if ($LASTEXITCODE -ne 0) { throw "Could not download the installer and checksum for $Tag." }
+            $line = [IO.File]::ReadAllText((Join-Path $Folder 'SHA256SUMS.txt'))
+            if ($line -cnotmatch '\A([a-fA-F0-9]{64})  Lummix\.Setup\.exe(?:\r?\n)?\z') { throw "Invalid checksum file for $Tag." }
+            return $Matches[1]
+          }
           if ($env:BUILD_RUN) {
             if ($env:BUILD_RUN -cnotmatch '\A[0-9]+\z' -or $env:CANDIDATE_SHA256 -cnotmatch '\A[0-9a-fA-F]{64}\z') {
               throw 'Provide a Windows installer workflow run ID and its installer SHA-256.'
@@ -66,14 +77,22 @@ jobs:
             $source = "Candidate from build run $env:BUILD_RUN"
           } else {
             if ($env:CANDIDATE_SHA256) { throw 'A candidate SHA-256 requires a build run ID.' }
-            gh release download $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --dir $dest --pattern Lummix.Setup.exe --pattern SHA256SUMS.txt
-            if ($LASTEXITCODE -ne 0) { throw 'Could not download both release assets.' }
-            $line = [IO.File]::ReadAllText((Join-Path $dest 'SHA256SUMS.txt'))
-            if ($line -cnotmatch '\A([a-fA-F0-9]{64})  Lummix\.Setup\.exe(?:\r?\n)?\z') { throw 'Unexpected checksum file format.' }
-            $expected = $Matches[1]
+            $expected = Get-PublishedChecksum $env:RELEASE_TAG $dest
           }
           $actual = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash
           if ($actual -ne $expected) { throw 'The tested installer does not match the expected SHA-256.' }
+          if ($env:UPGRADE_FROM) {
+            if ($env:UPGRADE_FROM -cnotmatch '\Av[0-9]+\.[0-9]+\.[0-9]+\z') { throw 'Invalid upgrade baseline tag.' }
+            $priorVersion = [version]$env:UPGRADE_FROM.Substring(1)
+            if ($priorVersion -lt [version]'1.0.5' -or $priorVersion -ge $version -or $version -lt [version]'1.0.6') {
+              throw 'The upgrade test needs an earlier release with saved-profile support and a target of 1.0.6 or later.'
+            }
+            $priorDir = New-Item -ItemType Directory -Path (Join-Path $env:RUNNER_TEMP 'lummix-prior')
+            $priorHash = Get-PublishedChecksum $env:UPGRADE_FROM $priorDir.FullName
+            if ((Get-FileHash -LiteralPath (Join-Path $priorDir.FullName 'Lummix.Setup.exe')).Hash -ne $priorHash) {
+              throw 'The previous installer did not match its published SHA-256.'
+            }
+          }
           $signature = (Get-AuthenticodeSignature -LiteralPath $setup).Status
           "$source $env:RELEASE_TAG — SHA-256 $actual — Authenticode $signature" >> $env:GITHUB_STEP_SUMMARY
           "ref=$ref" >> $env:GITHUB_OUTPUT
@@ -83,6 +102,13 @@ jobs:
         if: steps.package.outputs.runtime == 'true'
         with:
           ref: ${{ steps.package.outputs.ref }}
+          persist-credentials: false
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        if: inputs.upgrade_from != ''
+        with:
+          ref: refs/tags/${{ inputs.upgrade_from }}
+          path: prior-source
+          sparse-checkout: windows
           persist-credentials: false
       - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
         if: steps.package.outputs.runtime == 'true'
@@ -110,10 +136,10 @@ jobs:
           $cacheDir = Join-Path $env:LOCALAPPDATA 'Lummix/Installer'
           if (Test-Path -LiteralPath (@($exe, $cacheDir) + $shortcuts) | Where-Object { $_ }) { throw 'Expected a fresh runner.' }
           $shell = New-Object -ComObject WScript.Shell
-          function Assert-Shortcut([string]$Path) {
+          function Assert-Shortcut([string]$Path, [string]$ExpectedTarget = $exe) {
             if (!(Test-Path -LiteralPath $Path -PathType Leaf)) { throw "Shortcut missing: $Path" }
             $target = $shell.CreateShortcut($Path).TargetPath
-            if ($target -ne $exe) { throw "Unexpected shortcut target: $target" }
+            if ($target -ne $ExpectedTarget) { throw "Unexpected shortcut target: $target" }
           }
           function Test-InstalledRuntime {
             if ($env:VERIFY_RUNTIME -eq 'true') {
@@ -145,6 +171,27 @@ jobs:
             $profile = Join-Path $env:LOCALAPPDATA 'LumMix'
             $phases = @('seed', 'preserved', 'recover')
           }
+          if ($env:UPGRADE_FROM) {
+            $priorVersion = $env:UPGRADE_FROM.Substring(1)
+            $priorExe = Join-Path $env:LOCALAPPDATA "Programs/Lummix/$priorVersion/Lummix.exe"
+            $priorSetup = Join-Path $env:RUNNER_TEMP 'lummix-prior/Lummix.Setup.exe'
+            $priorInstall = Start-Process -FilePath $priorSetup -ArgumentList '/S' -WindowStyle Hidden -Wait -PassThru
+            if ($priorInstall.ExitCode -ne 0 -or !(Test-Path -LiteralPath $priorExe)) { throw 'Previous install failed.' }
+            foreach ($path in $shortcuts) { Assert-Shortcut $path $priorExe }
+            $priorCache = @(Get-ChildItem -LiteralPath $cacheDir -Filter Lummix.msi -File -Recurse)
+            if ($priorCache.Count -ne 1) { throw 'Expected one previous MSI.' }
+            $priorProduct = [guid]::ParseExact($priorCache[0].Directory.Name,'B').ToString('B')
+            $msi = New-Object -ComObject WindowsInstaller.Installer
+            if ($msi.ProductState($priorProduct) -ne 5) { throw 'Previous MSI is not registered.' }
+            # Check each packaged helper against the capabilities for its own tag.
+            $targetImports = $env:PYTHONPATH
+            $env:PYTHONPATH = "$(Join-Path $PWD 'prior-source/windows');$(Join-Path $PWD 'prior-source/windows/runtime')"
+            try {
+              python -B windows/tests/test_runtime.py --installed-exe $priorExe --profile-phase seed
+              if ($LASTEXITCODE -ne 0) { throw 'Previous release could not save the test profile.' }
+            } finally { $env:PYTHONPATH = $targetImports }
+            $phases[0] = 'preserved'
+          }
           for ($cycle = 1; $cycle -le $cycles; $cycle++) {
             $result = Start-Process -FilePath $setup -ArgumentList '/S' -WindowStyle Hidden -Wait -PassThru
             if ($result.ExitCode -ne 0) { throw "Setup cycle $cycle exited $($result.ExitCode)." }
@@ -158,6 +205,12 @@ jobs:
               if ($cycle -eq 1) {
                 $firstExeHash = $exeHash
                 $firstProduct = $product
+                if ($env:UPGRADE_FROM) {
+                  if ((Test-Path -LiteralPath $priorExe) -or (Test-Path -LiteralPath $priorCache[0].FullName) -or
+                      $msi.ProductState($priorProduct) -eq 5 -or $msi.ProductState($product) -ne 5) {
+                    throw 'The upgrade did not replace the previous Windows Installer product.'
+                  }
+                }
                 if ($desktop) {
                   Remove-Item -LiteralPath $desktop
                   $repair = Start-Process -FilePath $setup -ArgumentList '/S' -WindowStyle Hidden -Wait -PassThru
@@ -173,6 +226,12 @@ jobs:
                 python -B windows/tests/test_runtime.py --installed-exe $exe --profile-phase $phase
                 if ($LASTEXITCODE -ne 0) { throw "Settings check failed in cycle $cycle." }
                 $saved = Get-Content -Raw -LiteralPath (Join-Path $qa "profile-$phase.json") | ConvertFrom-Json -AsHashtable
+                if ($env:UPGRADE_FROM -and $cycle -eq 1) {
+                  @{from=$env:UPGRADE_FROM; to=$env:RELEASE_TAG; shortcuts=$shortcuts.Count; previousProductRemoved=$true;
+                    preferences=$saved.preferences; gains=$saved.gains; launcherSha256=$exeHash} |
+                    ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $qa 'upgrade.json')
+                  "In-place upgrade from $env:UPGRADE_FROM preserved the saved mixer values and replaced both shortcuts." >> $env:GITHUB_STEP_SUMMARY
+                }
                 if ($cycle -eq $cycles -and $env:FIRST_DRIVER -eq 'true') {
                   Start-Service AudioEndpointBuilder
                   Start-Service Audiosrv
@@ -218,3 +277,4 @@ jobs:
             .build/qa/profile-*.log
             .build/qa/msi-uninstall-*.log
             .build/qa/first-driver.*
+            .build/qa/upgrade.json
