@@ -5,7 +5,6 @@ from http.client import HTTPConnection
 import json
 import os
 from pathlib import Path
-import re
 import socket
 import subprocess
 import sys
@@ -15,7 +14,7 @@ import time
 ORIGIN = "http://127.0.0.1:41835"
 SERVICES = {"studio":41835, "wrist":41836, "spotify":41838}
 MEDIA_CAPABILITIES = {"spotify-session-peak-v1", "mic-route-v1", "mixer-duck-v1", "studio-preferences-v1",
-                      "mix-setup-alias-v1", "spotify-detection-v2", "spotify-window-artwork-v1"}
+                      "mix-setup-alias-v1", "cable-restart-v1", "spotify-detection-v2", "spotify-window-artwork-v1"}
 if sys.getwindowsversion().build >= 20348:
     MEDIA_CAPABILITIES.add("spotify-process-mix-v1")
 MEDIA_CONFLICT = ("Port 41838 is already in use by an incompatible service. Close any earlier Lummix "
@@ -42,12 +41,9 @@ def matches(name,port):
             return b"design-board.js" in request(port,"/")[2] and b'id="lum-visualizer"' in request(port,"/Mixer%20preview.html")[2]
         if name=="wrist":
             code,_,body=request(port,"/lummix-health")
-            if code==200:
-                health=json.loads(body)
-                return health.get("service")=="lummix-wrist" and health.get("ready") is True
-            code,headers,_=request(port,"/preview")
-            return (code==302 and headers.get("Location")=="/vendor/_UI/Default/Wrist.html" and
-                    re.fullmatch(rb"\d+-\d+",request(port,"/revision")[2]) is not None)
+            health=json.loads(body) if code==200 else {}
+            return (health.get("service")=="lummix-wrist" and health.get("ready") is True
+                    and health.get("cableRestartSupport") is True)
         code,headers,body=request(port,"/lummix-health",headers={"Origin":ORIGIN},limit=4096)
         if code!=200 or headers.get("Access-Control-Allow-Origin")!=ORIGIN: return False
         health=json.loads(body)
@@ -65,6 +61,8 @@ def ensure(name,port,helper,owned):
     if listening(port):
         if matches(name,port): return
         if name=="spotify": raise RuntimeError(MEDIA_CONFLICT)
+        if name=="wrist":
+            raise RuntimeError("Port 41836 is in use. Close any older Lummix wrist preview or setup helper and reopen Lummix.")
         raise RuntimeError(f"Lummix could not identify the service on port {port}. Close the conflicting app or try again after startup.")
     if not helper.is_file():
         raise RuntimeError("Extract the complete Lummix ZIP into one folder and open Lummix again.")

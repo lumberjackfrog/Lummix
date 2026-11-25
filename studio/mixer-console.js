@@ -123,14 +123,14 @@
   const retryable=new Set(['missing','failed','cancelled']);
   const cableStates={
     checking:['Checking VB-CABLE…',''],
-    missing:['VB-CABLE needs to be installed','Windows will ask for permission to install the signed VB-Audio driver.'],
+    missing:['VB-CABLE needs to be installed','First-time setup needs Windows administrator approval and a restart.'],
     preparing:['Preparing VB-CABLE','Verifying the original VB-Audio installer.'],
-    'awaiting-windows':['Waiting for Windows','If Windows asks, approve the VB-Audio driver installation.'],
+    'awaiting-windows':['Waiting for Windows','Approve the Windows administrator prompt for the signed VB-Audio installer.'],
     cancelled:['Setup was cancelled','Choose Retry setup when you’re ready to approve the Windows prompt.'],
     failed:['Setup could not finish','Choose Retry setup to run the verified installer again.'],
-    partial:['The cable is only partly available','Open Windows Sound settings and check that both VB-CABLE endpoints are enabled. Then check again.'],
+    partial:['The cable is only partly available','If you just installed VB-CABLE, restart Windows. Otherwise, check that both VB-CABLE endpoints are enabled in Windows Sound.'],
     unavailable:['Couldn’t check VB-CABLE','Reopen Lummix or check again.'],
-    'restart-needed':['Restart Windows to finish','After restarting, reopen Lummix and choose Set up mic.']
+    'restart-needed':['Restart Windows to finish','After restarting, reopen Lummix from Start and choose Set up Lummix.']
   };
   let scanVersion=0;
   const micPanelOpen=()=>el('mic-connect-dialog').open||el('settings-dialog').open;
@@ -173,6 +173,7 @@
     stop_before_select:'Stop the live mic before changing its recording device.',
     refresh_mix_settings:'Check the mic again before continuing.',
     cable_unavailable:'Finish virtual microphone setup before starting.',
+    cable_restart_needed:'Restart Windows, then reopen Lummix and choose Set up Lummix.',
     no_input:'Connect a recording device, then check again.',
     selected_input_unavailable:'Reconnect your saved mic or choose another input.',
     input_disconnected:'The recording device disconnected. Reconnect it and start the mic again.',

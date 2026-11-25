@@ -4,7 +4,19 @@ const canvas = byId('canvas');
 const previewFile = 'Mixer%20preview.html';
 const storeKey = 'lum-mix-board-v1';
 const installed = new URLSearchParams(location.search).get('app') === '1' && !!window.chrome?.webview;
-if (installed) document.querySelector('body > header').style.display='none';
+if (installed) {
+  document.querySelector('body > header').style.display='none';
+  const grips = byId('resize-grips');
+  const bridge = window.chrome.webview;
+  grips.addEventListener('pointerdown', event => {
+    if (!event.isTrusted || !event.isPrimary || event.button !== 0) return;
+    event.preventDefault();
+    bridge.postMessage('resize-' + event.target.dataset.edge);
+  });
+  bridge.addEventListener('message', ({data}) => {
+    if (data?.type === 'lummix-window-state') grips.hidden = data.maximized || data.fullscreen;
+  });
+}
 const baseConfig = { view: 'desktop', size: '100%', palette: 'xso', swatch: '#7a0aa6' };
 let config = { ...baseConfig };
 if(!installed) try { Object.assign(config, JSON.parse(localStorage.getItem(storeKey))); } catch {}

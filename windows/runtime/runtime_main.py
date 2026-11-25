@@ -95,7 +95,7 @@ def start_wrist(bind, linked):
             route = urlsplit(self.path).path
             if route == "/lummix-health":
                 self.send_bytes(json.dumps({"service":"lummix-wrist","ready":True,
-                                           "vendorAvailable":bool(installed)}).encode(), "application/json")
+                                           "vendorAvailable":bool(installed),"cableRestartSupport":True}).encode(), "application/json")
                 return
             if route == "/preview" and not installed:
                 self.send_bytes(b'<!doctype html><meta charset="utf-8"><style>html{color-scheme:dark;font:16px system-ui}body{padding:1em}</style><p>Wrist preview requires XSOverlay on this PC.</p>', "text/html")

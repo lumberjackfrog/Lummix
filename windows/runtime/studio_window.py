@@ -17,8 +17,11 @@ import win32con as wc
 import win32gui as gui
 
 CLASS = "LumMixStudioHost"
-OPEN, FULL, EXIT, MINIMIZE, MAXIMIZE, DRAG = 0x7120, 0x7130, 0x7140, 0x7150, 0x7160, 0x7170
+OPEN, FULL, EXIT, MINIMIZE, MAXIMIZE, DRAG, RESIZE = 0x7120, 0x7130, 0x7140, 0x7150, 0x7160, 0x7170, 0x7180
 WINDOW_COMMANDS = {"fullscreen": FULL, "exit": EXIT, "minimize": MINIMIZE, "maximize": MAXIMIZE, "drag": DRAG}
+RESIZE_COMMANDS = {"resize-nw": wc.HTTOPLEFT, "resize-n": wc.HTTOP, "resize-ne": wc.HTTOPRIGHT,
+                   "resize-w": wc.HTLEFT, "resize-e": wc.HTRIGHT,
+                   "resize-sw": wc.HTBOTTOMLEFT, "resize-s": wc.HTBOTTOM, "resize-se": wc.HTBOTTOMRIGHT}
 TRAY = wc.WM_APP + 290
 READY = wc.WM_APP + 291
 FINISH_EXIT = wc.WM_APP + 292
@@ -124,6 +127,11 @@ class StudioWindow:
         style=wc.WS_POPUP | (wc.WS_OVERLAPPEDWINDOW & ~wc.WS_CAPTION) | wc.WS_CLIPCHILDREN
         self.hwnd=gui.CreateWindowEx(0,CLASS,"Lummix",style,
             *pos,0,0,wcinfo.hInstance,None)
+        if sys.getwindowsversion().build >= 22000:
+            # Ask the compositor to omit the accent outline on active and inactive windows.
+            no_border = wt.DWORD(0xfffffffe)  # DWMWA_COLOR_NONE
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                wt.HWND(self.hwnd), 34, ctypes.byref(no_border), ctypes.sizeof(no_border))  # DWMWA_BORDER_COLOR
         gui.SendMessage(self.hwnd,wc.WM_SETICON,0,self.small_icon)
         self.normal=gui.GetWindowRect(self.hwnd)
         menu=gui.GetSystemMenu(self.hwnd,False)
@@ -201,6 +209,7 @@ class StudioWindow:
         if self.exit_nonce and command=="released:"+self.exit_nonce:
             gui.PostMessage(self.hwnd,FINISH_EXIT,0,0)
         elif command in WINDOW_COMMANDS:gui.PostMessage(self.hwnd,wc.WM_COMMAND,WINDOW_COMMANDS[command],0)
+        elif command in RESIZE_COMMANDS:gui.PostMessage(self.hwnd,wc.WM_COMMAND,RESIZE,RESIZE_COMMANDS[command])
         elif command=="close":gui.PostMessage(self.hwnd,wc.WM_CLOSE,0,0)
         elif command=="window-state":self.send_window_state(force=True)
         return 0
@@ -219,8 +228,7 @@ class StudioWindow:
     def resize(self):
         if self.controller:
             _,_,width,height=gui.GetClientRect(self.hwnd)
-            edge=self.edge_size(self.hwnd)
-            self.controller.Bounds=wt.RECT(edge,edge,max(edge,width-edge),max(edge,height-edge))
+            self.controller.Bounds=wt.RECT(0,0,width,height)
 
     def send_window_state(self, force=False):
         state=(bool(USER.IsZoomed(self.hwnd)),self.full)
@@ -356,6 +364,13 @@ class StudioWindow:
             elif not self.full and USER.GetAsyncKeyState(wc.VK_LBUTTON)&0x8000:
                 USER.ReleaseCapture()
                 gui.PostMessage(hwnd,wc.WM_NCLBUTTONDOWN,wc.HTCAPTION,USER.GetMessagePos())
+            return 0
+        if msg==wc.WM_COMMAND and wp==RESIZE:
+            # WebView2 owns the client pixels, including the transparent resize targets.
+            # Let Windows track the actual drag for snapping and multi-monitor DPI.
+            if self.edge_size(hwnd) and lp in RESIZE_COMMANDS.values() and USER.GetAsyncKeyState(wc.VK_LBUTTON) & 0x8000:
+                USER.ReleaseCapture()
+                gui.PostMessage(hwnd, wc.WM_NCLBUTTONDOWN, lp, USER.GetMessagePos())
             return 0
         if msg==CAN_REOPEN:return int(not self.exiting)
         if msg==FINISH_EXIT or (msg==wc.WM_TIMER and wp==EXIT_TIMER):

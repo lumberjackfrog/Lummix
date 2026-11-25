@@ -23,14 +23,14 @@ SIZE = 1324680
 BUSY = {"checking","preparing","awaiting-windows"}
 MESSAGES = {
     "ready":"VB-Audio’s signed VB-CABLE playback and microphone endpoints are ready.",
-    "missing":"VB-CABLE is available to set up on this PC.",
-    "partial":"An existing VB-CABLE installation was found without a verified active pair. Check Windows Sound or restart Windows.",
+    "missing":"Installing VB-CABLE requires Windows administrator approval and a restart.",
+    "partial":"An existing VB-CABLE installation was found without a verified active pair. If you just installed it, restart Windows.",
     "unavailable":"Windows could not verify the audio driver and both endpoints.",
     "preparing":"Preparing and verifying the original VB-Audio package.",
-    "awaiting-windows":"Complete the Windows approval prompt if shown. Windows is setting up VB-CABLE.",
+    "awaiting-windows":"Approve the Windows administrator prompt for VB-Audio to continue.",
     "cancelled":"Windows approval was declined.",
     "failed":"Setup could not be verified. No additional installation was attempted.",
-    "restart-needed":"Setup finished. Restart Windows, then reopen Lum Mix to check the endpoints.",
+    "restart-needed":"Restart Windows, then reopen Lummix and choose Set up Lummix to start the mix.",
 }
 
 
@@ -51,6 +51,37 @@ def powershell(resource, folder=None, mode=None, wait=15):
                           capture_output=True,text=True,env=env,timeout=wait,creationflags=subprocess.CREATE_NO_WINDOW)
 
 
+def restart_file():
+    return Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "Lummix" / "vb-cable-restart"
+
+
+def restart_pending(boot, path=None, *, clear_expired=False):
+    marker = path or restart_file()
+    try:
+        pending_boot = json.loads(marker.read_text(encoding="ascii"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(pending_boot, dict) or not (pending_boot.get("event") or type(pending_boot.get("ticks")) is int):
+        return False
+    boot = boot or {}
+    if pending_boot.get("event") and boot.get("event"):
+        same_boot = pending_boot["event"] == boot["event"]
+    else:
+        old_ticks, new_ticks = pending_boot.get("ticks"), boot.get("ticks")
+        # Use the OS's recorded boot time if either boot event was inaccessible.
+        # Allow up to two seconds of variance from clock correction on the WMI path.
+        same_boot = (type(old_ticks) is not int or type(new_ticks) is not int
+                     or abs(new_ticks - old_ticks) <= 20_000_000)
+    if same_boot:
+        return True
+    if clear_expired:
+        try:
+            marker.unlink(missing_ok=True)
+        except OSError:
+            pass
+    return False
+
+
 def inspect_pair():
     try:
         result=powershell("cable_setup_status.ps1")
@@ -61,7 +92,7 @@ def inspect_pair():
             return shape("unavailable")
         if found["state"]=="ready" and not all(found.get(k) is True for k in ("signed","capture","render")):
             return shape("partial")
-        info=shape(found["state"])
+        info=shape(found["state"]) | {"boot": found.get("boot")}
         if "endpointIds" in found:
             from cable_alias import labels
             info.update(labels(found["endpointIds"]))
@@ -131,8 +162,10 @@ def launch(folder):
 
 
 class Controller:
-    def __init__(self,probe=inspect_pair,prepare=package,install=launch,delay=time.sleep):
-        self.probe,self.prepare,self.install,self.delay=probe,prepare,install,delay
+    def __init__(self,probe=inspect_pair,prepare=package,install=launch,marker=None):
+        self.probe,self.prepare,self.install=probe,prepare,install
+        self.marker=marker
+        self.needs_restart=False
         self.lock=threading.RLock()
         self.value=None
         self.checked=0.0
@@ -143,11 +176,18 @@ class Controller:
             self.value=value
             self.checked=time.monotonic()
 
+    def _detect(self):
+        current = self.probe().copy()
+        boot = current.pop("boot", None)
+        if self.needs_restart or restart_pending(boot, self.marker, clear_expired=True):
+            current = shape("restart-needed")
+        return current, boot
+
     def status(self):
         with self.lock:
             if self.value is None or (self.value["state"] not in BUSY and time.monotonic()-self.checked>8):
-                current=self.probe()
-                if self.value and current["state"] in ("missing","partial") and self.value["state"] in ("failed","cancelled","restart-needed"):
+                current,_=self._detect()
+                if self.value and current["state"] in ("missing","partial") and self.value["state"] in ("failed","cancelled"):
                     current=self.value
                 self._set(current)
             return dict(self.value)
@@ -156,42 +196,53 @@ class Controller:
         with self.lock:
             if self.thread and self.thread.is_alive():
                 return self.status()
-            current=self.probe()
+            current,_=self._detect()
             if current["state"]!="missing":
                 self._set(current)
-            elif self.value and self.value["state"]=="restart-needed":
-                return dict(self.value)
             else:
                 self._set(shape("preparing"))
-                self.thread=threading.Thread(target=self._work,daemon=True)
+                # Keep the original package and finish recording the result if the app closes.
+                self.thread=threading.Thread(target=self._work,daemon=False)
                 self.thread.start()
             return dict(self.value)
 
     def _work(self):
+        marker = self.marker or restart_file()
+        marked = False
         try:
             with self.prepare() as folder:
-                current=self.probe()
+                current,boot=self._detect()
                 if current["state"]!="missing":
                     self._set(current)
                     return
+                if boot and any(boot.values()):
+                    marker.parent.mkdir(parents=True, exist_ok=True)
+                    with tempfile.NamedTemporaryFile(mode="w", encoding="ascii", dir=marker.parent, delete=False) as temporary:
+                        json.dump(boot, temporary)
+                    temp_path = Path(temporary.name)
+                    try:
+                        temp_path.replace(marker)
+                    finally:
+                        temp_path.unlink(missing_ok=True)
+                    marked = True
                 self._set(shape("awaiting-windows"))
                 code=self.install(folder)
                 if code==1223:
                     self._set(shape("cancelled"))
                     return
-                if code not in (0,3010,1641):
-                    current=self.probe()
-                    self._set(current if current["ready"] else shape("failed"))
+                if code not in (0,3010,1641) and not self.probe()["ready"]:
+                    self._set(shape("failed"))
                     return
-            for _ in range(5):
-                self.delay(1)
-                current=self.probe()
-                if current["ready"]:
-                    self._set(current)
-                    return
-            self._set(shape("restart-needed"))
+                self.needs_restart = True
+                self._set(shape("restart-needed"))
         except Exception:
             self._set(shape("failed"))
+        finally:
+            if marked and not self.needs_restart:
+                try:
+                    marker.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
 
 _controller=Controller()

@@ -41,4 +41,18 @@ $state = if ($ports.Render -and $ports.Capture) { 'ready' }
          else { 'missing' }
 if ($endpointIds.Capture.Count -ne 1) { $captureName = $null; $captureShort = $null }
 $captureAlias = if ($captureShort -ceq 'Lummix') { 'ready' } elseif ($captureName) { 'original' } else { 'unavailable' }
-[pscustomobject]@{ captureName=$captureName; captureAlias=$captureAlias; state=$state; render=[bool]$ports.Render; capture=[bool]$ports.Capture; signed=[bool]$signed.Count; endpointIds=$endpointIds } | ConvertTo-Json -Compress
+# The recorded boot event is stable even when the clock is corrected later.
+try {
+    $boot = Get-WinEvent -FilterHashtable @{LogName='System';ProviderName='Microsoft-Windows-Kernel-General';Id=12} -MaxEvents 1 -ErrorAction Stop
+} catch {
+    $boot = $null
+}
+$bootId = if ($boot) { "$($boot.RecordId):$($boot.TimeCreated.ToUniversalTime().Ticks)" } else { $null }
+try {
+    $os = Get-CimInstance Win32_OperatingSystem -Property LastBootUpTime -ErrorAction Stop
+} catch {
+    $os = $null
+}
+$bootTicks = if ($os.LastBootUpTime) { $os.LastBootUpTime.ToUniversalTime().Ticks } else { $null }
+$bootInfo = @{ event=$bootId; ticks=$bootTicks }
+[pscustomobject]@{ captureName=$captureName; captureAlias=$captureAlias; state=$state; render=[bool]$ports.Render; capture=[bool]$ports.Capture; signed=[bool]$signed.Count; endpointIds=$endpointIds; boot=$bootInfo } | ConvertTo-Json -Compress

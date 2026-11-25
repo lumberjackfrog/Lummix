@@ -21,9 +21,11 @@ class RouteError(Exception):
 
 
 def signed_cables():
-    from cable_setup import powershell
+    from cable_setup import powershell, restart_pending
     result = powershell("cable_setup_status.ps1")
     obj = json.loads(result.stdout) if result.returncode == 0 else {}
+    if restart_pending(obj.get("boot")):
+        return {"error": "cable_restart_needed"}
     if obj.get("signed") and obj.get("state") == "ready":
         from cable_alias import labels
         ids=obj.get("endpointIds",{})
@@ -188,7 +190,7 @@ class MicRoutes:
                     aliasError=self.alias_error,inputs=rows, mode="manual" if self.saved else "auto",savedId=self.saved,
                     recommendedId=rec,selectedId=selected,activeId=self.active if running else None,
                     routeActive=running,cableReady=bool(self.cable_ids.get("Render") and self.cable_ids.get("Capture")),
-                    error=error or self.error or ("selected_input_unavailable" if self.saved and not selected else None),
+                    error=error or self.error or self.cable_ids.get("error") or ("selected_input_unavailable" if self.saved and not selected else None),
                     token=token,latencyMode=mixer.latency_mode if running else None,
                     latencyMs=dict(input=round(latency[0]*1000,1),output=round(latency[1]*1000,1)) if latency else None,
                     micRms=min(1,max(0,float(mixer.mic_rms))) if running else None)
@@ -245,7 +247,7 @@ class MicRoutes:
         if body["id"]!=state["selectedId"]:
             raise RouteError("selection_changed")
         if not state["cableReady"]:
-            raise RouteError("cable_unavailable")
+            raise RouteError(self.cable_ids.get("error", "cable_unavailable"))
         rename=await asyncio.to_thread(self.alias,self.cable_ids)
         self.cable_ids.update(captureName=rename["captureName"],captureAlias=rename["captureAlias"])
         self.alias_error=rename["aliasError"]

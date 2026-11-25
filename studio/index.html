@@ -3,6 +3,17 @@
 <title>Lummix</title>
 <style>
 *{box-sizing:border-box}body{margin:0;font:14px/1.4 "Segoe UI",system-ui,sans-serif;color:#f8f5fb;background:#151318}header{display:flex;align-items:center;gap:18px;flex-wrap:wrap;padding:11px clamp(14px,3vw,38px);border-bottom:1px solid #434147}strong{font-size:15px}nav{display:flex;gap:4px}button,select{font:inherit;cursor:pointer;color:inherit;border:1px solid #514e58;border-radius:8px;background:#252329;padding:6px 10px}nav button{border-color:transparent;background:transparent}button[aria-pressed=true]{background:#f1e5ff;color:#351b4a}button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid #cc9bff;outline-offset:2px}details{margin-left:auto}summary{cursor:pointer;padding:6px 0}#adjust{position:absolute;z-index:2;right:10px;background:#262329;border:1px solid #58515f;border-radius:12px;padding:16px;box-shadow:0 12px 32px #0005;display:grid;gap:12px;width:min(330px,95vw)}#adjust label{display:flex;align-items:center;justify-content:space-between;gap:12px}#adjust p{margin:0;color:#d6cddc;font-size:13px}iframe{display:block;width:100%;height:calc(100dvh - 58px);min-height:480px;border:0;background:#eef2ef}output{font-size:12px;color:#d6cddc}input[type=color]{width:46px;height:28px;cursor:pointer}body{height:100dvh;display:flex;flex-direction:column}iframe{height:auto;flex:1;min-height:0}@media(max-width:660px){header{gap:4px 10px;padding:8px 12px}nav{order:3;width:100%;justify-content:flex-start}nav button{padding:5px 10px}output{display:none}}
+.resize-grips { --grip:5px; position:fixed; inset:0; z-index:5; pointer-events:none; }
+.resize-grips[hidden] { display:none; }
+.resize-grips i { position:absolute; pointer-events:auto; touch-action:none; }
+.resize-grips [data-edge*="n"] { top:0; height:var(--grip); }
+.resize-grips [data-edge*="s"] { bottom:0; height:var(--grip); }
+.resize-grips [data-edge*="w"] { left:0; width:var(--grip); }
+.resize-grips [data-edge*="e"] { right:0; width:var(--grip); }
+.resize-grips :is([data-edge="n"],[data-edge="s"]) { inset-inline:var(--grip); cursor:ns-resize; }
+.resize-grips :is([data-edge="e"],[data-edge="w"]) { inset-block:var(--grip); cursor:ew-resize; }
+.resize-grips :is([data-edge="nw"],[data-edge="se"]) { cursor:nwse-resize; }
+.resize-grips :is([data-edge="ne"],[data-edge="sw"]) { cursor:nesw-resize; }
 </style></head><body><header><strong>Lummix design board</strong>
 <nav aria-label="Preview surface"><button type="button" data-view="desktop" aria-pressed="true">Desktop</button><button type="button" data-view="wrist" aria-pressed="false">Wrist</button></nav>
 <output id="updates" role="status">Opening preview…</output>
@@ -14,4 +25,9 @@
 <button id="reset" type="button">Reset design controls</button>
 </section></details></header>
 <iframe id="canvas" title="Interactive Lummix design"></iframe>
+<div id="resize-grips" class="resize-grips" aria-hidden="true" hidden>
+  <i data-edge="nw"></i><i data-edge="n"></i><i data-edge="ne"></i>
+  <i data-edge="w"></i><i data-edge="e"></i>
+  <i data-edge="sw"></i><i data-edge="s"></i><i data-edge="se"></i>
+</div>
 <script src="design-board.js"></script></body></html>

@@ -23,6 +23,8 @@ class LocalServices:
         self.preferences = {}
         self.saved_mic = None
         self.started = False
+        self.cable_state = "ready"
+        self.cable_installs = 0
         self.addon_state = "installable"
         self.addon_commands = []
         self.commands = []
@@ -30,10 +32,12 @@ class LocalServices:
 
     def mic(self):
         selected = self.saved_mic or "desk"
+        ready = self.cable_state == "ready"
         return dict(inputs=self.devices, mode="manual" if self.saved_mic else "auto",
                     savedId=self.saved_mic, recommendedId="desk", selectedId=selected,
                     activeId=selected if self.started else None, routeActive=self.started,
-                    cableReady=True, captureName=MIC_NAME, captureAlias="ready", token=TOKEN,
+                    cableReady=ready, captureName=MIC_NAME if ready else None, captureAlias="ready", token=TOKEN,
+                    error="cable_restart_needed" if self.cable_state=="restart-needed" else None,
                     spotifyCapture="waiting_spotify" if self.started else "off")
 
     def intercept(self, route):
@@ -41,7 +45,7 @@ class LocalServices:
         url = urlsplit(request.url)
         path = unquote(url.path)
         headers = {"Access-Control-Allow-Origin": ORIGIN, "Access-Control-Allow-Methods":"GET, POST, OPTIONS",
-                   "Access-Control-Allow-Headers":"Content-Type, X-Lum-Mix-Token, X-Lummix-Addon-Token"}
+                   "Access-Control-Allow-Headers":"Content-Type, X-Lum-Mix-Token, X-Lummix-Addon-Token, X-Lum-Setup-Token"}
         if url.hostname != "127.0.0.1":
             self.unexpected.append((request.method, url.hostname, path))
             return route.abort()
@@ -67,9 +71,18 @@ class LocalServices:
             if path == "/preview":
                 return route.fulfill(content_type="text/html",body="<title>Wrist fixture</title>")
             if path == "/setup-status":
-                return route.fulfill(json=dict(state="ready", ready=True, endpoints={"capture":MIC_NAME}), headers=headers)
+                ready = self.cable_state == "ready"
+                return route.fulfill(json=dict(state=self.cable_state, ready=ready,
+                    endpoints={"capture":MIC_NAME} if ready else None, token=TOKEN), headers=headers)
             if path == "/detect-devices":
                 return route.fulfill(json=dict(connected=[], saved=[], runtimes=[]), headers=headers)
+        if url.port == 41836 and path == "/setup-cable" and request.method == "POST":
+            if request.headers.get("x-lum-setup-token") != TOKEN or self.cable_state != "missing":
+                self.unexpected.append((request.method, path))
+                return route.fulfill(status=403, headers=headers)
+            self.cable_installs += 1
+            self.cable_state = "restart-needed"
+            return route.fulfill(json=dict(state=self.cable_state, ready=False), headers=headers)
         if url.port == 41838:
             if request.method == "POST":
                 body = request.post_data_json
@@ -110,6 +123,38 @@ class LocalServices:
 
 
 class StudioTests(unittest.TestCase):
+    def test_first_cable_setup_waits_for_windows_restart(self):
+        services = LocalServices()
+        services.cable_state = "missing"
+        with sync_playwright() as playwright, playwright.chromium.launch(
+            executable_path=os.environ.get("LUMMIX_TEST_CHROMIUM")
+        ) as browser, browser.new_context(service_workers="block") as context:
+            context.route("**/*", services.intercept)
+            context.add_init_script("window.WebSocket=class extends EventTarget {close(){} send(){}};")
+            page = context.new_page()
+            page.goto(ORIGIN + "/?view=desktop")
+            frame = page.frame_locator("#canvas")
+            frame.locator("#set-up-lummix").click()
+            expect(frame.locator("#mic-status-title")).to_have_text("Restart Windows to finish")
+            expect(frame.locator("#cable-status")).to_contain_text("reopen Lummix from Start")
+            expect(frame.locator("#mic-live-action")).to_be_disabled()
+            self.assertEqual(services.cable_installs, 1)
+            self.assertFalse([body for path,body in services.commands if path=="/mix/mic"])
+            page.reload()
+            frame.locator("#set-up-lummix").click()
+            expect(frame.locator("#mic-status-title")).to_have_text("Restart Windows to finish")
+            self.assertEqual(services.cable_installs, 1)
+            self.assertFalse([body for path,body in services.commands if path=="/mix/mic"])
+
+            services.cable_state = "ready"
+            page.reload()
+            frame.locator("#set-up-lummix").click()
+            expect(frame.locator("#mic-live-action")).to_have_text("Stop mix")
+            expect(frame.locator("#mic-endpoint")).to_have_text(MIC_NAME)
+            self.assertEqual(services.cable_installs, 1)
+            self.assertIn(("/mix/mic", {"action":"setup", "id":"desk"}), services.commands)
+            self.assertFalse(services.unexpected)
+
     def test_studio(self):
         with sync_playwright() as pw:
             browser = pw.chromium.launch(executable_path=os.environ.get("LUMMIX_TEST_CHROMIUM"))
@@ -139,6 +184,9 @@ class StudioTests(unittest.TestCase):
             music=frame.locator("#music")
             expect(setup).to_have_accessible_name("Set up Lummix")
             expect(frame.locator("#window-controls")).to_be_hidden()
+            mixer=frame.locator(".mixer")
+            expect(mixer).to_have_css("border-top-width","1px")
+            self.assertGreater(mixer.bounding_box()["x"],0)
             expect(frame.locator("#connect-spotify [data-glyph=music] svg")).to_be_visible()
             expect(frame.locator(".connections button")).to_have_count(2)
             expect(frame.locator(".connections [data-glyph=settings]")).to_have_count(0)
@@ -238,6 +286,16 @@ class StudioTests(unittest.TestCase):
             frame=page.frame_locator("#canvas")
             group=frame.get_by_role("group",name="Window controls")
             expect(group).to_be_visible()
+            mixer=frame.locator(".mixer")
+            expect(mixer).to_have_css("border-top-width","0px")
+            expect(mixer).to_have_css("border-top-left-radius","0px")
+            expect(mixer).to_have_css("box-shadow","none")
+            bounds=mixer.bounding_box()
+            self.assertEqual((bounds["x"],bounds["y"],bounds["width"]),(0,0,width))
+            self.assertGreaterEqual(bounds["height"],865)
+            transport=frame.locator(".transport-panel")
+            expect(transport).to_have_css("border-top-width","1px")
+            self.assertGreater(transport.bounding_box()["x"],0)
             self.assertEqual(group.get_by_role("button").count(),4)
             settings=frame.get_by_role("button",name="Settings",exact=True)
             expect(settings).to_be_visible()

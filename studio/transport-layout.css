@@ -345,6 +345,17 @@ dialog.studio-sheet {--sheet-cue:var(--lum-control-accent,#ce91e1);}
 .frame .mixer .connections button:focus-visible {outline:2px solid var(--deck-hot);outline-offset:-3px;}
 
 /* Windows supplies native caption hit testing; ordinary browser and wrist views keep their own chrome. */
+:root.native-window[data-board-view="desktop"] .frame {
+  max-width:none;
+  margin:0;
+  padding:0;
+}
+:root.native-window[data-board-view="desktop"] .frame .mixer {
+  min-height:100dvh;
+  border:0;
+  border-radius:0;
+  box-shadow:none;
+}
 #window-controls[hidden], #window-drag[hidden] {display:none!important;}
 .native-window .studio-brand::after {display:none;}
 .native-window .frame .mixer .studio-header {gap:clamp(5px,.5vw,14px);}

@@ -15,6 +15,10 @@ on:
       candidate_sha256:
         description: SHA-256 printed by that build when testing a candidate
         type: string
+      first_driver:
+        description: Exercise first-time VB-CABLE installation on the disposable Windows VM
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -92,6 +96,7 @@ jobs:
       - name: Install, verify, repair and uninstall
         env:
           VERIFY_RUNTIME: ${{ steps.package.outputs.runtime }}
+          FIRST_DRIVER: ${{ inputs.first_driver }}
         run: |
           $version = $env:RELEASE_TAG.Substring(1)
           $setup = Join-Path $env:RUNNER_TEMP 'lummix-release/Lummix.Setup.exe'
@@ -104,33 +109,22 @@ jobs:
           }
           $cacheDir = Join-Path $env:LOCALAPPDATA 'Lummix/Installer'
           if (Test-Path -LiteralPath (@($exe, $cacheDir) + $shortcuts) | Where-Object { $_ }) { throw 'Expected a fresh runner.' }
-          $result = Start-Process -FilePath $setup -ArgumentList '/S' -WindowStyle Hidden -Wait -PassThru
-          if ($result.ExitCode -ne 0) { throw "Setup exited $($result.ExitCode)." }
-          $cache = @(Get-ChildItem -LiteralPath $cacheDir -Filter Lummix.msi -File -Recurse)
-          if ($cache.Count -ne 1) { throw 'Expected exactly one registered MSI repair source.' }
-          $product = [guid]::ParseExact($cache[0].Directory.Name,'B').ToString('B')
-          try {
-            if (!(Test-Path -LiteralPath $exe -PathType Leaf)) { throw 'Installed executable is missing.' }
-            $shell = New-Object -ComObject WScript.Shell
-            function Assert-Shortcut([string]$Path) {
-              if (!(Test-Path -LiteralPath $Path -PathType Leaf)) { throw "Shortcut missing: $Path" }
-              $target = $shell.CreateShortcut($Path).TargetPath
-              if ($target -ne $exe) { throw "Unexpected shortcut target: $target" }
-            }
-            foreach ($path in $shortcuts) { Assert-Shortcut $path }
-            if ($desktop) {
-              Remove-Item -LiteralPath $desktop
-              $repair = Start-Process -FilePath $setup -ArgumentList '/S' -WindowStyle Hidden -Wait -PassThru
-              if ($repair.ExitCode -ne 0) { throw "Repair exited $($repair.ExitCode)." }
-              foreach ($path in $shortcuts) { Assert-Shortcut $path }
-            }
+          $shell = New-Object -ComObject WScript.Shell
+          function Assert-Shortcut([string]$Path) {
+            if (!(Test-Path -LiteralPath $Path -PathType Leaf)) { throw "Shortcut missing: $Path" }
+            $target = $shell.CreateShortcut($Path).TargetPath
+            if ($target -ne $exe) { throw "Unexpected shortcut target: $target" }
+          }
+          function Test-InstalledRuntime {
             if ($env:VERIFY_RUNTIME -eq 'true') {
-              $env:PYTHONPATH = "$(Join-Path $PWD 'windows');$(Join-Path $PWD 'windows/runtime')"
               python -B windows/tests/test_runtime.py --installed-exe $exe
               if ($LASTEXITCODE -ne 0) { throw 'Installed runtime verification failed.' }
               $report = Get-Content -Raw -LiteralPath .build/qa/verified-runtime.json | ConvertFrom-Json
               if ($report.mediaCapabilities -notcontains 'spotify-process-mix-v1') { throw 'Installed process capture capability is missing.' }
-              "Checked $($report.studioAssetsExact) installed studio assets. Spotify status was $($report.spotify.state) and capture was $($report.readOnlyMic.spotifyCapture)." >> $env:GITHUB_STEP_SUMMARY
+              "Checked the source content and byte-exact HTTP responses of $($report.studioAssetsExact) installed studio assets. Spotify status was $($report.spotify.state) and capture was $($report.readOnlyMic.spotifyCapture)." >> $env:GITHUB_STEP_SUMMARY
+              if ($report.studioAssetsWithDifferentLineEndings) {
+                "$($report.studioAssetsWithDifferentLineEndings.Count) assets differed from the checkout only in line endings." >> $env:GITHUB_STEP_SUMMARY
+              }
               if ($report.spotifyArtworkPixels) {
                 "Spotify artwork decoded at $($report.spotifyArtworkPixels -join ' × ') pixels." >> $env:GITHUB_STEP_SUMMARY
               } else {
@@ -140,12 +134,77 @@ jobs:
               $verifier = Start-Process -FilePath $exe -ArgumentList 'verify-vendor' -WindowStyle Hidden -Wait -PassThru
               if ($verifier.ExitCode -ne 0) { throw "Packaged vendor verification exited $($verifier.ExitCode)." }
             }
-          } finally {
-            $removed = Start-Process msiexec.exe -ArgumentList "/x $product /qn /norestart" -WindowStyle Hidden -Wait -PassThru
-            if ($removed.ExitCode -ne 0) { throw "Uninstall exited $($removed.ExitCode)." }
           }
-          if (Test-Path -LiteralPath (@($exe, $cache[0].FullName) + $shortcuts) | Where-Object { $_ }) { throw 'Uninstall left a release file behind.' }
-          "Installed $version, checked $($shortcuts.Count) shortcuts, verified the bundled driver package and uninstalled." >> $env:GITHUB_STEP_SUMMARY
+          if ($env:VERIFY_RUNTIME -eq 'true') {
+            $env:PYTHONPATH = "$(Join-Path $PWD 'windows');$(Join-Path $PWD 'windows/runtime')"
+          }
+          $cycles = 1
+          if ([version]$version -ge [version]'1.0.6') {
+            $cycles = 3
+            $qa = (New-Item -ItemType Directory -Force -Path .build/qa).FullName
+            $profile = Join-Path $env:LOCALAPPDATA 'LumMix'
+            $phases = @('seed', 'preserved', 'recover')
+          }
+          for ($cycle = 1; $cycle -le $cycles; $cycle++) {
+            $result = Start-Process -FilePath $setup -ArgumentList '/S' -WindowStyle Hidden -Wait -PassThru
+            if ($result.ExitCode -ne 0) { throw "Setup cycle $cycle exited $($result.ExitCode)." }
+            $cache = @(Get-ChildItem -LiteralPath $cacheDir -Filter Lummix.msi -File -Recurse)
+            if ($cache.Count -ne 1) { throw 'Expected exactly one registered MSI repair source.' }
+            $product = [guid]::ParseExact($cache[0].Directory.Name,'B').ToString('B')
+            try {
+              if (!(Test-Path -LiteralPath $exe -PathType Leaf)) { throw 'Installed executable is missing.' }
+              foreach ($path in $shortcuts) { Assert-Shortcut $path }
+              $exeHash = (Get-FileHash -LiteralPath $exe).Hash
+              if ($cycle -eq 1) {
+                $firstExeHash = $exeHash
+                $firstProduct = $product
+                if ($desktop) {
+                  Remove-Item -LiteralPath $desktop
+                  $repair = Start-Process -FilePath $setup -ArgumentList '/S' -WindowStyle Hidden -Wait -PassThru
+                  if ($repair.ExitCode -ne 0) { throw "Repair exited $($repair.ExitCode)." }
+                  foreach ($path in $shortcuts) { Assert-Shortcut $path }
+                }
+                Test-InstalledRuntime
+              } elseif ($exeHash -ne $firstExeHash -or $product -ne $firstProduct) {
+                throw 'Reinstall changed the launcher hash or MSI product.'
+              }
+              if ($cycles -gt 1) {
+                $phase = $phases[$cycle - 1]
+                python -B windows/tests/test_runtime.py --installed-exe $exe --profile-phase $phase
+                if ($LASTEXITCODE -ne 0) { throw "Settings check failed in cycle $cycle." }
+                $saved = Get-Content -Raw -LiteralPath (Join-Path $qa "profile-$phase.json") | ConvertFrom-Json -AsHashtable
+                if ($cycle -eq $cycles -and $env:FIRST_DRIVER -eq 'true') {
+                  Start-Service AudioEndpointBuilder
+                  Start-Service Audiosrv
+                  python -B windows/tests/verify_first_driver.py $exe
+                  if ($LASTEXITCODE -ne 0) { throw 'First-install driver test failed.' }
+                  'Installed the original VB-Audio driver and verified that restarting Lummix preserved its pending Windows restart.' >> $env:GITHUB_STEP_SUMMARY
+                }
+              }
+            } finally {
+              $arguments = "/x $product /qn /norestart"
+              if ($cycles -gt 1) {
+                $arguments += ' /l*v "{0}"' -f (Join-Path $qa "msi-uninstall-$cycle.log")
+              }
+              $removed = Start-Process msiexec.exe -ArgumentList $arguments -WindowStyle Hidden -Wait -PassThru
+              if ($removed.ExitCode -ne 0) { throw "Uninstall cycle $cycle exited $($removed.ExitCode)." }
+            }
+            if (Test-Path -LiteralPath (@($exe, $cache[0].FullName) + $shortcuts) | Where-Object { $_ }) { throw 'Uninstall left a release file behind.' }
+            if ($cycles -gt 1) {
+              foreach ($name in $saved.settingsHashes.Keys) {
+                $hash = (Get-FileHash -LiteralPath (Join-Path $profile $name)).Hash
+                if ($hash -ne $saved.settingsHashes[$name]) { throw "Uninstall changed $name in cycle $cycle." }
+              }
+              $saved.cycle = $cycle
+              $saved.launcherSha256 = $exeHash
+              $saved.uninstallVerified = $true
+              $saved | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $qa "profile-$phase.json")
+            }
+          }
+          "Installed and uninstalled $version $cycles time(s), checked $($shortcuts.Count) shortcuts and verified the bundled driver package." >> $env:GITHUB_STEP_SUMMARY
+          if ($cycles -gt 1) {
+            'Each uninstall preserved app settings, gains, and their backup byte for byte. The final cycle restored a corrupt primary settings file from backup.' >> $env:GITHUB_STEP_SUMMARY
+          }
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always() && steps.package.outputs.runtime == 'true'
@@ -155,3 +214,7 @@ jobs:
           path: |
             .build/qa/verified-runtime.json
             .build/qa/private-runtime-test.log
+            .build/qa/profile-*.json
+            .build/qa/profile-*.log
+            .build/qa/msi-uninstall-*.log
+            .build/qa/first-driver.*

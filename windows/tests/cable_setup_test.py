@@ -1,10 +1,17 @@
 """Simulates Windows install outcomes. It cannot launch setup or open an audio device."""
 from contextlib import contextmanager
+import json
+import os
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import threading
+from types import SimpleNamespace
+from unittest.mock import patch
 import cable_setup as s
+from mic_routes import signed_cables
 
 
-def exercise(initial, after, exit_code):
+def exercise(initial, after, exit_code, marker, boot=None):
     calls=[]; current=[initial]; allowed=threading.Event()
     @contextmanager
     def prepare():
@@ -15,7 +22,8 @@ def exercise(initial, after, exit_code):
         calls.append("consent/install")
         current[0]=after
         return exit_code
-    ctrl=s.Controller(lambda:s.shape(current[0]),prepare,install,lambda n:None)
+    boot = boot or {"event":"1:100","ticks":100_000_000}
+    ctrl=s.Controller(lambda:s.shape(current[0]) | {"boot":boot},prepare,install,marker)
     first=ctrl.begin()
     if initial=="missing":
         assert first["state"]=="preparing" and ctrl.begin()["state"]=="preparing"
@@ -23,26 +31,65 @@ def exercise(initial, after, exit_code):
         assert calls==["download/verify","consent/install"]
     else:
         assert calls==[]
-    return ctrl.status()["state"]
+    state = ctrl.status()["state"]
+    assert marker.exists() == (state=="restart-needed")
+    return state
 
 
 for args,expected in [
     (("ready","ready",0),"ready"),(("partial","partial",0),"partial"),(("unavailable","unavailable",0),"unavailable"),
-    (("missing","ready",0),"ready"),(("missing","missing",1223),"cancelled"),
-    (("missing","missing",17),"failed"),(("missing","partial",3010),"restart-needed"),
+    (("missing","ready",0),"restart-needed"),(("missing","missing",1223),"cancelled"),
+    (("missing","missing",17),"failed"),(("missing","ready",17),"restart-needed"),
+    (("missing","partial",3010),"restart-needed"),
+    (("missing","ready",3010),"restart-needed"),(("missing","ready",1641),"restart-needed"),
     (("missing","missing",0),"restart-needed"),
 ]:
-    assert exercise(*args)==expected,(args,expected)
+    with TemporaryDirectory() as folder:
+        assert exercise(*args, Path(folder)/"vb-cable-restart")==expected,(args,expected)
 
 @contextmanager
 def reject():
     raise ValueError("signature failed")
     yield None
 
-c=s.Controller(lambda:s.shape("missing"),reject,lambda f:(_ for _ in ()).throw(AssertionError()),lambda n:None)
-c.begin();c.thread.join(3);assert c.status()["state"]=="failed"
+with TemporaryDirectory() as folder:
+    marker = Path(folder)/"vb-cable-restart"
+    c=s.Controller(lambda:s.shape("missing"),reject,lambda f:(_ for _ in ()).throw(AssertionError()),marker)
+    c.begin();c.thread.join(3);assert c.status()["state"]=="failed"
+
+with TemporaryDirectory() as folder, patch.dict(os.environ, {"LOCALAPPDATA":folder}):
+    marker = s.restart_file()
+    assert exercise("missing","ready",0,marker)=="restart-needed"
+    boot = [{"event":"1:100","ticks":100_000_000}]
+    def probe():
+        return s.shape("ready") | {"boot":boot[0]}
+    def inventory(*args):
+        data = probe() | {"signed":True,"endpointIds":{"Render":["render"],"Capture":["capture"]}}
+        return SimpleNamespace(returncode=0, stdout=json.dumps(data))
+    reopened=s.Controller(probe,reject,marker=marker)
+    assert reopened.status()["state"]=="restart-needed"
+    assert reopened.begin()["state"]=="restart-needed" and reopened.thread is None
+    with patch.object(s,"powershell",side_effect=inventory), patch("cable_alias.labels",return_value={}):
+        assert signed_cables()=={"error":"cable_restart_needed"}
+        boot[0] = {"event":"2:200","ticks":900_000_000}
+        assert signed_cables()=={"Render":["render"],"Capture":["capture"]}
+        assert s.Controller(probe,reject,marker=marker).status()["state"]=="ready"
+        assert not marker.exists()
+
+with TemporaryDirectory() as folder:
+    marker = Path(folder)/"vb-cable-restart"
+    boot = {"event":None,"ticks":100_000_000}
+    assert exercise("missing","ready",17,marker,boot)=="restart-needed"
+    assert json.loads(marker.read_text())==boot
+    for current in (boot, {"event":"reappeared","ticks":106_000_000}, None):
+        assert s.Controller(lambda:s.shape("ready") | {"boot":current},reject,marker=marker).status()["state"]=="restart-needed"
+        assert marker.exists()
+    restarted = {"event":None,"ticks":900_000_000}
+    assert s.Controller(lambda:s.shape("ready") | {"boot":restarted},reject,marker=marker).status()["state"]=="ready"
+    assert not marker.exists()
+
 try:
     with s.package(lambda:b"wrong-content"):raise AssertionError("A changed package was accepted")
 except ValueError as e:
     assert "reviewed package" in str(e)
-print("Existing, partial, missing, duplicate, consent denied, signature failure, installer failure, success and reboot cases passed with no installer execution.")
+print("Existing, partial, missing, duplicate, consent denied, signature failure, installer failure, same-boot reopen, and restart cases passed with no installer execution.")

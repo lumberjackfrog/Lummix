@@ -21,6 +21,103 @@ HERE = Path(__file__).resolve().parent
 EVIDENCE = HERE.parents[1] / ".build/qa"
 EVIDENCE.mkdir(parents=True, exist_ok=True)
 UI = HERE.parents[1] / "studio"
+TEST_PREFERENCES = {"snap": 5, "followTheme": False, "closeToTray": False}
+TEST_GAINS = {"micGain": 72, "musicGain": 138, "micMuted": True, "musicMuted": False}
+
+
+def verify_studio_assets(fetch, installed):
+    checkout_line_endings = []
+    for name in sorted(STUDIO_FILES):
+        filename = unquote(name)
+        packaged = (installed / filename).read_bytes()
+        response = fetch(41835, "/" + name)
+        assert response.status_code == 200 and response.content == packaged, (
+            f"Studio did not serve the exact installed bytes for {filename}"
+        )
+        original = (UI / filename).read_bytes()
+        if packaged != original:
+            assert packaged.replace(b"\r\n", b"\n") == original.replace(b"\r\n", b"\n"), (
+                f"Installed studio asset differs from checkout content for {filename}"
+            )
+            checkout_line_endings.append(filename)
+    return checkout_line_endings
+
+
+def verify_reinstall_profile(exe, phase):
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        raise RuntimeError("The reinstall profile check requires a fresh GitHub Actions runner.")
+    profile = Path(os.environ["LOCALAPPDATA"]) / "LumMix"
+    preferences = profile / "studio-preferences.json"
+    gains = profile / "output-gains.json"
+    backup = profile / "settings-backup.json"
+    files = (preferences, gains, backup)
+    if phase == "seed":
+        assert not any(path.exists() for path in files), "Expected unused runner settings"
+    else:
+        assert all(path.is_file() for path in files), "Uninstall removed a seeded settings file"
+        if phase == "recover":
+            saved = json.loads(backup.read_bytes())["settings"][preferences.name]
+            assert saved == json.loads(preferences.read_bytes()) == {"settings": TEST_PREFERENCES}
+            preferences.write_bytes(b"{")
+
+    log = EVIDENCE / f"profile-{phase}.log"
+    system = Path(os.environ["SystemRoot"])
+    env = os.environ | {"PATH": os.pathsep.join(map(str, (system / "System32", system))),
+                        "LUMMIX_QA_LOOPBACK": "2"}
+    for variable in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV"):
+        env.pop(variable, None)
+    with requests.Session() as session, log.open("wb") as stream:
+        session.trust_env = False
+        headers = {"Host": "127.0.0.1:41838", "Origin": "http://127.0.0.1:41835"}
+
+        def request(route, *, token=None, patch=None):
+            url = "http://127.0.0.2:41838" + route
+            if patch is None:
+                response = session.get(url, headers=headers, timeout=5)
+            else:
+                response = session.post(url, headers=headers | {"X-Lum-Mix-Token": token}, json=patch, timeout=5)
+            response.raise_for_status()
+            return response.json()
+
+        child = subprocess.Popen([str(exe), "spotify", "--parent-stdin"], env=env, stdin=subprocess.PIPE,
+                                 stdout=stream, stderr=stream, creationflags=subprocess.CREATE_NO_WINDOW)
+        try:
+            deadline = time.monotonic() + 20
+            while True:
+                if child.poll() is not None or time.monotonic() >= deadline:
+                    raise RuntimeError(f"Packaged media helper did not start. Inspect {log}.")
+                try:
+                    health = request("/lummix-health")
+                    break
+                except requests.ConnectionError:
+                    time.sleep(.2)
+            assert health["service"] == "lummix-media" and MEDIA_CAPABILITIES <= set(health["capabilities"])
+            settings = request("/mix/preferences")
+            mix = request("/mix/gains")
+            if phase == "seed":
+                settings = request("/mix/preferences", token=settings["token"], patch={"settings": TEST_PREFERENCES})
+                mix = request("/mix/gains", token=mix["token"], patch=TEST_GAINS)
+            assert settings["settings"] == TEST_PREFERENCES, (phase, settings["settings"])
+            assert {key: mix[key] for key in TEST_GAINS} == TEST_GAINS and mix["routeActive"] is False
+        finally:
+            session.close()
+            child.stdin.close()
+            try:
+                child.wait(timeout=12)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.wait()
+                raise
+    assert child.returncode == 0
+    assert json.loads(preferences.read_bytes()) == {"settings": TEST_PREFERENCES}
+    sections = json.loads(backup.read_bytes())["settings"]
+    assert all(sections[path.name] == json.loads(path.read_bytes()) for path in (preferences, gains))
+    report = {"phase": phase, "helperPid": child.pid, "routeActive": mix["routeActive"],
+              "helperExitedCleanly": True, "restoredPrimaryFromBackup": phase == "recover",
+              "preferences": TEST_PREFERENCES, "gains": TEST_GAINS,
+              "settingsHashes": {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in files}}
+    (EVIDENCE / f"profile-{phase}.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps(report, indent=2))
 
 
 def main(installed_exe=None):
@@ -72,8 +169,9 @@ def main(installed_exe=None):
                         time.sleep(.15)
                     else:
                         raise RuntimeError(f"{port} not ready")
-                for name in STUDIO_FILES:
-                    assert fetch(41835,"/"+name).content == (UI/unquote(name)).read_bytes(), name
+                report["studioAssetsWithDifferentLineEndings"] = verify_studio_assets(
+                    fetch, Path(exe).parent / "studio"
+                )
                 assert fetch(41835,"/private-runtime-test.log").status_code == 404
                 report["studioAssetsExact"] = len(STUDIO_FILES)
                 report["wrist"] = fetch(41836,"/lummix-health").json()
@@ -143,6 +241,7 @@ def main(installed_exe=None):
                 assert check.returncode == 0, "vendor verification failed"
                 report["vendorVerifiedNoInstall"] = True
             finally:
+                s.close()
                 for child in proc.values():
                     child.stdin.close()
                 for child in proc.values():
@@ -161,4 +260,11 @@ def main(installed_exe=None):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--installed-exe", type=Path, help="Test the installed executable and its adjacent files in place.")
-    main(parser.parse_args().installed_exe)
+    parser.add_argument("--profile-phase", choices=("seed", "preserved", "recover"), help="Hosted reinstall QA phase.")
+    options = parser.parse_args()
+    if options.profile_phase:
+        if options.installed_exe is None:
+            parser.error("--profile-phase requires --installed-exe")
+        verify_reinstall_profile(options.installed_exe.resolve(strict=True), options.profile_phase)
+    else:
+        main(options.installed_exe)

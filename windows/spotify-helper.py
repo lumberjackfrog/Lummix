@@ -555,7 +555,7 @@ def create_app(sessions=None, *, expected_host=f"{HOST}:{PORT}", inventory=read_
         if "/mix/duck" in paths:
             caps.append("mixer-duck-v1")
         if "/mix/mic" in paths:
-            caps.extend(("mic-route-v1","mix-setup-alias-v1"))
+            caps.extend(("mic-route-v1","mix-setup-alias-v1","cable-restart-v1"))
         if "/mix/preferences" in paths:
             caps.append("studio-preferences-v1")
         return web.json_response({"service":"lummix-media","protocol":2,"capabilities":caps})

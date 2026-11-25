@@ -87,6 +87,10 @@ try:
         with socket.socket() as reserved:
             reserved.bind(("127.0.0.1",0));debug_port=reserved.getsockname()[1]
         env["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"]="--remote-debugging-port="+str(debug_port)
+        if window_only:
+            # Packaged studio assets are served by the native WebView handler. Keep the
+            # isolated renderer away from audio services belonging to a live VRChat mix.
+            env["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] += " --proxy-server=http://127.0.0.1:9 --proxy-bypass-list=<-loopback>"
         cfg=Path(tmp)/"LumMix/studio-preferences.json";cfg.parent.mkdir()
         env["PATH"]=os.environ["SystemRoot"]+"\\System32;"+os.environ["SystemRoot"]
         si=win32process.STARTUPINFO();si.lpDesktop="winsta0\\"+name
@@ -141,10 +145,23 @@ try:
             until(lambda:page_for(session))
             page=page_for(session)
             board=page.frame_locator("#canvas")
+            grips=page.locator("#resize-grips")
+            grips.wait_for(state="visible")
+            assert grips.locator("i").count()==8
+            assert page.evaluate("""() => {
+                const w=innerWidth, h=innerHeight, m=Math.floor;
+                const probes=[[1,1,'nw'],[m(w/2),1,'n'],[w-2,1,'ne'],[1,m(h/2),'w'],
+                             [w-2,m(h/2),'e'],[1,h-2,'sw'],[m(w/2),h-2,'s'],[w-2,h-2,'se']];
+                return probes.every(([x,y,edge])=>document.elementFromPoint(x,y)?.dataset.edge===edge);
+            }""")
+            viewport=page.evaluate("() => [innerWidth*devicePixelRatio, innerHeight*devicePixelRatio]")
+            _,_,width,height=win32gui.GetClientRect(hwnd)
+            assert abs(viewport[0]-width)<=1 and abs(viewport[1]-height)<=1,(viewport,width,height)
             maximize=board.locator("#window-maximize")
             maximize.click(timeout=12000)
             work=win32api.GetMonitorInfo(win32api.MonitorFromWindow(hwnd,2))["Work"]
             until(lambda:u.IsZoomed(hwnd) and client_bounds(hwnd)==work)
+            grips.wait_for(state="hidden")
             assert "Restore" in maximize.get_attribute("aria-label")
             board.locator("#window-fullscreen").click()
             monitor=win32api.GetMonitorInfo(win32api.MonitorFromWindow(hwnd,2))["Monitor"]
