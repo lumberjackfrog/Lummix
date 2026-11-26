@@ -1,0 +1,10 @@
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <parameters>
+    <parameter name="version" required="true"/>
+  </parameters>
+  <zip-file>
+    <pe-file path="Lummix Setup.exe" product-name="Lummix" company-name="Lummix" product-version="${version}" file-version="${version}">
+      <authenticode-sign/>
+    </pe-file>
+  </zip-file>
+</artifact-configuration>

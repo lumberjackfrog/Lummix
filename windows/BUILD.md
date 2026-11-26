@@ -45,6 +45,12 @@ Unsigned local builds may be refused by an organization's Windows Application Co
 
 For a signed release, supply `-SigningThumbprint` for a publisher certificate in the current user’s Personal certificate store and `-TimestampUrl` for its HTTPS RFC 3161 timestamp service. The build signs the launcher, followed by the MSI and final setup EXE. It runs SignTool’s Authenticode trust check at each step. Run the normal install and launch check on a machine with the intended Windows policy. [Microsoft application signing guidance](https://learn.microsoft.com/en-us/windows/security/application-security/application-control/smart-app-control)
 
+### SignPath Foundation
+
+After the Foundation approves the project, connect this repository as a GitHub trusted build system. Configure a release policy with manual approval. Import the three [artifact configurations](../setup/signpath/) under their filenames without the `.xml` extension. They restrict the file names, publisher and version fields for the executables, and the subject and author for the MSI. The install test checks the versions against the MSI. [SignPath GitHub integration](https://docs.signpath.io/trusted-build-systems/github)
+
+In the GitHub environment `windows-signing`, allow the main branch, set the secret `SIGNPATH_API_TOKEN` to the project’s submitter token, and set `SIGNPATH_ORGANIZATION_ID`, `SIGNPATH_PROJECT` and `SIGNPATH_POLICY` to the approved values. Run **Sign and verify the Windows installer** on main. Each signature is checked for Windows trust, timestamp and Foundation publisher before packaging the next layer. The workflow installs, opens, repairs and uninstalls the result on a disposable runner and saves the final EXE as a test artifact. Publishing a release is a separate maintainer action.
+
 ### Publishing an in-app update
 
 Set the version in `windows/release_identity.py`, build and qualify the Windows installer, then run `./scripts/sign-update.ps1 -Setup ./dist/Lummix.Setup.exe -Version <version>` against the final release bytes on the publisher’s Windows account. The script requires the non-exportable CNG key named `Lummix GitHub release manifests v1`. Publish `Lummix.Setup.exe`, `Lummix.Update.json` and `SHA256SUMS.txt` together on a numeric `vX.Y.Z` GitHub release. Drafts stay private. Published preview builds with numeric tags are eligible.
