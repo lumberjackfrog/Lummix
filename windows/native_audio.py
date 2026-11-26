@@ -7,7 +7,6 @@ import sys
 import threading
 from weakref import finalize
 
-import numpy as np
 import sounddevice as sd
 
 
@@ -74,6 +73,7 @@ def bind_library(path):
     bind("route_open", OpenResult, ptr, ct.POINTER(PortAudio), ct.c_int, ct.c_int, ptr)
     bind("route_close", ct.c_int, ptr)
     bind("route_active", ct.c_int, ptr)
+    bind("route_frames", ct.c_size_t, ptr)
     bind("route_latency", Latency, ptr)
     bind("inputs", ptr)
     bind("inputs_free", None, ptr)
@@ -122,6 +122,8 @@ class Engine:
         return self.dll.lummix_engine_metrics(self.handle)
 
     def read(self):
+        # Developer-only waveform inspection. The packaged callback writes into WASAPI.
+        import numpy as np
         out = np.empty((480, 2), np.float32)
         return out if self.dll.lummix_engine_read(self.handle, out.ctypes.data) else None
 
@@ -136,6 +138,7 @@ class NativeStream:
         if not result.handle:
             raise sd.PortAudioError("Could not open the selected Lummix WASAPI route", result.error)
         self.handle = result.handle
+        self.frames = engine.dll.lummix_route_frames(self.handle)
         self.mode = "high" if result.high else "low"
         self.lock = threading.Lock()
         self._release = finalize(self, _release_owned, engine.dll.lummix_route_close, self.handle,

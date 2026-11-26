@@ -18,11 +18,7 @@ def _api():
     for name, argtypes, restype in (
         ("start", [wt.HWND, text, text, text, _CALLBACK, ctypes.POINTER(token)], integer),
         ("close", [token], None),
-        ("resize", [token, integer, integer], integer),
-        ("visible", [token, integer], integer),
-        ("moved", [token], integer),
         ("post_json", [token, text], integer),
-        ("execute", [token, text], integer),
         ("source", [token, ctypes.POINTER(ctypes.c_wchar), ctypes.c_size_t], ctypes.c_size_t),
     ):
         function = getattr(host, "lummix_webview_" + name)
@@ -68,20 +64,8 @@ class WebView:
             self.host.lummix_webview_close(token)
         self.events = None
 
-    def resize(self, width, height):
-        _checked(self.host.lummix_webview_resize(self.token, width, height))
-
-    def visible(self, visible):
-        _checked(self.host.lummix_webview_visible(self.token, visible))
-
-    def moved(self):
-        _checked(self.host.lummix_webview_moved(self.token))
-
     def post_json(self, payload):
         _checked(self.host.lummix_webview_post_json(self.token, payload))
-
-    def execute(self, script):
-        _checked(self.host.lummix_webview_execute(self.token, script))
 
     def source(self):
         size = self.host.lummix_webview_source(self.token, None, 0)

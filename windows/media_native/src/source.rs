@@ -156,14 +156,23 @@ fn registered_desktop_paths() -> Result<Vec<PathBuf>> {
 pub(super) fn desktop_executable(preferred: Option<&Path>) -> Result<Option<PathBuf>> {
     let mut conventional: Vec<_> = ordinary_desktop_paths().collect();
     if let Some(preferred) = preferred.and_then(normalize) {
-        if let Some(index) = conventional.iter().position(|path| normalize(path).as_ref() == Some(&preferred)) {
-            conventional.swap(0, index);
+        if let Some(index) = conventional
+            .iter()
+            .position(|path| normalize(path).as_ref() == Some(&preferred))
+        {
+            let preferred = conventional.remove(index);
+            conventional.insert(0, preferred);
         }
     }
-    if let Some(path) = conventional.into_iter().find(|path| normalize(path).is_some() && path.is_file()) {
+    if let Some(path) = conventional
+        .into_iter()
+        .find(|path| normalize(path).is_some() && path.is_file())
+    {
         return Ok(Some(path));
     }
-    Ok(registered_desktop_paths()?.into_iter().find(|path| path.is_file()))
+    Ok(registered_desktop_paths()?
+        .into_iter()
+        .find(|path| path.is_file()))
 }
 
 fn store_shape(path: &Path) -> bool {
@@ -251,8 +260,12 @@ pub(super) fn verified_processes() -> Result<Vec<(processes::Process, u32)>> {
                 }
             } else {
                 if registered.is_none() {
-                    registered = Some(registered_desktop_paths()?.into_iter().filter_map(|path| normalize(&path))
-                        .collect::<HashSet<_>>());
+                    registered = Some(
+                        registered_desktop_paths()?
+                            .into_iter()
+                            .filter_map(|path| normalize(&path))
+                            .collect::<HashSet<_>>(),
+                    );
                 }
                 if !registered.as_ref().unwrap().contains(&normalized) {
                     continue;
@@ -266,7 +279,7 @@ pub(super) fn verified_processes() -> Result<Vec<(processes::Process, u32)>> {
 
 pub(super) type Source = (u32, f64, u32);
 
-pub(super) fn probe(signed: &[String]) -> Result<(i32, Option<Source>)> {
+fn root() -> Result<(i32, Option<(processes::Process, u32)>)> {
     let processes = verified_processes()?;
     let ids: HashSet<_> = processes.iter().map(|(process, _)| process.pid).collect();
     let mut roots = processes
@@ -278,6 +291,34 @@ pub(super) fn probe(signed: &[String]) -> Result<(i32, Option<Source>)> {
     if roots.next().is_some() {
         return Ok((2, None));
     }
+    Ok((1, Some((process, edition))))
+}
+
+pub(super) fn diagnostic_target() -> Result<serde_json::Value> {
+    let (state, root) = root()?;
+    let Some((p, edition)) = root else {
+        return Ok(serde_json::json!({"state": state}));
+    };
+    let Some(tree) = processes::process_tree(p.pid)? else {
+        return Ok(serde_json::json!({"state": 4}));
+    };
+    let renderer = capture_renderer(&tree, p.pid, p.created)?.unwrap_or((p.pid, p.created));
+    if !processes::matches_creation(p.pid, p.created)
+        || !processes::matches_creation(renderer.0, renderer.1)
+    {
+        return Ok(serde_json::json!({"state": 4}));
+    }
+    Ok(
+        serde_json::json!({"state": 1, "pid": renderer.0, "created": renderer.1,
+                          "edition": if edition == DESKTOP { "desktop" } else { "store" }}),
+    )
+}
+
+pub(super) fn probe(signed: &[String]) -> Result<(i32, Option<Source>)> {
+    let (state, root) = root()?;
+    let Some((process, edition)) = root else {
+        return Ok((state, None));
+    };
     let Some(tree) = processes::process_tree(process.pid)? else {
         return Ok((4, None));
     };

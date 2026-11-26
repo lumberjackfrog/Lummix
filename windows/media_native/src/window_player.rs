@@ -1,3 +1,4 @@
+use super::artwork::item_url;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use windows::{
@@ -46,25 +47,6 @@ pub(super) unsafe fn controls(
     let condition =
         ui.CreatePropertyCondition(UIA_ControlTypePropertyId, &VARIANT::from(kind.0))?;
     find(root, scope, &condition)
-}
-
-fn item_url(value: &str) -> Option<String> {
-    let path = value
-        .strip_prefix("https://xpui.app.spotify.com/")
-        .or_else(|| value.strip_prefix("https://open.spotify.com/"))?;
-    let path = match path.split_once('?') {
-        Some((path, query)) if !query.contains(|ch: char| ch == '#' || ch.is_whitespace()) => path,
-        Some(_) => return None,
-        None => path,
-    };
-    let (kind, id) = path.split_once('/')?;
-    if matches!(kind, "album" | "track" | "episode")
-        && id.len() == 22
-        && id.bytes().all(|byte| byte.is_ascii_alphanumeric())
-    {
-        return Some(format!("https://open.spotify.com/{path}"));
-    }
-    None
 }
 
 unsafe fn role(ui: &IUIAutomation, value: &str) -> Result<IUIAutomationCondition> {

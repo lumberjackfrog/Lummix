@@ -28,7 +28,69 @@
     Object.hasOwn(values,key) ? bits | (1 << index) : bits, 0);
   const keysIn = bits => preferenceKeys.filter((_,index) => bits & (1 << index));
 
+  function appearance(wasm) {
+    const roles = ['Dark','Mid','Hi','Contrast','Accent','AccentBright','Error','Confirm','Warning'];
+    const textEncoder = new TextEncoder();
+    const hex = rgb => rgb.toString(16).padStart(6,'0');
+    function normalized(kind, text) {
+      if(typeof text!=='string' || text.length>=400000)return undefined;
+      const bytes=textEncoder.encode(text);
+      const buffer=wasm.appearance_buffer(bytes.length);
+      if(!buffer)return undefined;
+      new Uint8Array(wasm.memory.buffer,buffer,bytes.length).set(bytes);
+      const result=wasm.appearance_normalize(kind,bytes.length);
+      return result<0?undefined:result;
+    }
+    const preset = family => Object.fromEntries(roles.map((role,index)=>[role,wasm.appearance_default(family,index)])
+      .filter(([,rgb])=>rgb>=0).map(([role,rgb])=>[role,hex(rgb)]));
+    const saved=preset(0);
+    return {
+      saved,
+      manual: dark => preset(dark?1:2),
+      swatch: value => {
+        const text=String(value||'').replace(/^#/,'');
+        return normalized(0,text)===undefined?'':'#'+text;
+      },
+      palette: (theme, partial=false) => {
+        if(!theme || typeof theme!=='object')return null;
+        const colors={};
+        for(const role of roles){
+          const value=theme[role] || (role==='AccentBright' && theme.AccentHi);
+          const text=partial?String(value||'').replace(/^#/,''):value;
+          if(normalized(0,text)!==undefined)colors[role]=partial?text:text.slice(0,6);
+        }
+        if(partial)return colors;
+        return roles.slice(0,5).every(role=>colors[role])?
+          {...saved,...colors,AccentBright:colors.AccentBright||colors.Accent}:null;
+      },
+      paletteChoice: (follow,pinned,wrist,base,album) => {
+        const value=wasm.appearance_selection(follow,pinned,Boolean(wrist),wrist?.album,wrist?.custom,Boolean(base),Boolean(album));
+        return {source:value>>8,theme:[null,wrist?.theme,album,base,saved][value&255]};
+      },
+      colors: theme => {
+        const inputs=roles.slice(0,5).map(role=>Number.parseInt(theme[role],16));
+        const result=field=>wasm.appearance_colors(...inputs,field);
+        const ink=result(0);
+        return {ink:'#'+hex(ink),onAccent:'#'+hex(result(1)),dark:Boolean(wasm.appearance_dark(ink)),
+          controls:{accent:'#'+hex(result(2)),bed:'#'+hex(result(3)),ink:'#'+hex(result(4))}};
+      },
+      boolean: text => {
+        const value=normalized(1,text);
+        return value===undefined?undefined:Boolean(value);
+      },
+      snap: text => normalized(2,text),
+      image: (value,legacy=false) => normalized(legacy?5:4,value)!==undefined,
+      mode: value => normalized(3,value),
+      background: (value,hasImage,current) => {
+        const mode=normalized(3,value)??-1;
+        const previous=normalized(3,current)??0;
+        return wasm.appearance_background(mode,hasImage,previous)?'custom':'album';
+      },
+    };
+  }
+
   window.LumControls = core.then(wasm => ({
+    appearance: appearance(wasm),
     slider: (min, max, preference, depth, value, key) =>
       wasm.slider_value(min, max, preference, depth, value, Object.hasOwn(keys, key) ? keys[key] : 0),
     handlesKey: key => Object.hasOwn(keys, key),

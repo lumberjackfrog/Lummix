@@ -326,6 +326,11 @@ unsafe fn browser(token: *const c_void) -> Option<Browser> {
     token.cast::<Rc<View>>().as_ref()?.browser.borrow().clone()
 }
 
+pub(crate) unsafe fn document_source(token: *const c_void) -> Option<String> {
+    let browser = browser(token)?;
+    property(|value| browser.web.Source(value)).ok()
+}
+
 fn result(result: windows::core::Result<()>) -> i32 {
     result.map_or_else(|error| error.code(), |()| S_OK).0
 }
@@ -436,10 +441,7 @@ pub unsafe extern "C" fn lummix_webview_source(
     out: *mut u16,
     len: usize,
 ) -> usize {
-    let Some(browser) = browser(token) else {
-        return 0;
-    };
-    let Ok(uri) = property(|value| browser.web.Source(value)) else {
+    let Some(uri) = document_source(token) else {
         return 0;
     };
     let required = uri.encode_utf16().count() + 1;

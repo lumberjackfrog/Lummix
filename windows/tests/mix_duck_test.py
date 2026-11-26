@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 import numpy as np
 from aiohttp import web
 from aiohttp.test_utils import TestClient,TestServer
@@ -62,6 +63,10 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual((await client.post("/mix/duck",headers=h,json=bad)).status,400)
             for pref in ({"depthDb":9,"migrate":True},{"enabled":False},{"depthDb":23,"migrate":True}):
                 self.assertEqual((await client.post("/mix/duck",headers=h,json=pref)).status,200)
+            with patch.object(api, "write", side_effect=OSError("fixture write failure")):
+                failed = await client.post("/mix/duck", headers=h, json={"depthDb": 18})
+                self.assertEqual((failed.status, (await failed.json())["error"]), (503, "settings_not_saved"))
+            self.assertEqual(api.settings, {"enabled": False, "depthDb": 9})
             self.assertEqual(MixDucking(mix,mic).settings,{"enabled":False,"depthDb":9})
             self.assertFalse(mixer.controls.duck_enabled)
             self.assertIsNone(mixer.stream)

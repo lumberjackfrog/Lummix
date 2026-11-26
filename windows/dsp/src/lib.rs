@@ -1,6 +1,8 @@
 use std::slice;
 #[cfg(windows)]
 mod capture;
+#[cfg(windows)]
+mod control_plane;
 mod engine;
 #[cfg(feature = "replay")]
 mod replay;

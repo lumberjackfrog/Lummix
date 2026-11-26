@@ -2,18 +2,19 @@
 import asyncio
 import hashlib
 import json
-import re
 import time
 
 import aiohttp
+from spotify_native import NativeArtworkCache, provider
+
+
+def validated_url(kind, value):
+    native = provider()
+    return native.artwork_url(kind, value) if native is not None else None
 
 
 def spotify_item(value):
-    if isinstance(value, str):
-        match = re.fullmatch(r"https://(?:xpui\.app|open)\.spotify\.com/(album|track|episode)/([A-Za-z0-9]{22})(?:\?[^#\s]*)?", value)
-        if match:
-            return "https://open.spotify.com/" + "/".join(match.groups())
-    return None
+    return validated_url(0, value)
 
 
 async def read_limited(response, limit):
@@ -29,40 +30,44 @@ async def read_limited(response, limit):
 
 
 async def fetch_cover(item):
+    item = spotify_item(item)
+    if not item:
+        raise ValueError("Expected a Spotify item")
     timeout = aiohttp.ClientTimeout(total=3)
     async with aiohttp.ClientSession(timeout=timeout, cookie_jar=aiohttp.DummyCookieJar()) as session:
         async with session.get("https://open.spotify.com/oembed", params={"url": item}, allow_redirects=False) as response:
             meta = json.loads(await read_limited(response, 64 * 1024))
-        url = meta.get("thumbnail_url") if isinstance(meta, dict) else None
-        if not isinstance(url, str) or not re.fullmatch(
-                r"https://(?:i\.scdn\.co|image-cdn-[a-z0-9-]+\.spotifycdn\.com)/image/[a-zA-Z0-9]+", url):
+        url = validated_url(1, meta.get("thumbnail_url")) if isinstance(meta, dict) else None
+        if not url:
             raise ValueError("No Spotify thumbnail")
         async with session.get(url, allow_redirects=False) as response:
             return await read_limited(response, 4 * 1024 * 1024)
 
 
 class ArtworkCache:
-    """One cover in memory. Retry transient failures without refetching on each status poll."""
+    """Serialize cover fetches while Rust tracks successful covers and retry deadlines."""
     def __init__(self, encode):
         self.encode = encode
         self.lock = asyncio.Lock()
-        self.item = self.cover = None
-        self.retry_at = 0
+        self.native_cache = None
 
     async def get(self, item):
-        item = spotify_item(item)
-        if not item:
-            return None
         async with self.lock:
-            if self.item == item and (self.cover or time.monotonic() < self.retry_at):
-                return self.cover
-            self.item, self.cover = item, None
-            self.retry_at = time.monotonic() + 20
             try:
+                item = spotify_item(item)
+                if not item:
+                    return None
+                if self.native_cache is None:
+                    self.native_cache = NativeArtworkCache(provider())
+                status = self.native_cache.lookup(item, time.monotonic())
+                if status["cached"]:
+                    return tuple(status["cover"]) if status["cover"] else None
                 raw = await asyncio.wait_for(fetch_cover(item), 4)
                 encoded = await asyncio.to_thread(self.encode, raw)
                 if encoded:
-                    self.cover = hashlib.sha256(raw).hexdigest()[:24], encoded
-            except (aiohttp.ClientError, OSError, ValueError, TimeoutError):
+                    cover = hashlib.sha256(raw).hexdigest()[:24], encoded
+                    self.native_cache.store(item, cover)
+                    return cover
+            except (aiohttp.ClientError, OSError, RuntimeError, ValueError, TimeoutError):
                 pass
-            return self.cover
+            return None

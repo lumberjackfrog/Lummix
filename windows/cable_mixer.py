@@ -3,10 +3,8 @@ from dataclasses import dataclass, replace
 import math
 from weakref import finalize
 
-import numpy as np
 import sounddevice as sd
 
-from cable_routes import RENDERS
 from native_audio import Engine, NativeStream
 
 RATE, BLOCK, GAIN_RAMP, PEAK_CEILING = 48000, 480, 720, .98
@@ -36,8 +34,7 @@ class MixStage:
     """Offline block entry point and passive measurements for the live Rust engine."""
     def __init__(self, controls, frames=BLOCK):
         self.engine = Engine(controls)
-        self._handle = self.engine.dll.lummix_stage_new(self.engine.handle)
-        self._release = finalize(self, self.engine.dll.lummix_stage_free, self._handle)
+        self._handle = None
         self.limit_gain = 1.
 
     @property
@@ -49,6 +46,11 @@ class MixStage:
         return self.engine.metrics.reduction
 
     def render(self, out, mic, music, controls):
+        # Only the source replay tools call this array-oriented entry point.
+        import numpy as np
+        if self._handle is None:
+            self._handle = self.engine.dll.lummix_stage_new(self.engine.handle)
+            self._release = finalize(self, self.engine.dll.lummix_stage_free, self._handle)
         self.engine.configure(controls)
         n = len(out)
         if out.shape != (n, 2) or not out.flags.writeable:

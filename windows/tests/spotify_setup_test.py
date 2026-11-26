@@ -1,105 +1,93 @@
-"""The setup click can only install Spotify's signed website player when one is missing."""
-from contextlib import ExitStack
-from io import BytesIO
+"""Verify isolated Rust setup operations and Studio's one-click controller."""
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
 import unittest
 from unittest.mock import Mock, patch
 
-import spotify_setup as s
-
-
-class Response(BytesIO):
-    status = 200
-    headers = {}
-
-    def geturl(self):
-        return s.URL
+import spotify_setup as setup
 
 
 class SetupTests(unittest.TestCase):
     def setUp(self):
-        self.temp = TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.controller = s.SpotifySetup(self.temp.name, Mock())
-        self.stack = ExitStack()
-        self.addCleanup(self.stack.close)
+        root = TemporaryDirectory()
+        self.addCleanup(root.cleanup)
+        self.controller = setup.SpotifySetup(root.name, Mock())
 
-    def mock(self, name, **kwargs):
-        return self.stack.enter_context(patch.object(s, name, **kwargs))
-
-    def test_reuse_both_editions_and_skip_running_player(self):
-        self.mock('ctypes').windll.shell32.IsUserAnAdmin.return_value = False
-        detect = self.mock('installed')
-        active = self.mock('running', return_value=True)
-        download = self.mock('download')
-        self.assertEqual(self.controller.prepare(), 'ready')
-        detect.assert_not_called()
-        active.return_value = False
-        desktop = Path(self.temp.name) / 'Spotify.exe'
-        detect.return_value = desktop
-        signed = self.mock('open_verified')
-        self.assertEqual(self.controller.prepare(), 'opened')
-        signed.assert_called_once_with(desktop, self.controller.cancelled)
-        detect.return_value = 'spotify:'
-        with patch.object(s.os, 'startfile') as shell:
-            self.assertEqual(self.controller.prepare(), 'opened')
-            shell.assert_called_once_with('spotify:', 'open')
-        download.assert_not_called()
-
-    def test_install_only_once_and_verify_detection_after_launch(self):
-        self.mock('ctypes').windll.shell32.IsUserAnAdmin.return_value = False
-        self.mock('running', return_value=False)
-        self.mock('installed', side_effect=[None, None, Path('Spotify.exe')])
+    def test_only_one_click_runs_native_setup_and_all_phases_relay(self):
         entered, resume, done = Event(), Event(), Event()
-        def stage(*args):
+        states = []
+
+        def native_work(operation, root, preferred, progress):
+            self.assertEqual(operation, 1)
+            self.assertEqual(root, self.controller.root)
+            self.assertEqual(preferred, r"C:\Verified\Spotify.exe")
+            self.assertTrue(progress(1))
             entered.set()
             self.assertTrue(resume.wait(5))
-        download = self.mock('download', side_effect=stage)
-        launch = self.mock('open_verified')
-        self.controller.changed = lambda: done.set() if self.controller.status()['phase']=='installed' else None
-        self.controller.begin()
-        self.assertTrue(entered.wait(3))
-        for _ in range(100): self.controller.begin()
-        resume.set()
-        self.assertTrue(done.wait(6))
-        self.assertEqual(download.call_count, 1)
-        launch.assert_called_once_with(self.controller.path, self.controller.cancelled)
+            self.assertTrue(progress(2))
+            return "installed"
 
-    def test_no_elevated_install_and_no_launch_if_identity_is_unknown(self):
-        self.mock('running', return_value=False)
-        detect = self.mock('installed', return_value=None)
-        download = self.mock('download')
-        self.mock('ctypes').windll.shell32.IsUserAnAdmin.return_value = True
-        self.assertEqual(self.controller.prepare(), 'elevated')
-        detect.side_effect = OSError('cannot inspect the current account')
-        with self.assertRaises(OSError): self.controller.prepare()
-        download.assert_not_called()
+        def changed():
+            states.append(self.controller.status()["phase"])
+            if states[-1] == "installed":
+                done.set()
 
-    def test_download_limits_origin_cancellation_and_publisher(self):
-        path, cancel = self.controller.path, self.controller.cancelled
-        def run(response):
-            s.download(path, cancel, lambda *a, **k: response)
-        bad = Response(b'MZ')
-        bad.geturl = lambda: 'https://example.org/app.exe'
-        with self.assertRaises(ValueError): run(bad)
-        for length in ['0','3',str(s.MAX_BYTES+1)]:
-            bad = Response(b'MZ')
-            bad.headers = {'Content-Length':length}
-            with self.assertRaises(ValueError): run(bad)
-        cancel.set()
-        with self.assertRaises(InterruptedError): run(Response(b'MZ'))
-        cancel.clear()
-        self.assertFalse(path.exists() or path.with_suffix('.part').exists())
-        run(Response(b'MZ'))
-        self.assertIn('ZoneId=3',Path(str(path)+':Zone.Identifier').read_text())
-        with patch.object(s.os,'startfile') as launch:
-            with self.assertRaises(ValueError): s.open_verified(path, cancel)
-            launch.assert_not_called()
+        self.controller.changed = changed
+        native = Mock()
+        native.setup.side_effect = native_work
+        with patch.object(setup, "provider", return_value=native), patch.object(
+                setup, "_saved", return_value={"desktop": r"C:\Verified\Spotify.exe"}
+        ):
+            self.controller.begin()
+            self.assertTrue(entered.wait(5))
+            for _ in range(100):
+                self.controller.begin()
+            resume.set()
+            self.assertTrue(done.wait(5))
+        native.setup.assert_called_once()
+        self.assertEqual(states, ["checking", "downloading", "installing", "installed"])
+
+    def test_controller_passes_cancellation_back_to_native_worker(self):
+        entered, release, done = Event(), Event(), Event()
+
+        def native_work(operation, root, preferred, progress):
+            self.assertTrue(progress(1))
+            entered.set()
+            self.assertTrue(release.wait(5))
+            self.assertFalse(progress(0))
+            return "idle"
+
+        self.controller.changed = lambda: done.set() if self.controller.status()["phase"] == "idle" else None
+        native = Mock()
+        native.setup.side_effect = native_work
+        with patch.object(setup, "provider", return_value=native):
+            self.controller.begin()
+            self.assertTrue(entered.wait(5))
+            self.controller.cancelled.set()
+            release.set()
+            self.assertTrue(done.wait(5))
+            self.controller.begin()
+        native.setup.assert_called_once()
+
+    def test_real_native_discovery_and_unsigned_rejection_without_launch(self):
+        native = setup.provider()
+        if native is None:
+            self.skipTest("Build the Rust media DLL before running Windows integration fixtures")
+        discovered = native.worker.submit(native.setup, 2, self.controller.root).result()
+        self.assertIsInstance(discovered["running"], bool)
+        if discovered["installation"] is not None:
+            self.assertIn(discovered["installation"]["edition"], {"desktop", "store"})
+        path = self.controller.path
+        path.parent.mkdir()
+        path.write_bytes(b"MZ unsigned fixture")
+        with self.assertRaisesRegex(OSError, "could not verify Spotify AB"):
+            native.setup(3, self.controller.root)
+        part = path.with_suffix(".part")
+        part.write_bytes(b"fixture")
         self.controller.cleanup()
-        self.assertFalse(path.exists())
+        self.assertFalse(path.exists() or part.exists())
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main(verbosity=2)

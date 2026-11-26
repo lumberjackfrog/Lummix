@@ -6,7 +6,8 @@ use std::{
     ptr::null_mut,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        mpsc::{self, TrySendError},
+        Arc, Mutex,
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
@@ -78,6 +79,10 @@ impl Request {
             let read = read_before(&mut stream, &mut block, deadline)?;
             data.extend_from_slice(&block[..read]);
         }
+    }
+
+    pub fn headers(&self) -> &[(String, String)] {
+        &self.headers
     }
 
     fn body(&mut self, size: usize) -> io::Result<Vec<u8>> {
@@ -164,12 +169,16 @@ pub fn send(mut request: Request, status: u16, body: Vec<u8>, mime: &str, extra:
 
 pub struct Listener {
     running: Arc<AtomicBool>,
+    accept: Option<JoinHandle<()>>,
     workers: Vec<JoinHandle<()>>,
 }
 
 impl Drop for Listener {
     fn drop(&mut self) {
         self.running.store(false, Ordering::Release);
+        if let Some(thread) = self.accept.take() {
+            let _ = thread.join();
+        }
         while let Some(thread) = self.workers.pop() {
             let _ = thread.join();
         }
@@ -181,33 +190,66 @@ pub fn listen(
     bind: u16,
     handler: impl Fn(Request) + Send + Sync + 'static,
 ) -> Option<(Listener, u16)> {
-    let server = Arc::new(TcpListener::bind((address, bind)).ok()?);
+    listen_workers(address, bind, 2, handler)
+}
+
+pub fn listen_workers(
+    address: std::net::Ipv4Addr,
+    bind: u16,
+    workers: usize,
+    handler: impl Fn(Request) + Send + Sync + 'static,
+) -> Option<(Listener, u16)> {
+    let server = TcpListener::bind((address, bind)).ok()?;
     server.set_nonblocking(true).ok()?;
     let port = server.local_addr().ok()?.port();
     let handler = Arc::new(handler);
+    let (send, receive) = mpsc::sync_channel(workers * 2);
+    let receive = Arc::new(Mutex::new(receive));
+    let running = Arc::new(AtomicBool::new(true));
+    let accept = {
+        let running = running.clone();
+        thread::Builder::new()
+            .name(format!("lummix-accept-{port}"))
+            .spawn(move || {
+                while running.load(Ordering::Acquire) {
+                    match server.accept() {
+                        Ok((stream, _)) => match send.try_send(stream) {
+                            Ok(()) | Err(TrySendError::Full(_)) => {}
+                            Err(TrySendError::Disconnected(_)) => break,
+                        },
+                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                            thread::sleep(Duration::from_millis(20))
+                        }
+                        Err(_) => break,
+                    }
+                }
+            })
+            .ok()?
+    };
     let mut listener = Listener {
-        running: Arc::new(AtomicBool::new(true)),
+        running,
+        accept: Some(accept),
         workers: Vec::new(),
     };
-    for _ in 0..2 {
-        let (server, handler, running) =
-            (server.clone(), handler.clone(), listener.running.clone());
+    for _ in 0..workers {
+        let (handler, running, receive) =
+            (handler.clone(), listener.running.clone(), receive.clone());
         let worker = thread::Builder::new()
             .name(format!("lummix-local-{port}"))
             .spawn(move || {
                 while running.load(Ordering::Acquire) {
-                    match server.accept() {
-                        Ok((stream, _)) => {
-                            if let Ok(request) = Request::read(stream) {
-                                if running.load(Ordering::Acquire) {
-                                    handler(request);
-                                }
-                            }
+                    let stream = match receive
+                        .lock()
+                        .ok()
+                        .and_then(|receiver| receiver.recv().ok())
+                    {
+                        Some(stream) if running.load(Ordering::Acquire) => stream,
+                        _ => break,
+                    };
+                    if let Ok(request) = Request::read(stream) {
+                        if running.load(Ordering::Acquire) {
+                            handler(request);
                         }
-                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                            thread::sleep(Duration::from_millis(30))
-                        }
-                        Err(_) => break,
                     }
                 }
             })
@@ -216,6 +258,123 @@ pub fn listen(
     }
     Some((listener, port))
 }
+
+pub fn read_payload(request: &mut Request, limit: usize) -> Result<Vec<u8>, u16> {
+    let expect = if header_values(request, "Expect").next().is_some() {
+        if !single_header(request, "Expect")
+            .is_some_and(|value| value.eq_ignore_ascii_case("100-continue"))
+        {
+            return Err(417);
+        }
+        true
+    } else {
+        false
+    };
+    fn continue_if_needed(request: &mut Request, expect: bool) -> Result<(), u16> {
+        if expect {
+            request
+                .stream
+                .write_all(b"HTTP/1.1 100 Continue\r\n\r\n")
+                .map_err(|_| 417u16)?;
+        }
+        Ok(())
+    }
+    if header_values(request, "Transfer-Encoding").next().is_some() {
+        if !single_header(request, "Transfer-Encoding")
+            .is_some_and(|value| value.eq_ignore_ascii_case("chunked"))
+            || header_values(request, "Content-Length").next().is_some()
+        {
+            return Err(400);
+        }
+        continue_if_needed(request, expect)?;
+        return read_chunks(request, limit);
+    }
+    let mut sizes = header_values(request, "Content-Length");
+    let length = match sizes.next() {
+        None => 0,
+        Some(raw) => {
+            if sizes.next().is_some()
+                || raw.is_empty()
+                || !raw.bytes().all(|byte| byte.is_ascii_digit())
+            {
+                return Err(400);
+            }
+            raw.parse::<usize>().map_err(|_| 413u16)?
+        }
+    };
+    drop(sizes);
+    if length > limit {
+        return Err(413);
+    }
+    continue_if_needed(request, expect)?;
+    request.body(length).map_err(|_| 400)
+}
+
+fn read_chunks(request: &mut Request, limit: usize) -> Result<Vec<u8>, u16> {
+    let mut data = Vec::new();
+    let mut pending = std::mem::take(&mut request.prefix);
+    let fill = |pending: &mut Vec<u8>, stream: &mut TcpStream| -> Result<(), u16> {
+        let mut block = [0; 1024];
+        let read = read_before(stream, &mut block, request.deadline).map_err(|_| 400u16)?;
+        pending.extend_from_slice(&block[..read]);
+        Ok(())
+    };
+    loop {
+        let (header, size) = loop {
+            match httparse::parse_chunk_size(&pending) {
+                Ok(httparse::Status::Complete((header, size))) if header <= 1024 => {
+                    break (header, size)
+                }
+                Ok(httparse::Status::Partial) if pending.len() < 1024 => {
+                    fill(&mut pending, &mut request.stream)?
+                }
+                _ => return Err(400),
+            }
+        };
+        if size == 0 {
+            loop {
+                let mut trailers = [httparse::EMPTY_HEADER; 32];
+                match httparse::parse_headers(&pending[header..], &mut trailers) {
+                    Ok(httparse::Status::Complete(_)) => {
+                        request.consumed_body = true;
+                        return Ok(data);
+                    }
+                    Ok(httparse::Status::Partial) if pending.len() - header < 4096 => {
+                        fill(&mut pending, &mut request.stream)?
+                    }
+                    _ => return Err(400),
+                }
+            }
+        }
+        if size > (limit - data.len()) as u64 {
+            return Err(413);
+        }
+        let end = header + size as usize;
+        while pending.len() < end + 2 {
+            fill(&mut pending, &mut request.stream)?;
+        }
+        if &pending[end..end + 2] != b"\r\n" {
+            return Err(400);
+        }
+        data.extend_from_slice(&pending[header..end]);
+        pending.drain(..end + 2);
+    }
+}
+
+pub fn decode_path(path: &str) -> Option<String> {
+    let mut result = Vec::new();
+    let mut input = path.bytes();
+    let digit = |byte: u8| char::from(byte).to_digit(16).map(|digit| digit as u8);
+    while let Some(byte) = input.next() {
+        if byte == b'%' {
+            result.push(digit(input.next()?)? * 16 + digit(input.next()?)?);
+        } else {
+            result.push(byte);
+        }
+    }
+    String::from_utf8(result).ok()
+}
+
 pub fn parse_body(request: &mut Request) -> Result<Value, u16> {
     let mime = single_header(request, "Content-Type").unwrap_or("");
     if !mime

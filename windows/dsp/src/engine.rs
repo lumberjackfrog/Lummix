@@ -61,8 +61,12 @@ impl Bus {
         1 + self.started.elapsed().as_millis() as u64
     }
     fn pop(&self) -> Option<Packet> {
-        let p = self.queue.pop()?;
-        (p.signal && p.epoch == self.epoch.load(Ordering::Acquire)).then_some(p)
+        self.next_packet().filter(|p| p.signal)
+    }
+    fn next_packet(&self) -> Option<Packet> {
+        self.queue
+            .pop()
+            .filter(|p| p.epoch == self.epoch.load(Ordering::Acquire))
     }
 }
 
@@ -218,6 +222,74 @@ pub struct Stage {
     duck: f64,
     clock: f64,
 }
+
+/// Windows capture delivers 480-frame packets; duplex callbacks can be shorter.
+pub struct DuplexStage {
+    stage: Stage,
+    packet: Option<Packet>,
+    offset: usize,
+}
+impl DuplexStage {
+    pub fn new(c: Controls) -> Self {
+        Self {
+            stage: Stage::new(c),
+            packet: None,
+            offset: 0,
+        }
+    }
+    pub fn render(
+        &mut self,
+        shared: &Shared,
+        out: &mut [Stereo],
+        mic: Option<&[f32]>,
+        status: bool,
+    ) {
+        if status {
+            shared.xruns.fetch_add(1, Ordering::Relaxed);
+        }
+        if out.len() == BLOCK && self.packet.is_none() {
+            let packet = shared.bus.pop();
+            self.stage.render_inputs(
+                shared,
+                out,
+                mic,
+                packet.as_ref().map(|p| p.samples.as_slice()),
+            );
+            return;
+        }
+        let mut at = 0;
+        while at < out.len() {
+            if self
+                .packet
+                .as_ref()
+                .is_some_and(|p| p.epoch != shared.bus.epoch.load(Ordering::Acquire))
+            {
+                self.packet = None;
+            }
+            if self.packet.is_none() {
+                self.packet = shared.bus.next_packet();
+                self.offset = 0;
+            }
+            let n = (BLOCK - self.offset).min(out.len() - at);
+            let music = self
+                .packet
+                .as_ref()
+                .filter(|p| p.signal)
+                .map(|p| &p.samples[self.offset..self.offset + n]);
+            self.stage.render_inputs(
+                shared,
+                &mut out[at..at + n],
+                mic.map(|m| &m[at..at + n]),
+                music,
+            );
+            at += n;
+            self.offset += n;
+            if self.offset == BLOCK {
+                self.packet = None;
+            }
+        }
+    }
+}
 impl Stage {
     pub fn new(c: Controls) -> Self {
         Self {
@@ -229,28 +301,6 @@ impl Stage {
             duck: 1.0,
             clock: 0.0,
         }
-    }
-    pub fn render(
-        &mut self,
-        shared: &Shared,
-        out: &mut [Stereo],
-        input: Option<&[f32]>,
-        status: bool,
-    ) {
-        if status {
-            shared.xruns.fetch_add(1, Ordering::Relaxed);
-        }
-        if out.len() != BLOCK {
-            out.fill([0.0; 2]);
-            return;
-        }
-        let packet = shared.bus.pop();
-        self.render_inputs(
-            shared,
-            out,
-            input,
-            packet.as_ref().map(|p| p.samples.as_slice()),
-        );
     }
     fn render_inputs(
         &mut self,
@@ -323,6 +373,39 @@ impl Stage {
 }
 
 pub type Engine = Arc<Shared>;
+
+#[cfg(test)]
+mod duplex_tests {
+    use super::*;
+
+    #[test]
+    fn fractional_callbacks_preserve_packet_order_and_drop_retired_audio() {
+        let controls = Controls {
+            mic: 1.,
+            music: 1.,
+            depth: 12.,
+            flags: 0,
+        };
+        let shared = Shared::new(controls);
+        let mut route = DuplexStage::new(controls);
+        let mut source = Packetizer::new(shared.bus.reset());
+        let a = std::array::from_fn::<_, BLOCK, _>(|i| [100 + i as i16, -100 - i as i16]);
+        let b = [[8000, -8000]; BLOCK];
+        source.push(&shared.bus, Some(&a), BLOCK, 0);
+        source.push(&shared.bus, Some(&b), BLOCK, 0);
+        let mut all = [[0.; 2]; 700];
+        let (first, rest) = all.split_at_mut(147);
+        route.render(&shared, first, None, false);
+        route.render(&shared, rest, None, false);
+        for (frame, value) in all.iter().zip(a.iter().chain(b.iter())) {
+            assert_eq!(*frame, value.map(|v| v as f32 / 32768.));
+        }
+        shared.bus.reset();
+        let mut silence = [[1.; 2]; 239];
+        route.render(&shared, &mut silence, None, false);
+        assert!(silence.iter().all(|x| *x == [0.; 2]));
+    }
+}
 #[no_mangle]
 pub extern "C" fn lummix_engine_new(c: Controls) -> *mut Engine {
     if !c.valid() {

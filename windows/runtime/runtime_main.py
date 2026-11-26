@@ -171,21 +171,13 @@ def main():
                 sys.stdin.buffer.read()
             else:
                 threading.Event().wait()
-    elif mode == ["spotify"]:
+    elif mode in (["spotify"], ["media"]):
+        import asyncio
+        from media_http import run
         helper = importlib.import_module("spotify-helper")
-        if linked:
-            import asyncio
-            async def until_closed():
-                runner = helper.web.AppRunner(helper.create_app(), access_log=None)
-                await runner.setup()
-                try:
-                    await helper.web.TCPSite(runner,bind,41838).start()
-                    await asyncio.to_thread(sys.stdin.buffer.read)
-                finally:
-                    await runner.cleanup()
-            asyncio.run(until_closed())
-        else:
-            helper.web.run_app(helper.create_app(),host=bind,port=41838,access_log=None,print=None)
+        async def serve_media():
+            await run(helper.create_app(), bind, linked)
+        asyncio.run(serve_media())
     elif len(mode) == 1 and Path(mode[0]).resolve() == (DATA/"detect_openvr.py").resolve():
         from detect_openvr import devices
         print(json.dumps(devices()))
@@ -196,22 +188,30 @@ def main():
     elif mode == ["check-spotify"]:
         # A bounded capture check for support. Never open a mic, deliver audio, or touch playback.
         import time
-        from spotify_process_feed import AmbiguousTarget, Capture, spotify_target, supported
+        from cable_mixer import Controls
+        from native_audio import Engine, ProcessCapture
+        from spotify_native import provider
+        from spotify_process_feed import supported
         result = dict(supported=supported(), playerFound=False, attached=False, signal=False)
         try:
-            target = spotify_target()
-            if target:
-                result.update(playerFound=True, edition=target[2])
-            if target and result["supported"]:
-                probe = Capture(target)
+            native = provider()
+            target = native.call(15) if native else {"state": 4}
+            if target["state"] == 1:
+                result.update(playerFound=True, edition=target["edition"])
+            elif target["state"] in (2, 4):
+                result["error"] = "ambiguous" if target["state"] == 2 else "unavailable"
+            if result["playerFound"] and result["supported"]:
+                probe = ProcessCapture(Engine(Controls()), (target["pid"],target["created"],target["edition"]))
                 try:
                     end = time.monotonic() + 4
-                    while time.monotonic() < end and probe.code is None and not probe.last_signal:
+                    state = probe.state
+                    while state in (0, 1) and time.monotonic() < end:
                         time.sleep(.04)
-                    result.update(attached=probe.attached, signal=bool(probe.last_signal), error=probe.code)
+                        state = probe.state
+                    result.update(attached=state in (1, 2), signal=state == 2, error=state if state < 0 else None)
                 finally:
                     probe.close()
-        except (AmbiguousTarget, OSError) as error:
+        except (OSError, RuntimeError) as error:
             result["error"] = type(error).__name__
         print(json.dumps(result))
     else:

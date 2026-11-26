@@ -1,4 +1,4 @@
-use crate::engine::{Engine, Stage, Stereo, BLOCK};
+use crate::engine::{DuplexStage, Engine, Stereo, BLOCK};
 use std::ffi::{c_int, c_ulong, c_void};
 use std::ptr;
 #[cfg(windows)]
@@ -73,12 +73,13 @@ pub struct Api {
 
 struct Callback {
     shared: Engine,
-    stage: Stage,
+    stage: DuplexStage,
 }
 pub struct Route {
     api: Api,
     stream: Handle,
     _callback: Box<Callback>,
+    frames: usize,
 }
 #[repr(C)]
 pub struct OpenResult {
@@ -146,10 +147,18 @@ pub unsafe extern "C" fn lummix_route_open(
     let controls = *engine.controls.lock().unwrap();
     let mut cb = Box::new(Callback {
         shared: engine.clone(),
-        stage: Stage::new(controls),
+        stage: DuplexStage::new(controls),
     });
     let mut last_error = -9985;
-    for high in [false, true] {
+    // Ask fast shared-mode endpoints for a 5 ms callback. Devices may negotiate
+    // a larger Windows buffer or decline; the two original modes remain available.
+    let fast = [input.low_in, output.low_out]
+        .into_iter()
+        .all(|v| v > 0. && v <= 0.005);
+    for (frames, high) in [(BLOCK / 2, false), (BLOCK, false), (BLOCK, true)] {
+        if frames < BLOCK && !fast {
+            continue;
+        }
         let src = Params {
             device: mic,
             channels: 1,
@@ -175,7 +184,7 @@ pub unsafe extern "C" fn lummix_route_open(
                 &src,
                 &dst,
                 48000.0,
-                BLOCK as c_ulong,
+                frames as c_ulong,
                 0,
                 render,
                 (&mut *cb as *mut Callback).cast(),
@@ -191,6 +200,7 @@ pub unsafe extern "C" fn lummix_route_open(
                 api: *api,
                 stream,
                 _callback: cb,
+                frames,
             };
             return OpenResult {
                 handle: Box::into_raw(Box::new(route)),
@@ -208,6 +218,10 @@ pub unsafe extern "C" fn lummix_route_open(
 #[no_mangle]
 pub unsafe extern "C" fn lummix_route_active(route: &Route) -> c_int {
     unsafe { (route.api.active)(route.stream) }
+}
+#[no_mangle]
+pub extern "C" fn lummix_route_frames(route: &Route) -> usize {
+    route.frames
 }
 #[no_mangle]
 pub unsafe extern "C" fn lummix_route_latency(route: &Route) -> Latency {

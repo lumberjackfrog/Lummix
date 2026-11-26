@@ -26,6 +26,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     SendMessageTimeoutW, SMTO_ABORTIFHUNG, WM_COMMAND,
 };
 
+use crate::desktop::{CAN_REOPEN, CLASS, OPEN};
 use crate::local_http::LoopbackClient;
 
 const OWNED: u32 = 0;
@@ -231,13 +232,7 @@ impl Runtime {
     }
 }
 
-struct WindowProtocol {
-    class: PCWSTR,
-    can_reopen: u32,
-    open: usize,
-}
-
-fn prepare(helper: PathBuf, protocol: WindowProtocol, modern: bool) -> Result<Runtime, u32> {
+fn prepare(helper: PathBuf, modern: bool) -> Result<Runtime, u32> {
     let mut runtime = Runtime {
         children: Vec::new(),
         instance: Instance::acquire(w!("Local\\LummixNativeStudio")).map_err(|_| WINDOWS_ERROR)?,
@@ -245,14 +240,14 @@ fn prepare(helper: PathBuf, protocol: WindowProtocol, modern: bool) -> Result<Ru
     let http = LoopbackClient::new().map_err(|_| WINDOWS_ERROR)?;
     if !runtime.instance.owned {
         for _ in 0..60 {
-            let window = unsafe { FindWindowW(protocol.class, null()) };
+            let window = unsafe { FindWindowW(CLASS, null()) };
             let mut can_reopen = 0;
             // Query the existing window, bounding how long an unresponsive HWND may block us.
             let answered = !window.is_null()
                 && unsafe {
                     SendMessageTimeoutW(
                         window,
-                        protocol.can_reopen,
+                        CAN_REOPEN,
                         0,
                         0,
                         SMTO_ABORTIFHUNG,
@@ -269,7 +264,7 @@ fn prepare(helper: PathBuf, protocol: WindowProtocol, modern: bool) -> Result<Ru
                 unsafe {
                     GetWindowThreadProcessId(window, &mut pid);
                     AllowSetForegroundWindow(pid);
-                    PostMessageW(window, WM_COMMAND, protocol.open, 0);
+                    PostMessageW(window, WM_COMMAND, OPEN, 0);
                 }
                 return Err(ALREADY_RUNNING);
             }
@@ -299,29 +294,21 @@ pub extern "C" fn lummix_host_dpi() {
     unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
 }
 
-/// All UTF-16 spans are valid for their declared length. The class span is nul-terminated.
+/// The UTF-16 span is valid for the declared length.
 /// The token out pointer is writable, and the token must be closed on the caller's thread.
 #[no_mangle]
 pub unsafe extern "C" fn lummix_host_start(
     helper: PCWSTR,
     helper_len: usize,
-    class: PCWSTR,
-    can_reopen: u32,
-    open: usize,
     modern_media: u32,
     token: *mut *mut c_void,
 ) -> u32 {
-    if helper.is_null() || helper_len == 0 || class.is_null() || token.is_null() {
+    if helper.is_null() || helper_len == 0 || token.is_null() {
         return WINDOWS_ERROR;
     }
     *token = null_mut();
     let helper = std::ffi::OsString::from_wide(std::slice::from_raw_parts(helper, helper_len));
-    let protocol = WindowProtocol {
-        class,
-        can_reopen,
-        open,
-    };
-    match prepare(PathBuf::from(helper), protocol, modern_media != 0) {
+    match prepare(PathBuf::from(helper), modern_media != 0) {
         Ok(runtime) => {
             *token = Box::into_raw(Box::new(runtime)).cast();
             OWNED

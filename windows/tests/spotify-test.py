@@ -1,5 +1,6 @@
 """HTTP acceptance using fake media sessions only. This test never opens a Windows player."""
 import importlib.util
+import json
 import asyncio
 import base64
 from datetime import datetime, timedelta, timezone
@@ -8,6 +9,7 @@ from pathlib import Path
 import sys
 import ctypes
 import os
+import struct
 import threading
 import time
 from types import SimpleNamespace as NS
@@ -38,6 +40,51 @@ def cover_png(color):
 
 
 class ArtworkTests(unittest.IsolatedAsyncioTestCase):
+    def test_rust_artwork_formats_bound_dimensions_and_drop_source_metadata(self):
+        for format in ("JPEG", "PNG", "GIF", "WEBP"):
+            with self.subTest(format=format):
+                raw = BytesIO()
+                with Image.new("RGB", (1024, 512), "red") as original:
+                    if format == "GIF":
+                        with Image.new("RGB", original.size, "blue") as second:
+                            original.save(raw, format=format, save_all=True, append_images=[second])
+                    else:
+                        exif = Image.Exif()
+                        exif[315] = "private fixture"
+                        original.save(raw, format=format, exif=exif)
+                data = mod.encode_artwork(raw.getvalue())
+                self.assertIsNotNone(data)
+                prefix, encoded = data.split(",", 1)
+                self.assertEqual(prefix, "data:image/jpeg;base64")
+                with Image.open(BytesIO(base64.b64decode(encoded))) as jpeg:
+                    jpeg.load()
+                    self.assertEqual((jpeg.format, jpeg.size), ("JPEG", (768, 384)))
+                    self.assertNotIn(315, jpeg.getexif())
+                    red, green, blue = jpeg.getpixel((384, 192))
+                    self.assertTrue(red > 240 and green < 12 and blue < 12)
+        self.assertIsNone(mod.encode_artwork(b"x" * (4 * 1024 * 1024 + 1)))
+        raw = BytesIO()
+        with Image.new("1", (4000, 4000)) as oversized:
+            oversized.save(raw, format="PNG")
+        self.assertIsNone(mod.encode_artwork(raw.getvalue()))
+
+    def test_partial_gif_preserves_the_logical_canvas(self):
+        raw = BytesIO()
+        with Image.new("P", (32, 32), 1) as frame:
+            frame.putpalette([0, 0, 0, 255, 0, 0] + [0] * 762)
+            frame.save(raw, format="GIF", optimize=False)
+        gif = bytearray(raw.getvalue())
+        gif[6:10] = struct.pack("<HH", 128, 64)
+        palette_size = 3 * (2 << (gif[10] & 7))
+        descriptor = gif.index(b",", 13 + palette_size)
+        gif[descriptor + 1:descriptor + 5] = struct.pack("<HH", 16, 8)
+        data = mod.encode_artwork(gif)
+        self.assertIsNotNone(data)
+        with Image.open(BytesIO(base64.b64decode(data.split(",", 1)[1]))) as jpeg:
+            self.assertEqual(jpeg.size, (128, 64))
+            self.assertLess(jpeg.getpixel((0, 0))[0], 5)
+            self.assertGreater(jpeg.getpixel((24, 20))[0], 245)
+
     def test_spotify_item_requires_an_exact_https_item(self):
         for item in (TRACK, ALBUM, f"{SPOTIFY_OPEN}/episode/{'C' * 22}"):
             with self.subTest(item=item):
@@ -133,6 +180,19 @@ class ArtworkTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(first[1], "encoded cover")
             self.assertNotEqual(first, await cache.get(ALBUM))
             self.assertEqual(fetch.await_args_list, [call(TRACK), call(TRACK), call(ALBUM)])
+
+
+class InstalledPlayerFallbackTests(unittest.TestCase):
+    def test_uses_verified_process_roots_when_the_broker_has_no_track(self):
+        with patch("spotify_locations.spotify_process_roots") as roots, patch("spotify_volume_http.spotify_windows", return_value=[]):
+            for value, expected in (
+                (None, {"state":"unavailable"}), ([], None),
+                ([(41, 7.0, "desktop")], {"state":"detected","edition":"desktop"}),
+                ([(41, 7.0, "desktop"), (61, 8.0, "store")], {"state":"ambiguous"}),
+            ):
+                with self.subTest(roots=value):
+                    roots.return_value = value
+                    self.assertEqual(mod.WindowsSessions.running_player(), expected)
 
 
 class Session:
@@ -812,6 +872,109 @@ class Tests(unittest.IsolatedAsyncioTestCase):
         self.spotify.enabled=False
         self.assertEqual((await self.post(token,"play")).status,409)
         self.assertFalse(newer.calls)
+
+
+class NativeListenerTests(unittest.IsolatedAsyncioTestCase):
+    """Run the normal media routes through Rust using synthetic sessions and profiles."""
+
+    async def test_native_commands_limits_cors_and_event_shutdown(self):
+        from aiohttp import ClientSession
+        from media_http import serve
+        from tempfile import TemporaryDirectory
+
+        origin = "http://127.0.0.1:41835"
+        headers = {"Origin": origin, "Host": "127.0.0.1:41838"}
+        player = Session("Spotify.exe")
+        player.transport["is_next_enabled"] = True
+        sessions = Sessions([player])
+        peak = NS(read=AsyncMock(return_value=None), close=AsyncMock())
+        ducker = FixtureDucker()
+        with TemporaryDirectory() as folder:
+            mixer = NS(stream=None, set_controls=Mock())
+            output = mod.MixOutput(path=Path(folder)/"gains.json", mixer=mixer)
+            app = mod.create_app(sessions, inventory=lambda: (["desktop"], True), mix_output=output,
+                                 duck_factory=lambda: ducker, peak_meter=peak)
+            pending = None
+            async with ClientSession() as client:
+                async with serve(app, listen_port=0, qa=True) as port:
+                    url = f"http://127.0.0.2:{port}"
+
+                    async def request(method, path, **kwargs):
+                        sent = headers | kwargs.pop("headers", {})
+                        async with client.request(method, url + path, headers=sent, **kwargs) as reply:
+                            return reply.status, reply.headers, await reply.read()
+
+                    for denied in ({"Origin": "https://example.invalid"}, {"Host": "localhost:41838"}):
+                        code, _, _ = await request("GET", "/lummix-health", headers=denied)
+                        self.assertEqual(code, 403)
+                    code, cors, body = await request("GET", "/lummix-health")
+                    self.assertEqual(code, 200)
+                    self.assertEqual(cors["Access-Control-Allow-Origin"], origin)
+                    self.assertEqual(cors["Cache-Control"], "no-store")
+                    self.assertEqual(json.loads(body)["protocol"], 2)
+                    self.assertEqual((await request("GET", "/does-not-exist"))[0], 404)
+                    self.assertEqual((await request("GET", "/spotify/control"))[0], 405)
+                    code, cors, _ = await request("OPTIONS","/spotify/control",
+                        headers={"Access-Control-Request-Method":"POST"})
+                    self.assertEqual(code, 204)
+                    self.assertEqual(cors["Access-Control-Allow-Methods"], "POST")
+
+                    _, _, body = await request("GET", "/spotify/status")
+                    first = json.loads(body)
+                    self.assertEqual(first["state"], "ready")
+                    capability = {"X-Lum-Spotify-Token": first["token"]}
+                    self.assertEqual((await request("POST", "/spotify/control",
+                        headers=capability | {"Origin":"http://localhost:41835"}, json={"action":"next"}))[0], 403)
+                    self.assertFalse(player.calls)
+                    self.assertEqual((await request("POST","/spotify/control",headers=capability,
+                                                    json={"action":"next"}))[0], 200)
+                    self.assertEqual(player.calls, ["next"])
+
+                    _, _, body = await request("GET", "/mix/gains")
+                    write = {"X-Lum-Mix-Token":json.loads(body)["token"], "Content-Type":"application/json"}
+                    self.assertEqual((await request("POST","/mix/gains",headers=write,
+                                                    data=b'{"musicGain":120,"musicGain":130}'))[0], 400)
+                    size_boundary = b'{"musicGain":120}'.ljust(256, b' ')
+                    self.assertEqual((await request("POST","/mix/gains",headers=write,data=size_boundary))[0], 200)
+                    self.assertEqual((await request("POST","/mix/gains",headers=write,data=size_boundary+b' '))[0], 413)
+                    self.assertEqual((await request("POST","/mix/gains",headers=write|{"Cookie":"local=1"},
+                                                    data=b'{"musicGain":130}'))[0], 403)
+
+                    async def chunked():
+                        yield b'{"music'
+                        yield b'Gain":130}'
+                    self.assertEqual((await request("POST","/mix/gains",headers=write,data=chunked()))[0], 200)
+                    self.assertEqual(output.gains["musicGain"], 130)
+
+                    # Preferences retain the larger JPEG envelope through the same listener.
+                    image = "data:image/jpeg;base64," + base64.b64encode(
+                        b"\xff\xd8\xff" + b"J" * 4096 + b"\xff\xd9").decode()
+                    self.assertEqual((await request("POST","/mix/preferences",headers=write,
+                        json={"settings":{"background":"custom","image":image}}))[0], 200)
+
+                    _, _, body = await request("GET", "/spotify/changes")
+                    revision = json.loads(body)["revision"]
+                    polls = [asyncio.create_task(request("GET", "/spotify/changes", params={"since":revision}))
+                             for _ in range(4)]
+                    try:
+                        await asyncio.sleep(.1)
+                        self.assertTrue(all(not poll.done() for poll in polls))
+                        self.assertEqual((await asyncio.wait_for(request("GET","/lummix-health"),1))[0], 200)
+                        await asyncio.to_thread(player.emit, player.media_handlers)
+                        responses = await asyncio.wait_for(asyncio.gather(*polls), 2)
+                        revisions = {json.loads(response[2])["revision"] for response in responses}
+                        self.assertEqual(len(revisions), 1)
+                        latest = revisions.pop()
+                        self.assertNotEqual(latest, revision)
+                        pending = asyncio.create_task(request("GET","/spotify/changes", params={"since":latest}))
+                        await asyncio.sleep(.1)
+                        self.assertFalse(pending.done())
+                    finally:
+                        for poll in polls:
+                            poll.cancel()
+                if pending is not None:
+                    self.assertEqual((await asyncio.wait_for(pending, 2))[0], 503)
+            self.assertIsNone(sessions.manager_listener)
 
 
 if __name__=="__main__":

@@ -15,7 +15,6 @@ if sys.getwindowsversion().build >= 20348:
     MEDIA_CAPABILITIES.add("spotify-process-mix-v1")
 MEDIA_CONFLICT = ("Port 41838 is already in use by an incompatible service. Close any earlier Lummix "
                  "window or stop its media helper, then reopen this version of Lummix.")
-user = ctypes.WinDLL("user32", use_last_error=True)
 
 def request(port,path,method="GET",headers=None,limit=131072):
     conn = HTTPConnection("127.0.0.1",port,timeout=1.5)
@@ -52,16 +51,16 @@ def launch():
         host.lummix_host_dpi.argtypes = []
         host.lummix_host_dpi.restype = None
         host.lummix_host_dpi()
-        from studio_window import CAN_REOPEN, CLASS, OPEN, run
-        host.lummix_host_start.argtypes = [ctypes.c_wchar_p, ctypes.c_size_t, ctypes.c_wchar_p,
-            ctypes.c_uint32, ctypes.c_size_t, ctypes.c_uint32, ctypes.POINTER(ctypes.c_void_p)]
+        from studio_window import run
+        host.lummix_host_start.argtypes = [ctypes.c_wchar_p, ctypes.c_size_t,
+            ctypes.c_uint32, ctypes.POINTER(ctypes.c_void_p)]
         host.lummix_host_start.restype = ctypes.c_uint32
         host.lummix_host_stop.argtypes = [ctypes.c_void_p]
         host.lummix_host_stop.restype = None
         helper=Path(sys.executable).resolve()
         if not getattr(sys,"frozen",False):
             helper=Path(__file__).resolve().parents[2]/".build/frozen/runtime/Lummix Helper.exe"
-        status = host.lummix_host_start(*wide_path(helper), CLASS, CAN_REOPEN, OPEN,
+        status = host.lummix_host_start(*wide_path(helper),
                                         sys.getwindowsversion().build >= 20348, ctypes.byref(token))
         if status == 1:
             return
@@ -75,7 +74,12 @@ def launch():
             diagnostics.record("closed")
     except Exception as exc:
         diagnostics.record("startup_failed")
-        user.MessageBoxW(None,str(exc),"Lummix",0x10)
+        if host is None:
+            ctypes.windll.user32.MessageBoxW(None, str(exc), "Lummix", 0x10)
+        else:
+            host.lummix_desktop_startup_error.argtypes = [ctypes.c_wchar_p]
+            host.lummix_desktop_startup_error.restype = None
+            host.lummix_desktop_startup_error(str(exc))
         raise SystemExit(1) from exc
     finally:
         if token:

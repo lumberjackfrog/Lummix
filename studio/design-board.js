@@ -23,11 +23,15 @@ if(!installed) try { Object.assign(config, JSON.parse(localStorage.getItem(store
 const validView = value => value === 'wrist' ? 'wrist' : 'desktop';
 config.view = validView(new URLSearchParams(location.search).get('view') ?? config.view);
 let lastSource = '', socket = null, retryAt = 0, palette = {}, lastAttempt = 0;
-const themeKeys = ['Hi','Mid','Dark','Contrast','Accent','AccentBright','Confirm','Warning','Error'];
+let appearance;
+const readyAppearance=window.LumControls.then(controls=>{
+  appearance=controls.appearance;
+  paint();
+  return appearance;
+}).catch(()=>null);
 const themes = new Map();
 
 function sendTheme(){for(const theme of themes.values()) canvas.contentWindow?.postMessage({type:'lum-board-theme',theme},location.origin);}
-const safeHex = value => /^[0-9a-f]{6}([0-9a-f]{2})?$/i.test(String(value || '').replace(/^#/, '')) ? '#' + String(value).replace(/^#/, '') : '';
 function persist(){if(!installed)try{ localStorage.setItem(storeKey, JSON.stringify(config)); } catch{}}
 function paint(){
   const doc = canvas.contentDocument;
@@ -37,7 +41,7 @@ function paint(){
   let skin = doc.getElementById('board-design-overrides');
   if(!skin){skin = doc.createElement('style');skin.id = 'board-design-overrides';doc.head.append(skin);}
   const rules = [];
-  if(config.palette === 'custom' && safeHex(config.swatch)) rules.push('--mint:' + config.swatch);
+  if(config.palette === 'custom' && appearance?.swatch(config.swatch)) rules.push('--mint:' + config.swatch);
   skin.textContent = (rules.length ? '.mixer{--lum-accent:'+config.swatch+';' + rules.join(';') + '}' : '') +
     (config.view === 'wrist' ? '.frame{max-width:750px!important}.layout{display:block!important}.mixer{display:none!important}.wrist-area{display:block!important;width:min(100%,620px)!important;max-width:none!important;margin:0 auto!important}' : '');
   canvas.style.maxWidth = config.size;
@@ -67,17 +71,17 @@ function listen(){
   const ws = new WebSocket('ws://127.0.0.1:42070/?client=lum-mix-design');
   socket = ws;
   ws.onopen = () => ws.send(JSON.stringify({sender:'lum-mix-design',target:'xsoverlay',command:'SubscribeToEvents',jsonData:JSON.stringify(['Theme']),rawData:null}));
-  ws.onmessage = event => {
+  ws.onmessage = async event => {
     try{
       const msg=JSON.parse(event.data);
       if(msg.command !== 'UpdateTheme') return;
       const data=typeof msg.jsonData==='string'?JSON.parse(msg.jsonData):msg.jsonData;
       if(!data || !data.ThemeType) return;
-      const next={};
-      for(const key of themeKeys){const hex = safeHex(data[key] || (key==='AccentBright' && data.AccentHi));if(hex) next[key]=hex;}
-      if(next.Accent || next.Mid){
-        palette=next;
-        const clean=Object.fromEntries(Object.entries(next).map(([k,v])=>[k,v.slice(1)]));
+      const engine=appearance||await readyAppearance;
+      if(socket!==ws || !engine)return;
+      const clean=engine.palette(data,true);
+      if(clean.Accent || clean.Mid){
+        palette=clean;
         clean.ThemeType=Number(data.ThemeType);clean.UseMediaTheme=Boolean(data.UseMediaTheme);
         themes.set(clean.ThemeType,clean);paint();sendTheme();
       }

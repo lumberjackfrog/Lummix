@@ -578,3 +578,4 @@ mod action_tests {
         assert!(!gate.is_current(next));
     }
 }
+mod appearance;

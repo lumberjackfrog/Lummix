@@ -26,10 +26,10 @@
   let token = '', queue = Promise.resolve();
   const select = (values,names) => Object.fromEntries(names.map(name=>[name,values[name]]));
   let engine;
-  const loadEngine = window.LumControls.then(({preferences})=>{
+  const loadEngine = window.LumControls.then(({preferences,appearance})=>{
     engine=preferences;
     engine.change(pending);
-    return engine;
+    return {prefs:engine,appearance};
   });
   loadEngine.catch(()=>{});
   const native = (() => {
@@ -145,20 +145,20 @@
   });
   el('app-exit').addEventListener('click',()=>native?.postMessage('exit'));
 
-  function legacy() {
+  function legacy(appearance) {
     const values={};
     try {
       for(const [name,key] of Object.entries(keys)) {
         const raw=localStorage.getItem(key);
         if(raw===null) continue;
-        if(name==='snap') {if(['0','5','10','20'].includes(raw)) values.snap=Number(raw);}
-        else if(name==='background') {if(['custom','album'].includes(raw)) values.background=raw;}
-        else if(name==='image') {if(raw.startsWith('data:image/jpeg;base64,/9j/') && raw.length<400000) values.image=raw;}
-        else if(raw==='true'||raw==='false') values[name]=raw==='true';
+        const value=name==='snap'?appearance.snap(raw):
+          name==='background'?(appearance.mode(raw)===undefined?undefined:raw):
+          name==='image'?(appearance.image(raw,true)?raw:undefined):appearance.boolean(raw);
+        if(value!==undefined)values[name]=value;
       }
-      const appearance=JSON.parse(localStorage.getItem('lum-mix-appearance')||'{}');
-      if(typeof appearance?.follow==='boolean') values.followTheme ??= appearance.follow;
-      if(typeof appearance?.dark==='boolean') values.dark ??= appearance.dark;
+      const previous=JSON.parse(localStorage.getItem('lum-mix-appearance')||'{}');
+      if(typeof previous?.follow==='boolean') values.followTheme ??= previous.follow;
+      if(typeof previous?.dark==='boolean') values.dark ??= previous.dark;
     } catch {}
     return values;
   }
@@ -194,11 +194,11 @@
   }
   async function sync() {
     try {
-      const prefs=await loadEngine;
+      const {prefs,appearance}=await loadEngine;
       let saved;
       if(prefs.needsRead(Boolean(token))) {
         saved=await request();
-        const old=legacy();
+        const old=legacy(appearance);
         const migrate=prefs.migration(old,saved);
         if(migrate.length) saved=await request({settings:select(old,migrate),migrate:true});
         prefs.finishMigration();

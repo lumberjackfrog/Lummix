@@ -1,13 +1,11 @@
-use std::ffi::OsString;
 use std::io;
 use std::ptr::{null, null_mut};
 
-use base64::{engine::general_purpose::STANDARD, Engine};
 use windows_sys::Win32::Security::Cryptography::{
     BCryptCloseAlgorithmProvider, BCryptCreateHash, BCryptDestroyHash, BCryptDestroyKey,
-    BCryptFinishHash, BCryptHash, BCryptHashData, BCryptImportKeyPair,
-    BCryptOpenAlgorithmProvider, BCryptVerifySignature, BCRYPT_ALG_HANDLE, BCRYPT_ECCPUBLIC_BLOB,
-    BCRYPT_ECDSA_P256_ALGORITHM, BCRYPT_HASH_HANDLE, BCRYPT_KEY_HANDLE, BCRYPT_SHA256_ALGORITHM,
+    BCryptFinishHash, BCryptHash, BCryptHashData, BCryptImportKeyPair, BCryptOpenAlgorithmProvider,
+    BCryptVerifySignature, BCRYPT_ALG_HANDLE, BCRYPT_ECCPUBLIC_BLOB, BCRYPT_ECDSA_P256_ALGORITHM,
+    BCRYPT_HASH_HANDLE, BCRYPT_KEY_HANDLE, BCRYPT_SHA256_ALGORITHM,
 };
 
 fn status(code: i32, context: &'static str) -> io::Result<()> {
@@ -110,18 +108,25 @@ impl Sha256 {
         let mut hash = null_mut();
         let code = unsafe { BCryptCreateHash(algorithm.0, &mut hash, null_mut(), 0, null(), 0, 0) };
         status(code, "Could not create update hash")?;
-        Ok(Self { hash, _algorithm: algorithm })
+        Ok(Self {
+            hash,
+            _algorithm: algorithm,
+        })
     }
 
     pub(crate) fn update(&mut self, block: &[u8]) -> io::Result<()> {
-        status(unsafe { BCryptHashData(self.hash, block.as_ptr(), block.len() as u32, 0) },
-               "Could not hash update bytes")
+        status(
+            unsafe { BCryptHashData(self.hash, block.as_ptr(), block.len() as u32, 0) },
+            "Could not hash update bytes",
+        )
     }
 
     pub(crate) fn finish(self) -> io::Result<[u8; 32]> {
         let mut digest = [0u8; 32];
-        status(unsafe { BCryptFinishHash(self.hash, digest.as_mut_ptr(), digest.len() as u32, 0) },
-               "Could not finish update hash")?;
+        status(
+            unsafe { BCryptFinishHash(self.hash, digest.as_mut_ptr(), digest.len() as u32, 0) },
+            "Could not finish update hash",
+        )?;
         Ok(digest)
     }
 }
@@ -132,24 +137,10 @@ impl Drop for Sha256 {
     }
 }
 
-pub fn run(args: &[OsString]) -> io::Result<()> {
-    let [key, data, signature] = args else {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "Missing update verification arguments",
-        ));
-    };
-    let decode = |arg: &OsString| -> io::Result<Vec<u8>> {
-        STANDARD
-            .decode(arg.to_str().unwrap_or_default())
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
-    };
-    verify(&decode(data)?, &decode(signature)?, &decode(key)?)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::{engine::general_purpose::STANDARD, Engine};
 
     #[test]
     fn verifies_historical_official_update_and_rejects_tampering() {

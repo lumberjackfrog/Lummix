@@ -201,6 +201,19 @@ def main(installed_exe=None):
                 assert dll.is_file() and any(Path(mapping.path) == dll for mapping in
                     psutil.Process(proc[41838].pid).memory_maps()), "Installed media service did not load its Rust mixer"
                 report["loadedRustMixer"] = {"bytes":dll.stat().st_size, "sha256":hashlib.sha256(dll.read_bytes()).hexdigest()}
+                host_library = dll.with_name("lummix_host.dll")
+                for port in (41836, 41838, 41839):
+                    assert any(Path(m.path) == host_library for m in psutil.Process(proc[port].pid).memory_maps()), (
+                        f"The installed service on {port} did not load its native host")
+                assert not any(p.name.lower().startswith("numpy") for p in dll.parent.iterdir())
+                report["nativeServicePorts"] = [41835, 41836, 41838, 41839]
+                if os.environ.get("GITHUB_ACTIONS") == "true" and not any(
+                        p.info["name"] == "Spotify.exe" for p in psutil.process_iter(["name"])):
+                    check = subprocess.run([exe, "check-spotify"], cwd=cwd, env=env, capture_output=True,
+                                           text=True, check=True, timeout=25, creationflags=subprocess.CREATE_NO_WINDOW)
+                    diagnostic = json.loads(check.stdout)
+                    assert not diagnostic["playerFound"] and not diagnostic["attached"] and not diagnostic["signal"]
+                    report["noPlayerDiagnostic"] = diagnostic
                 assert mix["engineAvailable"] and not mix["routeActive"]
                 report["nativeMix"] = {k:mix[k] for k in ("engineAvailable","micGain","musicGain","routeActive")}
                 panel = fetch(41839, "/wrist")

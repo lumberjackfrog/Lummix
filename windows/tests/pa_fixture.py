@@ -11,6 +11,7 @@ Callback = c.CFUNCTYPE(integer, ptr, ptr, unsigned, ptr, unsigned, ptr)
 class Driver:
     def __init__(self):
         self.live = self.closed = self.reject_low = False
+        self.reject_short = False
         self.opens = []
         self.refs = []
         ffi = sd._ffi
@@ -27,9 +28,9 @@ class Driver:
         def open_stream(place, inp, out, rate, frames, flags, callback, user):
             left = ffi.cast("PaStreamParameters *",inp)
             right = ffi.cast("PaStreamParameters *",out)
-            mode = "low" if left.suggestedLatency == .01 else "high"
+            mode = "low" if left.suggestedLatency == self.device.defaultLowInputLatency else "high"
             self.opens.append((mode,left.device,right.device,int(frames),rate,flags))
-            if self.reject_low and mode == "low":
+            if (self.reject_low and mode == "low") or (self.reject_short and frames < 480):
                 return -9985
             self.callback, self.user = Callback(callback),user
             place[0] = 1234

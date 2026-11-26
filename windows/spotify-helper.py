@@ -4,14 +4,12 @@ Windows media access is provided by the Rust library and scoped to official Spot
 No playback is requested until an allowed mixer origin presents its status capability.
 """
 import asyncio
-import base64
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 import ctypes
 from dataclasses import dataclass
 import hashlib
 import hmac
-from io import BytesIO
 import math
 import os
 import secrets
@@ -36,7 +34,6 @@ ORIGINS = {"http://127.0.0.1:41835", "http://localhost:41835"}
 
 SPOTIFY_IDS = {"spotify.exe": "desktop", STORE_FAMILY.casefold() + "!spotify": "store"}
 TOKEN_LIFETIME = 600
-MAX_ART_PIXELS = 12_000_000
 CHANGE_WAIT = 22
 CHANGE_DEBOUNCE = .055
 TRANSPORT = {
@@ -107,20 +104,8 @@ def read_session_media(session):
 
 
 def encode_artwork(data):
-    from PIL import Image
-    try:
-        with Image.open(BytesIO(data), formats=("JPEG", "PNG", "WEBP", "GIF")) as image:
-            if image.width * image.height > MAX_ART_PIXELS:
-                return None
-            image.thumbnail((768, 768), Image.Resampling.LANCZOS)
-            rgb = image.convert("RGB")
-            # Preserve the artwork pixels while dropping source metadata and animation.
-            rgb.info.clear()
-            out = BytesIO()
-            rgb.save(out, "JPEG", quality=85)
-    except (Image.DecompressionBombError, ValueError, OSError, SyntaxError):
-        return None
-    return "data:image/jpeg;base64," + base64.b64encode(out.getvalue()).decode("ascii")
+    native = media_provider()
+    return native.encode_artwork(data) if native is not None else None
 
 
 def spotify_sessions(manager):
@@ -146,16 +131,17 @@ class WindowsSessions:
     @staticmethod
     def running_player():
         """Identify the local player even while Windows media controls are starting or unavailable."""
-        from spotify_process_feed import AmbiguousTarget, spotify_target
+        from spotify_locations import spotify_process_roots
         from spotify_volume_http import VolumeError, spotify_windows
 
-        try:
-            target = spotify_target()
-        except AmbiguousTarget:
+        roots = spotify_process_roots()
+        if roots is None:
+            return {"state": "unavailable"}
+        if len(roots) > 1:
             return {"state": "ambiguous"}
-        if not target:
+        if not roots:
             return None
-        pid, created, edition = target
+        pid, created, edition = roots[0]
         result = {"state": "detected", "edition": edition}
         try:
             windows = [hwnd for hwnd, owner, started in spotify_windows(edition)
@@ -237,7 +223,7 @@ class ChangeFeed:
 
     def dispatch(self, refresh):
         # WinRT delivers callbacks on its own threads. All subscription state,
-        # debounce timers and HTTP waiters belong to the aiohttp event loop.
+        # Debounce timers and HTTP waiters belong to the media event loop.
         if not self.closed and self.loop and not self.loop.is_closed():
             self.loop.call_soon_threadsafe(self.schedule, refresh)
 
@@ -709,5 +695,10 @@ def create_app(sessions=None, *, expected_host=f"{HOST}:{PORT}", inventory=read_
 
 
 if __name__ == "__main__":
-    web.run_app(create_app(), host=HOST, port=PORT, access_log=None, print=None)
+    from media_http import run
+
+    async def main():
+        await run(create_app(), HOST, linked=False)
+
+    asyncio.run(main())
 

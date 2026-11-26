@@ -133,6 +133,11 @@ jobs:
         run: |
           if ([version]$env:RELEASE_TAG.Substring(1) -ge [version]'1.0.8') {
             $env:PYTHONPATH = "$(Join-Path $PWD 'windows');$(Join-Path $PWD 'windows/runtime')"
+            if (Test-Path -LiteralPath 'windows/host-rs/src/release_feed.rs') {
+              cargo build --locked --release --lib --manifest-path windows/host-rs/Cargo.toml --target-dir .build/host
+              if ($LASTEXITCODE) { throw 'Could not build the native release verifier from the reviewed source.' }
+              $env:LUMMIX_HOST_DLL = (Resolve-Path '.build/host/release/lummix_host.dll').Path
+            }
             python -B windows/tests/verify_published_update.py $env:RELEASE_TAG (Join-Path $env:RUNNER_TEMP 'lummix-release/Lummix.Setup.exe')
             if ($LASTEXITCODE -ne 0) { throw 'Public update signature or downloaded installer did not verify.' }
           }

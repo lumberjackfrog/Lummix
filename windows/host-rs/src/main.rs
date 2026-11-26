@@ -11,8 +11,6 @@ mod diagnostics;
 mod sign_in;
 mod studio;
 mod studio_files;
-#[cfg(windows)]
-mod update;
 
 fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args: Vec<_> = env::args_os().skip(1).collect();
@@ -23,9 +21,6 @@ fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
         if mode == "sign-in" {
             return sign_in::run(rest).map_err(Into::into);
-        }
-        if mode == "verify-update" {
-            return update::run(rest).map_err(Into::into);
         }
     }
     let linked = match args.as_slice() {

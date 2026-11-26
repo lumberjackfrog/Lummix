@@ -14,6 +14,7 @@ from weakref import finalize
 
 
 _CALLBACK = ctypes.CFUNCTYPE(None, ctypes.c_uint64)
+_SETUP = ctypes.CFUNCTYPE(ctypes.c_bool, ctypes.c_uint32)
 _PLAYBACK_NAMES = ("CLOSED", "OPENED", "CHANGING", "STOPPED", "PLAYING", "PAUSED")
 
 
@@ -47,6 +48,9 @@ class NativeMedia:
             "cable": (ctypes.c_uint32, ctypes.c_char_p),
             "peak": (ctypes.c_char_p,),
             "capability": (ctypes.c_uint32, ctypes.c_uint64, ctypes.c_char_p),
+            "encode_artwork": (ctypes.c_char_p, ctypes.c_size_t),
+            "artwork_url": (ctypes.c_uint32, ctypes.c_char_p),
+            "artwork_cache_call": (ctypes.c_void_p, ctypes.c_uint32, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_double),
         }.items():
             operation = getattr(dll, "lummix_media_" + name)
             operation.argtypes = types
@@ -55,6 +59,12 @@ class NativeMedia:
         dll.lummix_media_release_session.restype = None
         dll.lummix_media_free.argtypes = (ctypes.c_void_p,)
         dll.lummix_media_free.restype = None
+        dll.lummix_media_artwork_cache_new.argtypes = ()
+        dll.lummix_media_artwork_cache_new.restype = ctypes.c_void_p
+        dll.lummix_media_artwork_cache_free.argtypes = (ctypes.c_void_p,)
+        dll.lummix_media_artwork_cache_free.restype = None
+        dll.lummix_spotify_setup.argtypes = (ctypes.c_uint32, ctypes.c_char_p, _SETUP)
+        dll.lummix_spotify_setup.restype = ctypes.c_void_p
         # The HTTP host can already be STA. All native calls, including finalization,
         # run away from it so reads can use a bounded MTA WinRT wait.
         self.worker = ThreadPoolExecutor(max_workers=3, thread_name_prefix="LummixRustMedia")
@@ -94,6 +104,24 @@ class NativeMedia:
         request = json.dumps(fields).encode("ascii")
         return self.decode(self.dll.lummix_media_capability, operation, store, request)
 
+    def setup(self, operation, root, preferred=None, notify=lambda _phase: True):
+        request = json.dumps({"root": str(root), "preferred": preferred}).encode("ascii")
+        return self.decode(self.dll.lummix_spotify_setup, operation, request, _SETUP(notify))
+
+    def encode_artwork(self, data):
+        if not 0 < len(data) <= 4 * 1024 * 1024:
+            return None
+        return self.decode(self.dll.lummix_media_encode_artwork, bytes(data), len(data))
+
+    def artwork_url(self, kind, url):
+        if not isinstance(url, str) or "\0" in url:
+            return None
+        try:
+            raw = url.encode("utf-8")
+        except UnicodeError:
+            return None
+        return self.decode(self.dll.lummix_media_artwork_url, kind, raw)
+
     def release(self, identity):
         try:
             self.worker.submit(self.dll.lummix_media_release_session, identity)
@@ -120,6 +148,21 @@ class NativeMedia:
         identity, token = binding
         self.events.pop(identity, None)
         self.call(7, session, kind, token)
+
+
+class NativeArtworkCache:
+    def __init__(self, native):
+        self.native = native
+        self.handle = native.dll.lummix_media_artwork_cache_new()
+        self._free = finalize(self, native.dll.lummix_media_artwork_cache_free, self.handle)
+
+    def lookup(self, item, now):
+        return self.native.decode(self.native.dll.lummix_media_artwork_cache_call,
+                                  self.handle, 0, item.encode("ascii"), None, now)
+
+    def store(self, item, cover):
+        self.native.decode(self.native.dll.lummix_media_artwork_cache_call, self.handle, 1,
+                           item.encode("ascii"), json.dumps(cover).encode("ascii"), 0)
 
 
 class NativeManager:

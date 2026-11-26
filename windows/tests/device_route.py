@@ -59,7 +59,7 @@ def tone(which,frequency):
         out[:]=(.06*np.sin((phase+np.arange(n))*2*np.pi*frequency/48000))[:,None]
         phase+=n
     with sd.OutputStream(device=indices()[which],samplerate=48000,blocksize=480,channels=2,dtype="float32",callback=render):
-        print("ready",flush=True)
+        print(os.getpid(),flush=True)
         sys.stdin.readline()
 
 
@@ -74,7 +74,7 @@ def route(pid):
     _,mic,sink=indices()
     mixer.start_mic_route(mic,sink,signed_render_ids={"isolated test"})
     try:
-        print(json.dumps(dict(active=mixer.stream.active,latency=mixer.stream.latency,mode=mixer.latency_mode)),flush=True)
+        print(json.dumps(dict(pid=os.getpid(),active=mixer.stream.active,latency=mixer.stream.latency,mode=mixer.latency_mode)),flush=True)
         for line in sys.stdin:
             changes=json.loads(line)
             if changes is None: break
@@ -112,11 +112,12 @@ def run():
         ref_hz=float(freq[np.argmax(abs(np.fft.rfft(reference*np.hanning(len(reference)))) )])
         if not (185<ref_hz<290 or 410<ref_hz<550): raise RuntimeError("Unrecognized virtual microphone reference")
         print("Windows virtual microphone reference",ref_hz,"Hz",flush=True)
-        music,_=child("--tone","2","787")
-        router,info=child("--route",music.pid)
+        _,music_pid=child("--tone","2","787")
+        router,info=child("--route",int(music_pid))
         print("real WASAPI route:",info.strip(),flush=True)
         engine=Engine(Controls())
-        observer=ProcessCapture(engine,(router.pid,psutil.Process(router.pid).create_time(),"route under test"))
+        router_pid=json.loads(info)["pid"]
+        observer=ProcessCapture(engine,(router_pid,psutil.Process(router_pid).create_time(),"route under test"))
         def measure(label, changes):
             status=send(router,changes)
             time.sleep(.45)

@@ -88,20 +88,6 @@ fn cors_json(request: Request, status: u16, data: Value) {
     );
 }
 
-fn path_decode(path: &str) -> Option<String> {
-    let mut result = Vec::new();
-    let mut input = path.as_bytes().iter().copied();
-    let digit = |byte: u8| char::from(byte).to_digit(16).map(|digit| digit as u8);
-    while let Some(byte) = input.next() {
-        if byte == b'%' {
-            result.push(digit(input.next()?)? * 16 + digit(input.next()?)?);
-        } else {
-            result.push(byte);
-        }
-    }
-    String::from_utf8(result).ok()
-}
-
 fn mime(file: &Path) -> Option<&'static str> {
     Some(
         match file.extension()?.to_str()?.to_ascii_lowercase().as_str() {
@@ -315,7 +301,7 @@ impl Preview {
             .target
             .split_once('?')
             .map_or(request.target.as_str(), |(path, _)| path);
-        let Some(route) = path_decode(raw) else {
+        let Some(route) = private_http::decode_path(raw) else {
             return reject(request, 404);
         };
         match route.as_str() {

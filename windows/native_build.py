@@ -44,6 +44,11 @@ def copy_rust_notices(destination):
             copied.add(package["id"])
             source = Path(package["manifest_path"]).parent
             files = [p for p in source.iterdir() if p.is_file() and p.name.upper().startswith(("LICENSE","LICENCE","COPYING","NOTICE"))]
+            # These published crates omit their workspace's root LICENSE. Both
+            # pinned upstream revisions contain the same Bill Avery MIT notice.
+            webview_versions = {"webview2-com":"0.39.1", "webview2-com-sys":"0.39.1", "webview2-com-macros":"0.8.1"}
+            if not files and webview_versions.get(package["name"]) == package["version"]:
+                files = [WINDOWS/"packaging/webview2-rs-LICENSE.txt"]
             if not files:
                 raise RuntimeError("Missing license file for " + package["id"])
             folder = output/(package["name"]+"-"+package["version"])

@@ -1,9 +1,6 @@
 """Release authenticity, streaming limits, idle install and local log retention."""
 import base64
 import gc
-import hashlib
-import io
-import json
 import os
 from pathlib import Path
 import tempfile
@@ -23,16 +20,7 @@ HISTORICAL = {"format":1,"tag":"v1.0.7","size":42737340,
 
 
 def validate(doc):
-    return feed.signed_release(doc,doc["tag"],doc["size"],doc["sha256"])
-
-
-def release_row():
-    tag = HISTORICAL["tag"]
-    assets = [{"name":name,"browser_download_url":f"{feed.REPO}/download/{tag}/{name}",
-               "state":"uploaded","size":size,"digest":"sha256:"+HISTORICAL["sha256"]}
-              for name,size in ((feed.ASSET,HISTORICAL["size"]),(feed.MANIFEST,300))]
-    return {"draft":False,"prerelease":True,"tag_name":tag,"published_at":"2026-11-26T00:00:00Z",
-            "html_url":feed.REPO+"/tag/"+tag,"assets":assets}
+    return feed.signed_release(doc)
 
 
 class ReleaseTests(unittest.TestCase):
@@ -41,52 +29,6 @@ class ReleaseTests(unittest.TestCase):
         for change in ({"tag":"v9.0.7"},{"sha256":"0"*64},{"size":123},{"format":True},{"signature":"!"},{"signature":base64.b64encode(bytes(64)).decode()}):
             with self.subTest(change=list(change)), self.assertRaises(feed.InvalidUpdate):
                 validate(HISTORICAL | change)
-
-    def test_feed_and_no_downgrade(self):
-        row=release_row()
-        def read(url):
-            return io.BytesIO(json.dumps([row] if url==feed.FEED else HISTORICAL).encode())
-        self.assertEqual(feed.latest("1.0.6",read),validate(HISTORICAL))
-        self.assertIsNone(feed.latest("1.0.7",read))
-        self.assertIsNone(feed.latest("1.0.8",read))
-        row["draft"]=True
-        self.assertIsNone(feed.latest("1.0.6",read))
-        row["draft"]=False
-        row["assets"][0]["browser_download_url"]="https://example.org/setup.exe"
-        with self.assertRaises(feed.InvalidUpdate): feed.latest("1.0.6",read)
-        row["assets"]=[]
-        with self.assertRaises(feed.InvalidUpdate): feed.latest("1.0.6",read)
-        for url in ("http://github.com/a","https://github.com.evil.invalid/a","https://user@github.com/a","file:///C:/a","https://github.com:8443/a"):
-            self.assertFalse(feed.safe_url(url))
-
-    def test_stream_integrity_cancellation_and_idle_install(self):
-        data=b"MZ"+bytes(2*feed.CHUNK)
-        release=feed.Release("1.0.9",len(data),hashlib.sha256(data).hexdigest())
-        stop=threading.Event()
-        with tempfile.TemporaryDirectory() as root:
-            root=Path(root)
-            for bad in (data[:-1],data+b"X",b"x"+data[1:]):
-                with self.assertRaises(feed.InvalidUpdate):
-                    feed.download(release,root,stop,lambda url:io.BytesIO(bad))
-                self.assertFalse(list(root.iterdir()))
-            stop.set()
-            with self.assertRaises(InterruptedError):
-                feed.download(release,root,stop,lambda url:io.BytesIO(data))
-            stop.clear()
-            path=feed.download(release,root,stop,lambda url:io.BytesIO(data))
-            self.assertIn("ZoneId=3",Path(str(path)+":Zone.Identifier").read_text())
-            launches=[]
-            def shell(*args): launches.append(args)
-            self.assertFalse(client_update.launch_installer(release,path,stop,idle=lambda:False,shell=shell))
-            idle=iter((True,False))
-            self.assertFalse(client_update.launch_installer(release,path,stop,idle=lambda:next(idle),shell=shell))
-            self.assertFalse(launches)
-            self.assertTrue(client_update.launch_installer(release,path,stop,idle=lambda:True,shell=shell))
-            self.assertEqual(launches,[(str(path),"open",f"/LUMMIXWAITPID={os.getpid()}")])
-            path.write_bytes(b"X"+data[1:])
-            with self.assertRaises(feed.InvalidUpdate):
-                client_update.launch_installer(release,path,stop,idle=lambda:True,shell=shell)
-            self.assertEqual(len(launches),1)
 
     def test_coalesced_checks_and_cleanup(self):
         entered,finish=threading.Event(),threading.Event()

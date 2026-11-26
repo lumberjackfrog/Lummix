@@ -1,8 +1,6 @@
 """One user-controlled update at a time, off the audio and window threads."""
 from contextlib import contextmanager
-import hashlib
 from http.client import HTTPException
-import json
 import os
 from pathlib import Path
 import threading
@@ -13,15 +11,6 @@ import pywintypes
 import diagnostics
 from release_identity import VERSION
 import update_feed as feed
-
-
-def route_idle():
-    from lummix_window import ORIGIN, request
-    try:
-        code, _, body = request(41838,"/mix/gains",headers={"Origin":ORIGIN},limit=8192)
-        return code == 200 and json.loads(body).get("routeActive") is False
-    except (OSError, ValueError, AttributeError, HTTPException):
-        return False
 
 
 @contextmanager
@@ -37,20 +26,6 @@ def locked_installer(path):
         yield stream
 
 
-def launch_installer(release, path, cancelled, idle=route_idle, shell=os.startfile):
-    if not idle():
-        return False
-    feed.plain(path.parent)
-    feed.plain(path)
-    with locked_installer(path) as file:
-        if os.fstat(file.fileno()).st_size != release.size or hashlib.file_digest(file,"sha256").hexdigest() != release.digest:
-            raise feed.InvalidUpdate("staged installer changed")
-        if cancelled.is_set() or not idle():
-            return False
-        shell(str(path),"open",f"/LUMMIXWAITPID={os.getpid()}")
-    return True
-
-
 class Updates:
     def __init__(self, root, changed):
         self.directory = Path(root) / "Updates"
@@ -63,9 +38,7 @@ class Updates:
         self.message = ""
         self.last_request = 0
         try:
-            feed.plain(self.directory)
-            for name in (feed.ASSET,"download.part"):
-                (self.directory/name).unlink(missing_ok=True)
+            feed.cleanup(self.directory)
         except (OSError,feed.InvalidUpdate):
             diagnostics.record("update_storage")
 
@@ -125,7 +98,7 @@ class Updates:
             elif command=="download":
                 feed.download(selected,self.directory,self.cancelled)
                 phase,event="ready","update_verified"
-            elif launch_installer(selected,self.directory/feed.ASSET,self.cancelled):
+            elif feed.install(selected,self.directory,self.cancelled):
                 phase,event="launched","update_launched"
             else:
                 phase,event,message="ready","update_busy","Stop your mix before installing. If the mixer is still starting, try again in a moment."

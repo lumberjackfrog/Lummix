@@ -42,10 +42,15 @@ pub(super) fn running_installer(path: &std::path::Path, session: u32) -> Result<
     let mut buffer = vec![0u16; 32768];
     let expected = path.to_string_lossy().to_lowercase();
     for row in process_snapshot()? {
-        let end = row.szExeFile.iter().position(|ch| *ch == 0).unwrap_or(row.szExeFile.len());
+        let end = row
+            .szExeFile
+            .iter()
+            .position(|ch| *ch == 0)
+            .unwrap_or(row.szExeFile.len());
         if String::from_utf16_lossy(&row.szExeFile[..end]).eq_ignore_ascii_case("SpotifySetup.exe")
             && in_session(row.th32ProcessID, session)
-            && process_identity(row.th32ProcessID, &mut buffer).is_ok_and(|(path, _)| path.to_lowercase() == expected)
+            && process_identity(row.th32ProcessID, &mut buffer)
+                .is_ok_and(|(path, _)| path.to_lowercase() == expected)
         {
             return Ok(true);
         }

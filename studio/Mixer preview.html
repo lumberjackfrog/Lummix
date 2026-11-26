@@ -58,9 +58,9 @@ button:active:not(:disabled){outline-offset:2px}
 <script src="output-gains.js?v=rust-controls1" defer></script>
 <script src="mixer-console.js?v=rust-controls1" defer></script>
 <script src="spotify-ducking.js?v=rust-controls1" defer></script>
-<script src="idle-art.js" defer></script>
-<script src="live-theme.js" defer></script>
-<script src="studio-preferences.js?v=rust-controls1" defer></script>
+<script src="idle-art.js?v=rust-appearance1" defer></script>
+<script src="live-theme.js?v=rust-appearance1" defer></script>
+<script src="studio-preferences.js?v=rust-appearance1" defer></script>
 </head>
 <body><main class="frame">
 <div class="layout" id="layout">
@@ -205,8 +205,6 @@ if(location.href==='about:srcdoc' && parent.location.origin==='http://127.0.0.1:
 document.documentElement.dataset.theme = 'light';
 const get = id => document.getElementById(id);
 const snapPreference=get('slider-snapping'), snapKey='lum-pref-slider-snap';
-function validSnap(raw){return raw!==null && ['0','5','10','20'].includes(raw)?Number(raw):10;}
-try{snapPreference.value=String(validSnap(localStorage.getItem(snapKey)));}catch{}
 function snapPercent(value,max,controls){
   return controls.slider(0,max,Number(snapPreference.value),false,value);
 }
@@ -226,24 +224,30 @@ function bindSlider(input,controls){
   });
 }
 window.LumControls.then(controls=>{
+  try{snapPreference.value=String(controls.appearance.snap(localStorage.getItem(snapKey))??10);}catch{}
   for(const id of ['mic','music','duck'])bindSlider(get(id),controls);
+  for(const name of ['sounds','follow-theme','dark','companion']){
+    try{
+      const saved=controls.appearance.boolean(localStorage.getItem('lum-pref-'+name));
+      if(saved!==undefined)get(name).checked=saved;
+    }catch{}
+  }
+  render();sendWristState();
 }).catch(()=>{});
 snapPreference.addEventListener('change',()=>{
   try{localStorage.setItem(snapKey,snapPreference.value);}catch{}
   sendWristState();
 });
 window.addEventListener('storage',event=>{
-  if(event.key===snapKey){snapPreference.value=String(validSnap(event.newValue));sendWristState();}
+  if(event.key===snapKey)window.LumControls.then(({appearance})=>{
+    snapPreference.value=String(appearance.snap(event.newValue)??10);sendWristState();
+  }).catch(()=>{});
 });
 const state = {active:false, micMuted:false, spotifyMuted:false, duckEnabled:false, linked:true, monitor:false};
 const usable = () => (state.linked || !get('companion').checked) && get('input').value !== 'lost';
 const write = (id, text) => { const el=get(id); (el.querySelector(':scope > .button-label')||el).textContent = text; };
 for(const name of ['sounds','follow-theme','dark','companion']){
   const control=get(name);
-  try{
-    const saved=localStorage.getItem('lum-pref-'+name);
-    if(saved==='true'||saved==='false')control.checked=saved==='true';
-  }catch{}
   control.addEventListener('change',()=>{try{localStorage.setItem('lum-pref-'+name,String(control.checked));}catch{}});
 }
 const fade={value:0,from:0,target:0,start:0,span:0,frame:0};

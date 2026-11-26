@@ -59,8 +59,8 @@ def write_notices(webview):
         shutil.copy2(webview/name,notices/"WebView2"/name)
     shutil.copy2(Path(sys.base_prefix)/"LICENSE.txt", notices/"Python.txt")
     # Retain wheel-distributed notices for direct and transitive runtime components.
-    packages = ("numpy","pycaw","comtypes","psutil","sounddevice","cffi","pycparser",
-                "pillow","aiohttp","aiohappyeyeballs","aiosignal","attrs","frozenlist","multidict",
+    packages = ("pycaw","comtypes","psutil","sounddevice","cffi","pycparser",
+                "aiohttp","aiohappyeyeballs","aiosignal","attrs","frozenlist","multidict",
                 "propcache","yarl","idna","packaging","typing_extensions","pyinstaller","pywin32","charset-normalizer")
     lines = ["Bundled Windows x64 runtime", "Python " + platform.python_version()]
     for package in packages:
@@ -100,7 +100,7 @@ def main():
     for module in (uia.__name__, uia.__wrapper_module__.__name__, "spotify-helper","detect_openvr"):
         args += ["--hidden-import",module]
     # Optional third-party integrations of Python packages, unused in this application.
-    for module in ("matplotlib","scipy","torch","tensorflow","pandas","IPython","jupyter","pytest",
+    for module in ("numpy","PIL","matplotlib","scipy","torch","tensorflow","pandas","IPython","jupyter","pytest",
                    "tkinter","PySide6","PyQt6","cv2","openpyxl","sklearn","sphinx","cryptography",
                    "av","soundfile","numba","onnx","fsspec","Cython"):
         args += ["--exclude-module",module]

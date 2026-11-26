@@ -71,8 +71,13 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         for action in ({"action":"start","id":"vr"},{"action":"select","id":None},
                        {"action":"release","ownerToken":"wrong"}):
             self.assertEqual((await self.post(t,action))[0],409)
-        self.output.tokens[self.origin["Origin"]]=(t,0)
+        self.output.control.call("expire_token", origin=self.origin["Origin"])
         self.assertTrue((await self.get())["routeActive"])
+        self.assertEqual((await self.post(t,{"action":"stop"}))[0],403)
+        self.assertEqual((await self.post(t,{"action":"release","ownerToken":"wrong"}))[0],403)
+        other={"Origin":"http://localhost:41835","X-Lum-Mix-Token":t}
+        response=await self.client.post("/mix/mic",json={"action":"release","ownerToken":o},headers=other)
+        self.assertEqual(response.status,403)
         self.assertEqual((await self.post(t,{"action":"release","ownerToken":o}))[0],200)
         self.assertTrue(stream.closed);self.assertFalse((await self.get())["routeActive"])
 

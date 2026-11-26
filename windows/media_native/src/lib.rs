@@ -22,10 +22,12 @@ use windows::{
     Win32::System::WinRT::{RoInitialize, RoUninitialize, RO_INIT_MULTITHREADED},
 };
 
+mod artwork;
 mod audio_sessions;
 mod capability;
 mod processes;
 mod registry;
+mod setup;
 mod source;
 mod volume;
 mod window_player;
@@ -33,7 +35,6 @@ mod window_player;
 const DESKTOP: &str = "spotify.exe";
 const STORE_FAMILY: &str = "SpotifyAB.SpotifyMusic_zpdnekdrzrea0";
 const STORE_PLAYER: &str = "SpotifyAB.SpotifyMusic_zpdnekdrzrea0!Spotify";
-const MAX_ART_BYTES: u64 = 4 * 1024 * 1024;
 
 fn spotify_source(source: &str) -> bool {
     source.eq_ignore_ascii_case(DESKTOP) || source.eq_ignore_ascii_case(STORE_PLAYER)
@@ -262,7 +263,7 @@ fn artwork(
     let thumbnail = properties.Thumbnail()?;
     let stream = wait_for!(thumbnail.OpenReadAsync(), 680)?;
     let size = stream.Size()?;
-    if size == 0 || size > MAX_ART_BYTES {
+    if size == 0 || size > artwork::MAX_BYTES as u64 {
         return Ok(None);
     }
     let reader = DataReader::CreateDataReader(&stream.GetInputStreamAt(0)?)?;
@@ -439,6 +440,7 @@ pub extern "C" fn lummix_media_call(op: u32, id: u64, action: u32, arg: i64) -> 
         12 => selected_session(),
         13 => window_player::visible_windows(),
         14 => Ok(window_player::window_title(id, action)),
+        15 => source::diagnostic_target(),
         _ => Err(Error::from_hresult(windows::core::HRESULT(
             0x80070057u32 as i32,
         ))),
@@ -512,6 +514,39 @@ pub unsafe extern "C" fn lummix_media_capability(
         serde_json::from_slice(unsafe { CStr::from_ptr(request).to_bytes() }).unwrap_or(Value::Null)
     };
     encode_response(capability::apply(op, store, &request))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn lummix_spotify_setup(
+    op: u32,
+    request: *const c_char,
+    callback: Option<extern "C" fn(u32) -> bool>,
+) -> *mut c_char {
+    let input = (!request.is_null())
+        .then(|| unsafe { CStr::from_ptr(request).to_bytes() })
+        .and_then(|bytes| serde_json::from_slice::<Value>(bytes).ok());
+    let result = (|| {
+        let input = input
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("invalid setup request"))?;
+        let root = input["root"]
+            .as_str()
+            .ok_or_else(|| std::io::Error::other("missing setup location"))?;
+        let preferred = input["preferred"].as_str().map(std::path::Path::new);
+        let _apartment = if op == 1 || op == 2 {
+            Some(Apartment::enter().map_err(std::io::Error::other)?)
+        } else {
+            None
+        };
+        setup::run(op, std::path::Path::new(root), preferred, &mut |phase| {
+            callback.is_some_and(|notify| notify(phase))
+        })
+    })();
+    let payload = match result {
+        Ok(value) => json!({"value": value}),
+        Err(error) => json!({"error": error.to_string()}),
+    };
+    CString::new(payload.to_string()).unwrap().into_raw()
 }
 
 /// Verify a single Spotify source and its render route without opening capture.
