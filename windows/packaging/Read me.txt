@@ -1,7 +1,7 @@
 Lummix â€¢ Quick start
 
 1. Open Lummix Setup.exe. Open Lummix from Start.
-2. Play a song in Spotify, then click Set up Lummix. If VB-CABLE needs to be installed, approve the Windows administrator prompt for the signed VB-Audio installer. When it finishes, restart Windows, reopen Lummix from Start, and choose Set up Lummix again. An existing working VB-CABLE can be used right away.
+2. Click Set up Lummix. It opens your existing Spotify or installs the desktop player from Spotify's website. Sign in if Spotify asks. If Windows asks about VB-Audio, approve its driver. When setup finishes, restart Windows, reopen Lummix and click Set up Lummix again. An existing working cable is ready immediately.
 3. In VRChat, open Settings > Audio & Voice > Microphone. Pick the Lummix device shown in setup. Speak and watch the input meter. VRChat remembers its selection separately in desktop and VR mode.
 
 Next time, open Lummix and start the mix. The two tall faders control how much voice and music your friends hear. The speaker volume in Spotify controls your own player. Lower music while I talk starts at 12 dB and eases the music back up between phrases.
@@ -18,7 +18,7 @@ If you need to pick a different headset, open Settings > Audio. If Spotify is al
 
 If you hear your own voice twice in your headphones, check the Lummix recording device's Properties > Listen in Windows Sound. Turn off Listen to this device if you do not want Windows to play a second copy locally.
 
-Windows x64. Capturing Spotify by app requires Windows build 20348 or later, including Windows 11. Install the desktop app from Spotify's website or the Microsoft Store. Lummix uses the Microsoft Edge WebView2 runtime. The optional wrist view uses your installed XSOverlay.
+Windows x64. Capturing Spotify by app requires Windows build 20348 or later, including Windows 11. Setup gets the desktop player from Spotify and recognizes the Microsoft Store edition if you already have it. Lummix uses Microsoft Edge WebView2. The optional wrist view uses your installed XSOverlay.
 
 Portable ZIP users can extract the entire folder and open Lummix.exe.
 

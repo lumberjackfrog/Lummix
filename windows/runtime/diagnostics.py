@@ -11,7 +11,7 @@ from release_identity import VERSION
 
 LIMIT = 64 * 1024
 EVENTS = set("""opened closed startup_failed studio_failed wrist_failed spotify_failed
-    window_failed update_available update_verified update_network update_invalid
+    window_failed spotify_setup_failed update_available update_verified update_network update_invalid
     update_storage update_busy update_launched update_blocked""".split())
 _lock = Lock()
 _snapshot = Lock()

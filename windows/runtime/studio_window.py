@@ -11,6 +11,7 @@ from studio_assets import attach_installed_assets
 import profile_save
 import diagnostics
 from client_update import Updates
+from spotify_setup import SpotifySetup
 
 import comtypes
 from comtypes.gen import WebView2 as wv
@@ -29,6 +30,7 @@ READY = wc.WM_APP + 291
 FINISH_EXIT = wc.WM_APP + 292
 CAN_REOPEN = wc.WM_APP + 293
 UPDATE_CHANGED = wc.WM_APP + 294
+SPOTIFY_SETUP_CHANGED = wc.WM_APP + 295
 EXIT_TIMER = 17
 NATIVE = "http://127.0.0.1:41835/?view=desktop&app=1"
 USER = ctypes.windll.user32
@@ -131,6 +133,7 @@ class StudioWindow:
         self.hwnd=gui.CreateWindowEx(0,CLASS,"Lummix",style,
             *pos,0,0,wcinfo.hInstance,None)
         self.updates=Updates(local_dir(),self.update_changed)
+        self.spotify_setup=SpotifySetup(local_dir(),self.spotify_setup_changed)
         if sys.getwindowsversion().build >= 22000:
             # Ask the compositor to omit the accent outline on active and inactive windows.
             no_border = wt.DWORD(0xfffffffe)  # DWMWA_COLOR_NONE
@@ -198,6 +201,11 @@ class StudioWindow:
             try: gui.PostMessage(self.hwnd,UPDATE_CHANGED,0,0)
             except OSError: pass
 
+    def spotify_setup_changed(self):
+        if self.hwnd and not self.exiting:
+            try: gui.PostMessage(self.hwnd,SPOTIFY_SETUP_CHANGED,0,0)
+            except OSError: pass
+
     def navigation(self,sender,args):
         if urlsplit(args.Uri).netloc!="127.0.0.1:41835" or not args.Uri.startswith("http://127.0.0.1:41835/"):
             args.Cancel=True
@@ -222,6 +230,10 @@ class StudioWindow:
         elif command in RESIZE_COMMANDS:gui.PostMessage(self.hwnd,wc.WM_COMMAND,RESIZE,RESIZE_COMMANDS[command])
         elif command=="close":gui.PostMessage(self.hwnd,wc.WM_CLOSE,0,0)
         elif command=="window-state":self.send_window_state(force=True)
+        elif command in ("spotify-setup","spotify-setup-state") and args.Source==NATIVE and not self.exiting:
+            if command=="spotify-setup":
+                self.spotify_setup.begin()
+            self.web.PostWebMessageAsJson(json.dumps(self.spotify_setup.status()))
         elif command in ("update-state","update-check","update-download","update-install") and args.Source==NATIVE and not self.exiting:
             if command!="update-state":
                 self.updates.command(command.removeprefix("update-"))
@@ -334,6 +346,7 @@ class StudioWindow:
     def quit(self):
         if self.exiting:return
         self.updates.cancelled.set()
+        self.spotify_setup.cancelled.set()
         self.exiting=True;self.remember()
         if self.web and self.web.Source.startswith("http://127.0.0.1:41835/"):
             self.exit_nonce=secrets.token_hex(12)
@@ -408,6 +421,10 @@ class StudioWindow:
             if self.edge_size(hwnd) and lp in RESIZE_COMMANDS.values() and USER.GetAsyncKeyState(wc.VK_LBUTTON) & 0x8000:
                 USER.ReleaseCapture()
                 gui.PostMessage(hwnd, wc.WM_NCLBUTTONDOWN, lp, USER.GetMessagePos())
+            return 0
+        if msg==SPOTIFY_SETUP_CHANGED:
+            if not self.exiting and self.web and self.web.Source==NATIVE:
+                self.web.PostWebMessageAsJson(json.dumps(self.spotify_setup.status()))
             return 0
         if msg==UPDATE_CHANGED:
             if self.exiting: return 0

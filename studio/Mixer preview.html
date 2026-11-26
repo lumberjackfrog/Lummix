@@ -170,6 +170,8 @@ button:active:not(:disabled){outline-offset:2px}
 <p id="mic-source-note"></p>
 <div class="sheet-actions mic-live-actions"><button type="button" id="mic-live-action" disabled>Start mix</button><span id="mic-live-status" role="status">Checking the audio route…</span></div>
 <p id="mix-spotify-status" role="status">Start the mix to send your microphone and available Spotify audio to VRChat.</p>
+<p id="setup-player-status" role="status" hidden></p>
+<a id="setup-player-help" href="https://www.spotify.com/download/windows/" target="_blank" rel="noopener" hidden>Get the desktop app from Spotify</a>
 <p id="mic-live-error" role="status" hidden></p>
 </section>
 <section class="sheet-panel" id="cable-panel"><h3>VRChat microphone</h3>
@@ -186,8 +188,8 @@ button:active:not(:disabled){outline-offset:2px}
 <div class="sheet-scroll"><div class="sheet-grid">
 <section class="sheet-panel sheet-feature"><h3>Personal player</h3><p class="sheet-result" id="player-result" role="status">Looking for your player…</p>
 <div class="sheet-actions"><button type="button" id="personal-transport" hidden>Play</button>
-<a id="open-player" href="spotify:" hidden>Open Spotify</a><a id="download-player" href="https://www.spotify.com/download/windows/" target="_blank" rel="noopener" hidden>Download Spotify for Windows</a>
-<button type="button" id="retry-player">Check again</button></div></section>
+<a id="open-player" href="spotify:" hidden>Open Spotify</a><button type="button" id="install-player" hidden>Install Spotify desktop</button><a id="download-player" href="https://www.spotify.com/download/windows/" target="_blank" rel="noopener" hidden>Get the desktop app from Spotify</a>
+<button type="button" id="retry-player">Check again</button></div><p id="player-setup-status" role="status" hidden></p></section>
 <section class="sheet-panel" id="player-connection" hidden><h3>Connection</h3><dl class="sheet-facts"><dt>Windows player</dt><dd id="player-edition"></dd><dt>Playback</dt><dd id="player-playback-state"></dd></dl></section></div></div></dialog>
 <dialog class="studio-sheet" id="details-dialog" aria-labelledby="details-title">
 <header class="sheet-head"><span class="sheet-icon" aria-hidden="true"><i data-glyph="settings"></i></span><h2 id="details-title">Mix details</h2><form method="dialog"><button class="close-settings sheet-close" aria-label="Close mix details">×</button></form></header>

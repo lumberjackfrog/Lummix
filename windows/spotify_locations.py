@@ -115,7 +115,7 @@ def _remember(edition, path):
         pass  # A read-only profile must still discover an installed player.
 
 
-def website_installed():
+def website_executable():
     saved = _saved()
     regular = list(desktop_paths(os.environ))
     # A settings file is a hint. Only use an executable in a known installation or registered location.
@@ -132,8 +132,12 @@ def website_installed():
             continue
         if present:
             _remember("desktop", path)
-            return True
-    return False
+            return Path(path)
+    return None
+
+
+def website_installed():
+    return website_executable() is not None
 
 
 def store_installed():

@@ -155,6 +155,35 @@ class StudioTests(unittest.TestCase):
             self.assertIn(("/mix/mic", {"action":"setup", "id":"desk"}), services.commands)
             self.assertFalse(services.unexpected)
 
+    def test_native_quick_setup_handles_both_dependencies_only_after_click(self):
+        services = LocalServices()
+        services.cable_state = "missing"
+        with sync_playwright() as pw, pw.chromium.launch(executable_path=os.environ.get("LUMMIX_TEST_CHROMIUM")) as browser, browser.new_context(service_workers="block") as context:
+            context.route("**/*", services.intercept)
+            context.add_init_script("""
+              window.WebSocket=class extends EventTarget {close(){} send(){}};
+              const bridge=new EventTarget(); window.chrome ||= {}; window.chrome.webview=bridge;
+              window.installClicks=0;
+              bridge.postMessage=command=>{
+                if(command!=='spotify-setup')return;
+                ++window.installClicks;
+                bridge.dispatchEvent(new MessageEvent('message',{data:{type:'lummix-spotify-setup',phase:'downloading'}}));
+              };
+            """)
+            page = context.new_page()
+            page.goto(ORIGIN + "/?view=desktop&app=1")
+            frame = page.frame_locator("#canvas")
+            frame.locator("#settings").click()
+            frame.get_by_role("button",name="Close settings").click()
+            self.assertEqual(page.evaluate("window.installClicks"), 0)
+            self.assertEqual(services.cable_installs, 0)
+            frame.locator("#set-up-lummix").click()
+            expect(frame.locator("#mic-status-title")).to_have_text("Restart Windows to finish")
+            expect(frame.locator("#setup-player-status")).to_contain_text("Getting Spotify desktop")
+            self.assertEqual(page.evaluate("window.installClicks"), 1)
+            self.assertEqual(services.cable_installs, 1)
+            self.assertFalse(services.started)
+
     def test_studio(self):
         with sync_playwright() as pw:
             browser = pw.chromium.launch(executable_path=os.environ.get("LUMMIX_TEST_CHROMIUM"))

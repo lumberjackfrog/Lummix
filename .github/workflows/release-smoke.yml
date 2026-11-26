@@ -16,7 +16,7 @@ on:
         description: SHA-256 printed by that build when testing a candidate
         type: string
       first_driver:
-        description: Exercise first-time VB-CABLE installation on the disposable Windows VM
+        description: Exercise the first-time VB-CABLE and standard-user Spotify installs on the disposable Windows VM
         type: boolean
         default: false
       upgrade_from:
@@ -316,6 +316,14 @@ jobs:
           "Installed and uninstalled $version $cycles time(s), checked $($shortcuts.Count) shortcuts and verified the bundled driver package." >> $env:GITHUB_STEP_SUMMARY
           if ($cycles -gt 1) {
             'Each uninstall preserved app settings, gains, and their backup byte for byte. The final cycle restored a corrupt primary settings file from backup.' >> $env:GITHUB_STEP_SUMMARY
+          }
+
+      - name: Install Spotify from the desktop setup control as a new standard user
+        if: inputs.first_driver
+        run: |
+          $version = $env:RELEASE_TAG.Substring(1)
+          if ([version]$version -ge [version]'1.0.9') {
+            ./windows/tests/verify_first_spotify.ps1 -Version $version -Setup (Join-Path $env:RUNNER_TEMP 'lummix-release/Lummix.Setup.exe')
           }
 
       - name: Open the mixer from the Desktop and Start menu

@@ -32,6 +32,42 @@
     label.className='button-label';label.textContent=b.textContent;mark.className='glyph';icon(mark,key);b.replaceChildren(mark,label);
   }
   const spotifyOrigin='http://127.0.0.1:41838';
+  const setupBridge=(()=>{
+    try {return new URL(top.location.href).searchParams.get('app')==='1'?top.chrome?.webview:null;}
+    catch {return null;}
+  })();
+  let spotifySetupPhase='idle';
+  const setupMessages={checking:'Checking for Spotify…',downloading:'Getting Spotify desktop from Spotify…',
+    installing:'Installing Spotify desktop…',installed:'Spotify desktop is installed. Sign in to Spotify to play music.',
+    opened:'Opening Spotify. Sign in if asked.',failed:'Spotify setup couldn’t finish. Try again or download directly from Spotify.',
+    unconfirmed:'Spotify setup is still unconfirmed. Finish any open Spotify installer, then check again.',
+    elevated:'Reopen Lummix normally to set up Spotify for your Windows account.'};
+  const missingPlayer=info=>info?.installationKnown===true && !info.installations?.length && !['ready','detected','ambiguous'].includes(info.state);
+  function paintPlayerSetup(missing){
+    const busy=['checking','downloading','installing'].includes(spotifySetupPhase);
+    const problem=['failed','unconfirmed','elevated'].includes(spotifySetupPhase);
+    const connected=['ready','detected'].includes(currentPlayer?.state);
+    const message=connected?'':setupMessages[spotifySetupPhase]||'';
+    for(const id of ['player-setup-status','setup-player-status']){
+      el(id).textContent=message;el(id).hidden=!message;
+    }
+    const unknown=!currentPlayer?.installationKnown && !currentPlayer?.installations?.length && currentPlayer?.state!=='ambiguous';
+    el('install-player').hidden=!setupBridge || connected || (!missing && !problem && !unknown);
+    el('install-player').textContent=missing?'Install Spotify desktop':'Set up Spotify';
+    el('install-player').disabled=busy;
+    el('download-player').hidden=connected || !((!setupBridge && missing) || problem);
+    el('setup-player-help').hidden=connected || !problem;
+  }
+  if(setupBridge){
+    setupBridge.addEventListener('message',({data})=>{
+      if(data?.type!=='lummix-spotify-setup')return;
+      const changed=spotifySetupPhase!==data.phase;
+      spotifySetupPhase=data.phase;
+      paintPlayerSetup(missingPlayer(currentPlayer));
+      if(changed && ['installed','opened','ready'].includes(data.phase))scanPlayer(true);
+    });
+    el('install-player').addEventListener('click',event=>{if(event.isTrusted)setupBridge.postMessage('spotify-setup');});
+  }
   let currentPlayer=null, scanPending=false, playerPending=false, actionPending=false, selectionEpoch=0;
   const transportActions={'media-back':['seekBack15','canSeek'],'media-forward':['seekForward15','canSeek'],'media-next':['next','canNext'],'media-previous':['previous','canPrevious'],'media-stop':['stop','canStop']};
   let lastArtworkId=null, lastArtwork=null, artworkRetry=0, retryTrack='', retries=0;
@@ -54,14 +90,14 @@
       el('player-edition').textContent=info.edition==='store'?'Microsoft Store':info.edition==='desktop'?'Spotify desktop':'Spotify';
       el('player-playback-state').textContent=detected?'Running on this PC':info.playing?'Playing':'Not playing';
     }
-    const missing=info?.state==='no_session' && info.installationKnown && editions.length===0;
+    const missing=missingPlayer(info);
     const song=ready ? [info.title,info.artist].filter(Boolean).join(' · ') : '';
     el('spotify-summary').textContent=ready?'':detected?'Local player running':missing?'Get Spotify for Windows':editions.length?'Installed on this PC':'Personal player';
     el('spotify-summary').hidden=ready;
     el('connect-spotify').querySelector('strong').textContent=ready?'Spotify connected':detected?'Spotify detected':editions.length?'Spotify installed':'Connect Spotify';
     const states={no_session:editions.length?'Open Spotify and play a track to connect.':'Open Spotify, then check again.',unsupported:'Windows media controls are unavailable on this PC.',ambiguous:'Pause the other Spotify player, then check again.',unavailable:'The local player is unavailable.'};
     el('player-result').textContent=ready?(song||'Spotify is connected.') : detected?'Lummix found Spotify. You can start a mix and use Spotify’s playback controls while Windows reconnects.':missing?'Spotify isn’t installed on this PC.':states[info?.state]||'Couldn’t reach the local player connection.';
-    el('download-player').hidden=!missing;
+    paintPlayerSetup(missing);
     el('open-player').hidden=!(detected || info?.transportSource==='spotify_window' || (editions.length && info?.state==='no_session'));
     const transport=el('personal-transport'), shortcut=el('spotify-play');
     transport.hidden=!ready;transport.disabled=!ready || (info.playing?!info.canPause:!info.canPlay);
@@ -94,7 +130,7 @@
     try{const snapshot=await query(spotifyOrigin+'/spotify/status'+(lastArtworkId?'?artworkId='+encodeURIComponent(lastArtworkId):''));if(epoch!==selectionEpoch)return false;drawPlayer(snapshot);return true;}
     catch{if(epoch===selectionEpoch)drawPlayer(null);return false;}finally{playerPending=false;busy(el('retry-player'),false);}
   }
-  function openPlayer(){el('player-connect-dialog').showModal();scanPlayer();}
+  function openPlayer(){el('player-connect-dialog').showModal();setupBridge?.postMessage('spotify-setup-state');scanPlayer();}
   el('connect-spotify').onclick=openPlayer;
   el('retry-player').onclick=()=>scanPlayer();
   el('spotify-play').onclick=()=>{if(currentPlayer?.state==='ready')el('personal-transport').click();};
@@ -371,7 +407,7 @@
       el('device-evidence').hidden=true;
     }
   }
-  async function detect(intent){
+  async function detect(intent,setupSpotify=false){
     if(scanPending)return;
     const version=++scanVersion;
     scanPending=true;busy(el('redetect'),true);
@@ -386,6 +422,9 @@
         if(currentScan(version))await setUpCable(version,'check');
       } else {
         const [cable]=await Promise.all([setUpCable(version,intent),readInput()]);
+        if(start && setupSpotify && currentScan(version) && (cable?.ready || cable?.state==='restart-needed')){
+          setupBridge?.postMessage('spotify-setup');
+        }
         if(start && cable?.ready && currentScan(version)){
           await readInput();
           if(currentScan(version) && micSnapshot?.selectedId && !micSnapshot.routeActive){
@@ -409,14 +448,14 @@
   function pollMic(){
     clearInterval(micPoll);micPoll=setInterval(()=>{if(!document.hidden && !scanPending)readInput();},5000);
   }
-  function openSetup(intent){
+  function openSetup(intent,setupSpotify){
     mixPanels.append(el('mic-input-panel'),...diagnostics);
     el('mic-connect-dialog').showModal();
     micSnapshot=null;micNotice='';paintInput();el('mic-live-status').textContent='Checking the audio route…';
-    showCable({state:'checking'});detect(intent);
+    showCable({state:'checking'});detect(intent,setupSpotify);
     pollMic();
   }
-  el('set-up-lummix').onclick=()=>openSetup(quickLive?'stop':'setup');
+  el('set-up-lummix').onclick=event=>openSetup(quickLive?'stop':'setup',event.isTrusted);
   function presentMicSettings(){
     el('settings-mic-controls').append(el('mic-input-panel'));
     el('settings-device-panels').append(...diagnostics);
@@ -428,7 +467,7 @@
   el('settings-device-details').addEventListener('toggle',()=>{
     if(el('settings-device-details').open && el('settings-dialog').open)detect('inspect');
   });
-  el('redetect').onclick=()=>detect(el('redetect').dataset.intent);
+  el('redetect').onclick=event=>detect(el('redetect').dataset.intent,event.isTrusted);
   function publishWristMedia(){
     el('native-wrist').contentWindow?.postMessage({type:'lum-spotify-media',media:window.LumSpotifyMedia||{state:'unavailable'}},setupHost);
   }

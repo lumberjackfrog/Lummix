@@ -6,19 +6,19 @@ Lummix gives VRChat one microphone for your voice and music. It mixes your Windo
 | --- | --- |
 | [![Lummix desktop mixer with album artwork and separate microphone and Spotify faders](docs/mixer.png)](docs/mixer.png) | [![XSOverlay music drawer with mic mute, music mute, and the music gain slider beside the clock](docs/xsoverlay-wrist.png)](docs/xsoverlay-wrist.png) |
 
-**[Download Lummix 1.0.8 for Windows x64](https://github.com/lumberjackfrog/Lummix/releases/download/v1.0.8/Lummix.Setup.exe)** · [Prerelease notes and SHA-256](https://github.com/lumberjackfrog/Lummix/releases/tag/v1.0.8)
+**[Download Lummix 1.0.9 for Windows x64](https://github.com/lumberjackfrog/Lummix/releases/download/v1.0.9/Lummix.Setup.exe)** · [Release notes and SHA-256](https://github.com/lumberjackfrog/Lummix/releases/tag/v1.0.9)
 
 ## Start a mix
 
 The Windows installer is unsigned. Windows may show a publisher warning, and a PC configured to require trusted publishers can block the install.
 
 1. Open **Lummix Setup.exe**. It installs Lummix for your Windows account and opens the mixer. Double-click **Lummix** on your desktop to reopen it. You can also find it in Start. If you delete the shortcut, run Setup again to restore it.
-2. Open Spotify and click **Set up Lummix**. If VB-CABLE is already ready, go straight to step 3. On a first install, approve the Windows administrator prompt for VB-Audio, restart Windows when convenient, then reopen **Lummix → Set up Lummix**.
+2. Click **Set up Lummix**. It opens your existing Spotify or gets the desktop app directly from Spotify and checks its publisher. Sign in if Spotify asks. If the virtual microphone needs installing, approve the Windows prompt for VB-Audio. When setup finishes, restart Windows, reopen Lummix and click **Set up Lummix**.
 3. In **VRChat → Settings → Audio & Voice → Microphone**, choose **Lummix (VB-Audio Virtual Cable)**, or the exact name shown by setup. Speak and watch the input meter. VRChat remembers the selection separately for desktop and VR mode.
 
 Next session, open Lummix and start the mix. To open the app automatically when you sign in, enable **Settings → Application → Start with Windows**. It defaults to off. Starting the mix is always manual. **Stop mix** releases the microphone and music capture.
 
-**Updates.** Install 1.0.8 once to get the updater. Open **Settings → Application → Check for updates**, download the offered version, stop your mix and choose **Install and reopen**. Lummix checks the publisher’s release signature and the installer’s SHA-256. Windows applies its normal application checks.
+**Updates.** On 1.0.8 or later, open **Settings → Application → Check for updates**, download the offered version, stop your mix and choose **Install and reopen**. On 1.0.7 or earlier, run the installer above once. Lummix checks the publisher’s release signature and the installer’s SHA-256. Windows applies its normal application checks.
 
 **Troubleshooting.** **Settings → Application → Diagnostics → Open logs** saves a snapshot of the mix, cable and Spotify capture status. The local files contain event codes, app version, Windows build and times. Together they use at most 128 KiB. You can clear them there or share one yourself when reporting a problem.
 
@@ -44,7 +44,7 @@ If the mixer reports that Spotify is already playing directly into the cable, op
 
 ## Compatibility
 
-Use 64-bit Windows 11, or an x64 Windows build numbered 20348 or later, with Microsoft Edge WebView2. Install the Spotify desktop app from Spotify’s website or the Microsoft Store. Playback on a phone or another Spotify Connect device supplies no local audio to mix. The optional wrist view requires the user’s own XSOverlay installation.
+Use 64-bit Windows 11, or an x64 Windows build numbered 20348 or later, with Microsoft Edge WebView2. Setup uses Spotify’s website for new installations and recognizes an existing Microsoft Store player. Play music on this PC so it reaches the mix. The optional wrist view requires your own XSOverlay installation.
 
 Lummix saves your Spotify locations, microphone choice, gains, ducking, window placement and appearance for your Windows account. A local recovery copy in `%LOCALAPPDATA%\Lummix\settings-backup.json` restores saved settings if an individual file goes missing or becomes invalid. After reinstalling Spotify, Lummix checks its current installation.
 
