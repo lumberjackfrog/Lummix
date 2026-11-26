@@ -17,7 +17,7 @@ from urllib.parse import unquote
 
 import requests
 import psutil
-from runtime_main import STUDIO_FILES
+from studio_assets import STUDIO_FILES
 from lummix_window import MEDIA_CAPABILITIES
 
 HERE = Path(__file__).resolve().parent

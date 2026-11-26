@@ -20,7 +20,7 @@ EVIDENCE.mkdir(parents=True, exist_ok=True)
 RUNTIME=HERE.parent/"runtime"
 sys.path.insert(0,str(RUNTIME))
 import lummix_window as window
-from runtime_main import STUDIO_FILES
+from studio_assets import STUDIO_FILES
 
 def run():
     # Relocate sockets only; every HTTP Host, method, required marker, response, and service is genuine.

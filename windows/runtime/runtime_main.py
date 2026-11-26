@@ -8,7 +8,7 @@ import subprocess
 import sys
 import threading
 from urllib.parse import urlsplit
-from studio_assets import STUDIO_FILES, studio_asset
+from studio_assets import studio_asset
 from xsoverlay_install import discover as wrist_sources
 
 EXECUTABLE = Path(sys.executable).resolve()
