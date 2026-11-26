@@ -4,12 +4,14 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
-from time import perf_counter_ns
+from time import perf_counter_ns, process_time_ns
 import unittest
 from unittest.mock import patch
 
 import numpy as np
+import psutil
 
 WINDOWS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(WINDOWS))
@@ -98,15 +100,19 @@ def fingerprint(case, native):
 class Equivalence(unittest.TestCase):
     def test_continuous_output_and_state(self):
         sample_count, worst = 0, 0.
+        native_blocks, muted_blocks = 0, 0
         for case in CASES:
             reference, migrated = mixer(False)._stage, mixer(True)._stage
             render = migrated.kernel.render
             def require_native(*args):
+                nonlocal native_blocks
                 result = render(*args)
                 self.assertIsNotNone(result, "contiguous production audio fell back")
+                native_blocks += 1
                 return result
             with self.subTest(case=case), patch.object(migrated.kernel, "render", require_native):
-                for old, new in zip(sequence(case, reference), sequence(case, migrated), strict=True):
+                trace = zip(sequence(case, reference), sequence(case, migrated), strict=True)
+                for index, (old, new) in enumerate(trace):
                     diff = float(np.abs(new[0] - old[0]).max())
                     worst = max(worst, diff)
                     self.assertLessEqual(diff, 2e-7)
@@ -114,7 +120,10 @@ class Equivalence(unittest.TestCase):
                     self.assertEqual(old[2], new[2])
                     self.assertTrue(np.isfinite(new[0]).all())
                     sample_count += new[0].size
+                    muted_blocks += int(controls(case, index).mute_master)
+                    self.assertEqual((native_blocks + muted_blocks) * current.BLOCK * 2, sample_count)
         print(f"Compared {sample_count} float32 channel samples; maximum absolute error {worst:.9g}")
+        print(f"Rust rendered {native_blocks} contiguous blocks; the master mute silenced {muted_blocks} blocks directly.")
 
     def test_short_blocks_and_layout_changes(self):
         rng = np.random.default_rng(21)
@@ -143,6 +152,51 @@ class Equivalence(unittest.TestCase):
         self.assertFalse(out[1:-1].any())
 
 
+def sustained_benchmark(native):
+    """Time the callback over ten minutes of generated audio, run faster than real time."""
+    engine = mixer(native)
+    mic, normal = signals("normal", current.BLOCK)
+    _, hot = signals("limiter", current.BLOCK)
+    quiet = np.zeros_like(mic)
+    out = np.empty_like(normal)
+    default = current.Controls()
+    talkover = current.Controls(duck_enabled=True, duck_depth=12)
+    boosted = current.Controls(mic_gain=1.5, file_gain=1.5)
+    schedule = ([(mic, normal, default)] * 200 + [(mic, hot, boosted)] * 100 +
+                [(mic, normal, talkover)] * 120 + [(quiet, normal, talkover)] * 180)
+
+    class Feed:
+        def next(self):
+            return self.track
+
+    feed = engine.spotify_feed = Feed()
+
+    def render_cycle():
+        for voice, track, settings in schedule:
+            feed.track = track
+            engine.controls = settings
+            engine._render(out, voice, current.BLOCK, None)
+
+    process = psutil.Process()
+    memory_field = "private" if sys.platform == "win32" else "rss"
+    render_cycle()
+    memory = [getattr(process.memory_info(), memory_field)]
+    digest = sha256()
+    cpu_ns = 0
+    for _ in range(10):
+        start = process_time_ns()
+        for _ in range(10):
+            render_cycle()
+        cpu_ns += process_time_ns() - start
+        memory.append(getattr(process.memory_info(), memory_field))
+        digest.update(np.rint(out * 32767).astype("<i2").tobytes())
+    blocks = len(schedule) * 100
+    audio_seconds = blocks * current.BLOCK / current.RATE
+    return {"blocks": blocks, "audioSeconds": audio_seconds, "processCpuSeconds": cpu_ns / 1e9,
+            "cpuMsPerAudioSecond": cpu_ns / 1e6 / audio_seconds, "memoryMetric": memory_field,
+            "memoryBytesAfterWarmupAndEachMinute": memory, "endBlockDigest": digest.hexdigest()}
+
+
 def benchmark():
     timings = {}
     for case in ("normal", "limiter", "talkover"):
@@ -169,6 +223,12 @@ def benchmark():
                          for name, values in records.items()}
     report = {"frames": current.BLOCK, "rate": current.RATE, "blocksPerBackendPerCase": len(records["rust"]),
               "timed": "CableMixer._render with generated audio, including Python/FFI overhead", "callbacks": timings}
+    # Separate processes keep one renderer's allocations out of the other one's memory readings.
+    sustained = {name: json.loads(subprocess.check_output(
+        [sys.executable, "-B", __file__, "sustained", name], text=True)) for name in ("numpy", "rust")}
+    if sustained["numpy"]["endBlockDigest"] != sustained["rust"]["endBlockDigest"]:
+        raise RuntimeError("The sustained mixers produced different end-of-minute audio samples.")
+    report["sustained"] = sustained
     print(json.dumps(report, indent=2))
     return report
 
@@ -179,6 +239,8 @@ if __name__ == "__main__":
             print("Choose one of: " + ", ".join(CASES))
             sys.exit(2)
         print(fingerprint(sys.argv[3], sys.argv[2] == "rust"))
+    elif len(sys.argv) == 3 and sys.argv[1] == "sustained" and sys.argv[2] in ("numpy", "rust"):
+        print(json.dumps(sustained_benchmark(sys.argv[2] == "rust")))
     elif len(sys.argv) == 3 and sys.argv[1] == "benchmark":
         Path(sys.argv[2]).write_text(json.dumps(benchmark(), indent=2) + "\n", encoding="utf-8")
     else:
