@@ -1,6 +1,6 @@
-"""Optional local Spotify transport for Lum Mix. Run with the existing Windows Python.
+"""Local Spotify and mixer HTTP routes.
 
-Uses Windows.Media.Control and aiohttp. Reads metadata only for the desktop Spotify app.
+Windows media access is provided by the Rust library and scoped to official Spotify sessions.
 No playback is requested until an allowed mixer origin presents its status capability.
 """
 import asyncio
@@ -28,6 +28,7 @@ from spotify_window_transport import WindowPlayer, transport as window_transport
 from spotify_artwork import ArtworkCache
 from spotify_peak import SpotifyPeak
 from spotify_locations import STORE_FAMILY, store_installed, website_installed
+from spotify_native import NativeManager, NativeSession, provider as media_provider
 
 HOST = "127.0.0.1"
 PORT = 41838
@@ -35,7 +36,6 @@ ORIGINS = {"http://127.0.0.1:41835", "http://localhost:41835"}
 
 SPOTIFY_IDS = {"spotify.exe": "desktop", STORE_FAMILY.casefold() + "!spotify": "store"}
 TOKEN_LIFETIME = 600
-MAX_ART_BYTES = 4 * 1024 * 1024
 MAX_ART_PIXELS = 12_000_000
 CHANGE_WAIT = 22
 CHANGE_DEBOUNCE = .055
@@ -69,20 +69,14 @@ def read_installations():
 
 
 async def thumbnail_bytes(thumbnail):
-    from winsdk.windows.storage.streams import DataReader
-    with await thumbnail.open_read_async() as stream:
-        size = stream.size
-        if not 0 < size <= MAX_ART_BYTES:
-            return None
-        with DataReader(stream.get_input_stream_at(0)) as reader:
-            if await reader.load_async(size) != size:
-                return None
-            data = bytearray(size)
-            reader.read_bytes(data)
-            return data
+    # Injected providers can supply artwork without a Windows media object.
+    return await thumbnail.read_bytes()
 
 
 def read_session_media(session):
+    if isinstance(session, NativeSession):
+        return session.read_media()
+
     # PortAudio can initialize the HTTP thread as STA. The thumbnail stream created
     # there needs a Windows message pump; asyncio alone does not dispatch those
     # messages. Acquire BOTH the properties and stream on our dedicated MTA thread.
@@ -135,18 +129,25 @@ def spotify_sessions(manager):
 
 class WindowsSessions:
     async def manager(self):
-        from winsdk.windows.media.control import GlobalSystemMediaTransportControlsSessionManager
-        return await GlobalSystemMediaTransportControlsSessionManager.request_async()
+        native = media_provider()
+        if native is None:
+            raise NotImplementedError("The Rust media library is required for Windows media sessions")
+        await asyncio.to_thread(native.call, 6)
+        return NativeManager(native)
 
-    async def spotify(self):
-        return spotify_sessions(await self.manager())
+    async def selected(self):
+        native = media_provider()
+        if native is None:
+            raise NotImplementedError("The Rust media library is required for Windows media sessions")
+        result = await asyncio.to_thread(native.call, 12)
+        state = result["state"]
+        return (NativeSession(native, *result["session"]) if state == "ready" else None), state
 
     @staticmethod
     def running_player():
         """Identify the local player even while Windows media controls are starting or unavailable."""
         from spotify_process_feed import AmbiguousTarget, spotify_target
         from spotify_volume_http import VolumeError, spotify_windows
-        import win32gui
 
         try:
             target = spotify_target()
@@ -160,14 +161,15 @@ class WindowsSessions:
             windows = [hwnd for hwnd, owner, started in spotify_windows(edition)
                        if owner == pid and started == created]
             if len(windows) == 1:
-                artist, separator, title = win32gui.GetWindowText(windows[0]).partition(" - ")
+                native = media_provider()
+                artist, separator, title = native.call(14, windows[0], pid).partition(" - ")
                 if separator and title.strip() and artist.strip():
                     result.update(title=title.strip()[:256], artist=artist.strip()[:256])
                 player = WindowPlayer(edition, (windows[0], pid, created))
                 result.update(window_transport(player))
                 if result.get("canPlay") or result.get("canPause"):
                     result.update(state="ready", transportSource="spotify_window", window=player)
-        except (OSError, VolumeError, win32gui.error):
+        except (OSError, RuntimeError, VolumeError):
             pass
         return result
 
@@ -175,6 +177,8 @@ class WindowsSessions:
 def session_timeline(session, info):
     """SMTC positions are samples at LastUpdatedTime, often several seconds old."""
     try:
+        if isinstance(session, NativeSession):
+            return session.current_timeline()
         t = session.get_timeline_properties()
         start, end = t.start_time.total_seconds(), t.end_time.total_seconds()
         if end <= start:
@@ -195,6 +199,17 @@ def session_timeline(session, info):
 def can_seek(controls, timeline):
     return bool(getattr(controls, "is_playback_position_enabled", False)
                 and timeline is not None and timeline["minSeek"] is not None)
+
+
+async def matches_selection(current, original):
+    if current.source_app_user_model_id.casefold() != original.source_app_user_model_id.casefold():
+        return False
+    if isinstance(original, NativeSession):
+        try:
+            return await asyncio.to_thread(original.matches, current)
+        except (OSError, RuntimeError):
+            return False
+    return True
 
 
 class ChangeFeed:
@@ -367,6 +382,8 @@ class Player:
 
     async def selected(self):
         try:
+            if isinstance(self.sessions, WindowsSessions):
+                return await asyncio.wait_for(self.sessions.selected(), 3)
             choices = await asyncio.wait_for(self.sessions.spotify(), 3)
         except (ImportError, NotImplementedError):
             return None, "unsupported"
@@ -457,7 +474,7 @@ class Player:
         if isinstance(selection.session, WindowPlayer):
             return 409, "windows_media_unavailable"
         current, _ = await self.selected()
-        if current is None or current.source_app_user_model_id.casefold() != selection.session.source_app_user_model_id.casefold():
+        if current is None or not await matches_selection(current, selection.session):
             return 409, "selection_changed"
         return 200, None
 
@@ -477,7 +494,7 @@ class Player:
                 self.tokens.pop(token, None)
                 return 409, status(state, error="selection_changed")
             # Dispatch to the exact originally selected native session, never the current system player.
-            if current.source_app_user_model_id.casefold() != selected.session.source_app_user_model_id.casefold():
+            if not await matches_selection(current, selected.session):
                 self.tokens.pop(token, None)
                 return 409, status("unavailable", error="selection_changed")
             session = selected.session
@@ -545,6 +562,11 @@ def create_app(sessions=None, *, expected_host=f"{HOST}:{PORT}", inventory=read_
         # Report API contracts, independent of whether Spotify or a physical mic is connected.
         paths = {r.resource.canonical for r in request.app.router.routes()}
         caps = ["spotify-detection-v2", "spotify-window-artwork-v1"]
+        try:
+            if isinstance(player.sessions, WindowsSessions) and media_provider() is not None:
+                caps.append("spotify-smtc-rust-v1")
+        except (OSError, RuntimeError):
+            pass
         if "/spotify/volume" in paths:
             caps.append("spotify-player-volume-v1")
         if "/spotify/peak" in paths:

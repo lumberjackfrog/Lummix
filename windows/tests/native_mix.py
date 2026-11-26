@@ -10,7 +10,7 @@ import numpy as np
 @lru_cache(maxsize=1)
 def load_kernel():
     packaged = getattr(sys, "frozen", False)
-    folder = Path(sys._MEIPASS) if packaged else Path(__file__).resolve().parents[1] / ".build/dsp/release"
+    folder = Path(sys._MEIPASS) if packaged else Path(__file__).resolve().parents[2] / ".build/dsp/release"
     dll = folder / "lummix_dsp.dll"
     if not packaged and not dll.exists():
         return None

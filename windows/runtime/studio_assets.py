@@ -1,12 +1,10 @@
 """Static desktop assets shared by the HTTP preview and the installed WebView."""
+from pathlib import Path
+import sys
 from urllib.parse import unquote, urlsplit
 
-STUDIO_FILES = frozenset("""
-index.html Mixer%20preview.html design-board.js desktop-theme.css idle-art.js global-pulse.js global-pulse.css
-studio-preferences.js live-theme.js mixer-console.css mixer-console.js mixer-settings.css mixer-visualizer.css
-mixer-visualizer.js output-gains.js spotify-ducking.js transport-layout.css
-visualizer-simplex-noise-4.0.3.js visualizer-simplex-noise-LICENSE.txt
-""".split())
+_ASSET_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+STUDIO_FILES = frozenset((_ASSET_DIR / "studio-assets.txt").read_text(encoding="ascii").split())
 
 
 def studio_asset(folder, route):
@@ -14,7 +12,7 @@ def studio_asset(folder, route):
     if name not in STUDIO_FILES:
         return None
     file = folder / unquote(name)
-    mime = {".html": "text/html", ".css": "text/css", ".js": "text/javascript"}
+    mime = {".html": "text/html", ".css": "text/css", ".js": "text/javascript", ".wasm": "application/wasm"}
     return file, mime.get(file.suffix, "text/plain")
 
 
@@ -45,7 +43,9 @@ def attach_installed_assets(host, folder):
         stream = memory_stream(data, len(data))
         if not stream:
             raise MemoryError("Could not load the Lummix interface.")
-        headers = f"Content-Type: {mime}; charset=utf-8\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff"
+        if mime.startswith("text/"):
+            mime += "; charset=utf-8"
+        headers = f"Content-Type: {mime}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff"
         args.Response = host.environment.CreateWebResourceResponse(stream, status, reason, headers)
         return 0
 

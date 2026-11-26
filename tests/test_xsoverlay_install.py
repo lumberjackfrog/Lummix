@@ -125,6 +125,21 @@ class AddonTests(unittest.TestCase):
         self.assertEqual(self.wrist.read_bytes(),self.stock)
         self.assertFalse(self.directory.exists())
 
+    def test_rollback_preserves_concurrent_user_edit(self):
+        original=addon.write_atomic
+        def edit_then_fail(path,data):
+            if path==self.wrist:
+                (self.directory/"icon.png").write_bytes(b"user replacement")
+                raise PermissionError()
+            original(path,data)
+        with patch.object(addon,"write_atomic",side_effect=edit_then_fail):
+            state=self.manager.change("install")
+        self.assertEqual(state["state"],"conflict")
+        self.assertIn("during rollback",state["message"])
+        self.assertEqual(self.wrist.read_bytes(),self.stock)
+        self.assertEqual((self.directory/"icon.png").read_bytes(),b"user replacement")
+        self.assertFalse((self.directory/"app.json").exists())
+
     def test_partial_uninstall_rolls_back(self):
         self.install()
         before=self.wrist.read_bytes()

@@ -1,5 +1,5 @@
 /* The native mixer ducks only music actually present on its own output bus. */
-(() => {
+(async () => {
   'use strict';
   const find=id=>document.getElementById(id);
   const toggle=find('duck-enable'), depth=find('duck'), alternate=find('duck-live');
@@ -7,10 +7,19 @@
   const captions={unavailable:'Native mixer unavailable.',off:'Off',waiting_mic:'Ready when a mic route starts.',
     waiting_music:'Waiting for music on the mixer.', mic_muted:'Microphone muted.',
     music_muted:'Mixer music muted.',ready:'Listening to the routed microphone.'};
-  let current=null, pending={}, busy=false, retryTimer=0, dragging=false, migrating=false;
+  let current=null, token='', retryTimer=0, dragging=false;
+  let duck;
+  try{
+    duck=(await window.LumControls).duck;
+  }catch{
+    toggle.disabled=depth.disabled=true;
+    if(alternate)alternate.disabled=true;
+    if(find('duck-live-state'))find('duck-live-state').textContent=captions.unavailable;
+    return;
+  }
   const label=s=>s.state==='ducking'?'Speaking · −'+Math.round(s.reductionDb)+' dB':captions[s.state]||captions.unavailable;
   function draw(){
-    const known=Boolean(current);
+    const known=duck.online();
     const capture={state:current?.spotifyCapture||'unknown',edition:current?.spotifyEdition||null};
     if(window.LumSpotifyCapture?.state!==capture.state || window.LumSpotifyCapture?.edition!==capture.edition){
       window.LumSpotifyCapture=capture;
@@ -18,10 +27,10 @@
     }
     toggle.disabled=depth.disabled=!known;
     if(alternate)alternate.disabled=!known;
-    state.duckEnabled=pending.enabled??current?.enabled??false;
+    state.duckEnabled=known && duck.enabled();
     state.liveDuck=Boolean(current && ['ducking','ready'].includes(current.state));
     state.duckNote=known?label(current):captions.unavailable;
-    if(known && !dragging && pending.depthDb===undefined)depth.value=String(current.depthDb);
+    if(known && !dragging && duck.depth()>=0)depth.value=String(duck.depth());
     if(alternate){
       alternate.textContent=state.duckEnabled?'On':'Off';
       alternate.setAttribute('aria-pressed',String(state.duckEnabled));
@@ -37,45 +46,32 @@
     if(!r.ok)throw Error(String(r.status));
     return r.json();
   }
-  function migrate(){
-    if(!current || current.configured || migrating)return;
-    migrating=true;
-    try{
-      const legacy=Number(localStorage.getItem('lum-talk-depth'));
-      if(Number.isInteger(legacy)&&legacy>=1&&legacy<=24)
-        pending=Object.assign({depthDb:legacy,migrate:true},pending);
-    }catch{}
-  }
-  async function sync(){
-    if(busy)return;
+  async function sync(poll = false){
+    let patch=duck.next(Boolean(token),poll);
+    if(patch===undefined)return;
     clearTimeout(retryTimer);
-    busy=true;
-    try{
-      if(!current || !Object.keys(pending).length)current=await call();
-      migrate();
-      while(Object.keys(pending).length){
-        const patch=pending;
-        pending={};
-        try{
-          current=await call(patch,current.token);
-        }catch(e){
-          if(e.message!=='403')throw e;
-          current=await call();
-          current=await call(patch,current.token);
-        }
+    let retriedToken=false;
+    while(patch!==undefined){
+      try{
+        current=await call(patch,token);
+        if(typeof current.token!=='string' || !current.token)throw Error('Missing mixer token');
+        token=current.token;
+        duck.commit(current);
+        try{duck.migrate(Number(localStorage.getItem('lum-talk-depth')),current.configured);}catch{}
+        patch=duck.next(Boolean(token),false);
+      }catch(error){
+        current=null;
+        token='';
+        duck.fail();
+        if(error.message!=='403'||retriedToken)break;
+        retriedToken=true;
+        patch=duck.next(false,true);
       }
-    }catch{current=null;}
-    finally{
-      busy=false;
-      draw();
-      if(!document.hidden)
-        retryTimer=setTimeout(sync,current?.state==='ducking'||current?.state==='ready'?500:2500);
     }
+    draw();
+    if(!document.hidden)retryTimer=setTimeout(()=>sync(true),duck.pollMs());
   }
-  function change(patch){
-    delete pending.migrate;
-    Object.assign(pending,patch);draw();sync();
-  }
+  function change(patch){duck.change(patch);draw();sync();}
   function flip(){if(current)change({enabled:!state.duckEnabled});}
   toggle.addEventListener('click',flip);
   alternate?.addEventListener('click',flip);
@@ -86,7 +82,7 @@
   });
   document.addEventListener('visibilitychange',()=>{
     clearTimeout(retryTimer);
-    if(!document.hidden)sync();
+    if(!document.hidden)sync(true);
   });
-  sync();
+  sync(true);
 })();

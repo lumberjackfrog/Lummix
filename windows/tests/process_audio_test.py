@@ -47,7 +47,7 @@ def read(feed,seconds=.55):
         chunk=feed.next()
         if chunk is None:time.sleep(.003)
         else:chunks.append(chunk)
-    assert len(chunks)>=seconds*100,(feed.state,len(chunks),feed.capture.code if feed.capture else None)
+    assert len(chunks)>=seconds*100,(feed.state,len(chunks),feed.capture.state if feed.capture else None)
     return np.concatenate(chunks)[:,0]
 
 

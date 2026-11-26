@@ -1,4 +1,10 @@
 use std::slice;
+#[cfg(windows)]
+mod capture;
+mod engine;
+#[cfg(feature = "replay")]
+mod replay;
+mod route;
 
 #[no_mangle]
 pub extern "C" fn lummix_dsp_abi() -> u32 {

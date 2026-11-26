@@ -5,7 +5,6 @@ import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import threading
-from types import SimpleNamespace
 from unittest.mock import patch
 import cable_setup as s
 from mic_routes import signed_cables
@@ -63,16 +62,25 @@ with TemporaryDirectory() as folder, patch.dict(os.environ, {"LOCALAPPDATA":fold
     boot = [{"event":"1:100","ticks":100_000_000}]
     def probe():
         return s.shape("ready") | {"boot":boot[0]}
-    def inventory(*args):
-        data = probe() | {"signed":True,"endpointIds":{"Render":["render"],"Capture":["capture"]}}
-        return SimpleNamespace(returncode=0, stdout=json.dumps(data))
+    render = "{8078C36F-159B-4CC8-A389-4497502275AB}"
+    capture = "{07FB90E9-40E1-4E34-ABCE-AF9065BAD550}"
+    endpoint = dict(state=1, hardware="VBAudioVACWDM", description="VB-Audio Virtual Cable", inf="oem42.inf")
+    driver = dict(name="VB-Audio Virtual Cable", hardware="VBAudioVACWDM", provider="VB-Audio Software",
+                  signed=True, signer="Microsoft Windows Hardware Compatibility Publisher", inf="OEM42.INF")
+    def inventory():
+        data = dict(boot=boot[0], drivers=[driver],
+                    endpoints={"Render":[endpoint | {"key":render}], "Capture":[endpoint | {"key":capture}]})
+        return s.check(0,data)
     reopened=s.Controller(probe,reject,marker=marker)
     assert reopened.status()["state"]=="restart-needed"
     assert reopened.begin()["state"]=="restart-needed" and reopened.thread is None
-    with patch.object(s,"powershell",side_effect=inventory), patch("cable_alias.labels",return_value={}):
+    with patch.object(s,"qualified_pair",side_effect=inventory), patch("cable_alias.labels",return_value={}):
         assert signed_cables()=={"error":"cable_restart_needed"}
         boot[0] = {"event":"2:200","ticks":900_000_000}
-        assert signed_cables()=={"Render":["render"],"Capture":["capture"]}
+        assert signed_cables()=={"Render":["{0.0.0.00000000}."+render],"Capture":["{0.0.1.00000000}."+capture]}
+        driver["signer"]="Untrusted Publisher"
+        assert signed_cables()=={}
+        assert s.inspect_pair()["state"]=="partial"
         assert s.Controller(probe,reject,marker=marker).status()["state"]=="ready"
         assert not marker.exists()
 

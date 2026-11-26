@@ -24,7 +24,7 @@ class BusTests(unittest.TestCase):
         def step(count, mic):
             for _ in range(count):
                 stage.render(out,mic,music,cfg)
-            return stage.duck.amount
+            return stage.reduction_db
         self.assertEqual(step(5,silent),0)
         np.testing.assert_allclose(out[-1],[.24,-.12],atol=1e-6)
         self.assertLess(step(10,voice),3)

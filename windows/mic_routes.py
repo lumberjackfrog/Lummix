@@ -1,16 +1,13 @@
 """Explicit, stable Windows microphone selection and one shared native cable route."""
 import asyncio
-import ctypes
 import json
 import secrets
 import profile_save
 import time
 from aiohttp import web
+from native_audio import device_pair, endpoint_inventory
 from mix_gains_http import load_json
 
-HW = "{A8B865DD-2E3D-4094-AD97-E593A70C75D6} 8"
-INSTANCE = "{B3F8FA53-0004-438E-9003-51A46E139BFC} 2"
-FORM = "{1DA5D803-D492-4EDD-8C23-E0C0FFEE7F0E} 0"
 BRANDS = ("pico", "oculus", "quest", "vive", "index", "pimax")
 
 
@@ -21,9 +18,8 @@ class RouteError(Exception):
 
 
 def signed_cables():
-    from cable_setup import powershell, restart_pending
-    result = powershell("cable_setup_status.ps1")
-    obj = json.loads(result.stdout) if result.returncode == 0 else {}
+    from cable_setup import qualified_pair, restart_pending
+    obj = qualified_pair()
     if restart_pending(obj.get("boot")):
         return {"error": "cable_restart_needed"}
     if obj.get("signed") and obj.get("state") == "ready":
@@ -31,43 +27,6 @@ def signed_cables():
         ids=obj.get("endpointIds",{})
         return dict(ids,**labels(ids))
     return {}
-
-
-def capture_kind(name, props):
-    full = (name + " " + str(props.get(HW, "")) + " " + str(props.get(INSTANCE, ""))).lower()
-    if any(word in full for word in ("vbaudio", "vb-audio", "loopback", "stereo mix", "what u hear", "voicemeeter",
-                                      "steam streaming", "streaming speaker", "sonar", "steelseries sonar")):
-        return None
-    hardware = any(bus in full for bus in ("usb\\", "hdaudio\\", "intelaudio\\", "bth", "acp\\", "amdacp", "acpi\\", "pci\\", "soundwire\\"))
-    if hardware:
-        return "headset" if props.get(FORM) == 5 or any(x in full for x in ("headset","headphone","hands-free",*BRANDS)) else "physical"
-    if any(brand in full for brand in BRANDS) and ("mic" in full or props.get(FORM) in (4, 5)):
-        return "headsetBridge"
-    return None
-
-
-def endpoint_inventory():
-    import comtypes
-    from pycaw.pycaw import AudioUtilities
-    comtypes.CoInitialize()
-    try:
-        en = AudioUtilities.GetDeviceEnumerator()
-        def default(role):
-            try:
-                return en.GetDefaultAudioEndpoint(1, role).GetId().lower()
-            except (OSError, comtypes.COMError):
-                return None
-        std, comm = default(0), default(2)
-        rows = []
-        for dev in AudioUtilities.GetAllDevices(1, 1):
-            k = capture_kind(dev.FriendlyName or "", dev.properties)
-            if k:
-                ident = dev.id.lower()
-                rows.append(dict(id=ident, name=dev.FriendlyName, headset=k!="physical",
-                                 kind=k, defaultInput=ident==std, defaultCommunications=ident==comm))
-        return sorted(rows, key=lambda x:(x["name"].casefold(),x["id"]))
-    finally:
-        comtypes.CoUninitialize()
 
 
 def connected_headsets():
@@ -92,45 +51,13 @@ def recommended(rows, saved, connected):
 
 def native_indexes(input_id, cable_ids):
     """Bind both ends by IMMDevice ID from PortAudio, even if display names collide."""
-    import comtypes
-    import sounddevice as sd
-    from pycaw.api.mmdeviceapi import IMMDevice
-    from cable_mixer import _devices, RENDERS
-    dll = ctypes.CDLL(sd._libname)
-    get_device = dll.PaWasapi_GetIMMDevice
-    get_device.argtypes = (ctypes.c_int,ctypes.POINTER(ctypes.c_void_p))
-    signed_sinks = {i.lower() for i in cable_ids.get("Render", [])}
-    if not signed_sinks or not cable_ids.get("Capture"):
+    sinks = cable_ids.get("Render")
+    if not sinks or not cable_ids.get("Capture"):
         raise RouteError("cable_unavailable")
-    comtypes.CoInitialize()
-    try:
-        def lookup():
-            inputs, sinks = [], []
-            for index, desc in _devices():
-                ptr = ctypes.c_void_p()
-                if get_device(index, ctypes.byref(ptr)) or not ptr.value:
-                    continue
-                # PortAudio owns this reference. Take one for comtypes' managed pointer.
-                endpoint = ctypes.cast(ptr, ctypes.POINTER(IMMDevice))
-                endpoint.AddRef()
-                eid = endpoint.GetId().lower()
-                if eid == input_id and eid.startswith("{0.0.1.") and desc["max_input_channels"]:
-                    inputs.append(index)
-                if eid in signed_sinks and desc["max_output_channels"]>=2:
-                    # Prefer the ordinary stereo render without depending on display-language.
-                    rank = 0 if desc["max_output_channels"]==2 and "16 ch" not in desc["name"].lower() else 1
-                    sinks.append((rank, RENDERS.index(desc["name"]) if desc["name"] in RENDERS else len(RENDERS),index))
-            return inputs,sinks
-        hits,sinks = lookup()
-        if len(hits)!=1 or not sinks:
-            # Supported on some WASAPI builds. Do not reinitialize PortAudio globally.
-            if dll.PaWasapi_UpdateDeviceList()==0:
-                hits,sinks = lookup()
-        if len(hits)!=1 or not sinks:
-            raise RouteError("restart_audio_helper")
-        return hits[0],min(sinks)[2]
-    finally:
-        comtypes.CoUninitialize()
+    mic, sink = device_pair(input_id, sinks)
+    if mic < 0 or sink < 0:
+        raise RouteError("restart_audio_helper")
+    return mic, sink
 
 
 def write_selection(path, selected):

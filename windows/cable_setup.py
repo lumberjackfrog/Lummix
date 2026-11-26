@@ -2,13 +2,13 @@
 import argparse
 from contextlib import contextmanager, ExitStack
 import ctypes
-import hashlib
+from functools import cache
 import io
 import json
 import os
 from pathlib import Path
 import platform
-import re
+import sys
 import subprocess
 import tempfile
 import threading
@@ -18,7 +18,6 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parent
 URL = "https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack46.zip"
-SHA = "bc44e8974191a5a2427d6c979e2dab08dbb09925f3f435dfa2f0ba3e45b6eb90"
 SIZE = 1324680
 BUSY = {"checking","preparing","awaiting-windows"}
 MESSAGES = {
@@ -39,16 +38,54 @@ def shape(state):
             "message":MESSAGES[state]}
 
 
-def powershell(resource, folder=None, mode=None, wait=15):
+def powershell(resource, folder=None):
     binary=Path(os.environ["SystemRoot"])/"System32/WindowsPowerShell/v1.0/powershell.exe"
     script=(ROOT/resource).read_text(encoding="utf-8")
     env=os.environ.copy()
     env["PSModulePath"]=str(binary.parent/"Modules")
     if folder is not None:
-        env.update(LUM_CABLE_FOLDER=str(folder),LUM_CABLE_ACTION=mode)
-        script="& {\n"+script+"\n} -Folder $env:LUM_CABLE_FOLDER -Mode $env:LUM_CABLE_ACTION"
+        env['LUM_CABLE_FOLDER']=str(folder)
+        script="& {\n"+script+"\n} -Folder $env:LUM_CABLE_FOLDER"
     return subprocess.run([str(binary),"-NoLogo","-NoProfile","-NonInteractive","-Command",script],
-                          capture_output=True,text=True,env=env,timeout=wait,creationflags=subprocess.CREATE_NO_WINDOW)
+                          capture_output=True,text=True,env=env,timeout=15,creationflags=subprocess.CREATE_NO_WINDOW)
+
+
+@cache
+def native():
+    if getattr(sys, "frozen", False):
+        from native_host import library
+    else:
+        from runtime.native_host import library
+    dll = library()
+    dll.lummix_cable_check.argtypes = [ctypes.c_uint, ctypes.c_char_p, ctypes.c_size_t,
+                                      ctypes.c_void_p, ctypes.c_size_t]
+    dll.lummix_cable_check.restype = ctypes.c_size_t
+    dll.lummix_cable_pinned_bytes.argtypes = [ctypes.c_bool, ctypes.c_char_p, ctypes.c_size_t]
+    dll.lummix_cable_pinned_bytes.restype = ctypes.c_bool
+    dll.lummix_cable_install_result.argtypes = [ctypes.c_uint, ctypes.c_bool]
+    dll.lummix_cable_install_result.restype = ctypes.c_uint
+    dll.lummix_cable_launch.argtypes = [ctypes.c_wchar_p, ctypes.c_size_t, ctypes.c_char_p, ctypes.c_size_t]
+    dll.lummix_cable_launch.restype = ctypes.c_uint
+    return dll
+
+
+def check(operation, value):
+    data = json.dumps(value, separators=(",", ":"), allow_nan=False).encode("ascii")
+    result = ctypes.create_string_buffer(len(data) + 512)
+    size = native().lummix_cable_check(operation, data, len(data), result, len(result))
+    if not size:
+        raise ValueError("Could not validate VB-CABLE evidence")
+    return json.loads(result.raw[:size])
+
+
+def qualified_pair():
+    try:
+        result = powershell("cable_setup_status.ps1")
+        if not result.returncode:
+            return check(4, json.loads(result.stdout))
+    except (OSError, ValueError, AttributeError, subprocess.SubprocessError):
+        pass
+    return {}
 
 
 def restart_file():
@@ -61,20 +98,10 @@ def restart_pending(boot, path=None, *, clear_expired=False):
         pending_boot = json.loads(marker.read_text(encoding="ascii"))
     except (OSError, ValueError):
         return False
-    if not isinstance(pending_boot, dict) or not (pending_boot.get("event") or type(pending_boot.get("ticks")) is int):
-        return False
-    boot = boot or {}
-    if pending_boot.get("event") and boot.get("event"):
-        same_boot = pending_boot["event"] == boot["event"]
-    else:
-        old_ticks, new_ticks = pending_boot.get("ticks"), boot.get("ticks")
-        # Use the OS's recorded boot time if either boot event was inaccessible.
-        # Allow up to two seconds of variance from clock correction on the WMI path.
-        same_boot = (type(old_ticks) is not int or type(new_ticks) is not int
-                     or abs(new_ticks - old_ticks) <= 20_000_000)
-    if same_boot:
+    same_boot = check(3, {"pending": pending_boot, "boot": boot})
+    if same_boot is True:
         return True
-    if clear_expired:
+    if same_boot is False and clear_expired:
         try:
             marker.unlink(missing_ok=True)
         except OSError:
@@ -84,10 +111,7 @@ def restart_pending(boot, path=None, *, clear_expired=False):
 
 def inspect_pair():
     try:
-        result=powershell("cable_setup_status.ps1")
-        if result.returncode:
-            return shape("unavailable")
-        found=json.loads(result.stdout)
+        found=qualified_pair()
         if found["state"] not in ("ready","partial","missing"):
             return shape("unavailable")
         if found["state"]=="ready" and not all(found.get(k) is True for k in ("signed","capture","render")):
@@ -97,7 +121,7 @@ def inspect_pair():
             from cable_alias import labels
             info.update(labels(found["endpointIds"]))
         return info
-    except (OSError,ValueError,KeyError,subprocess.SubprocessError):
+    except (OSError,ValueError,KeyError,AttributeError,subprocess.SubprocessError):
         return shape("unavailable")
 
 
@@ -130,19 +154,19 @@ def package(fetch=download):
     if os.name!="nt" or platform.machine().upper() not in ("AMD64","X86_64","ARM64"):
         raise ValueError("This package launcher supports 64-bit Windows.")
     raw=fetch()
-    if len(raw)!=SIZE or hashlib.sha256(raw).hexdigest()!=SHA:
+    if len(raw)!=SIZE or not native().lummix_cable_pinned_bytes(False, raw, len(raw)):
         raise ValueError("The VB-Audio archive does not match the reviewed package.")
     with tempfile.TemporaryDirectory(prefix="LumMix-VBCABLE-") as temp, ExitStack() as guard, zipfile.ZipFile(io.BytesIO(raw)) as archive:
         folder=Path(temp)
-        if sum(x.file_size for x in archive.infolist())>10_000_000:
-            raise ValueError("Unexpected package size")
-        names=set()
-        for entry in archive.infolist():
+        entries=archive.infolist()
+        if not check(1, [{"name":entry.filename,"size":entry.file_size} for entry in entries]):
+            raise ValueError("Unexpected package layout")
+        names={entry.filename.lower() for entry in entries}
+        for entry in entries:
             name=entry.filename
-            if not re.fullmatch(r"[A-Za-z0-9_]+\.(exe|inf|cat|sys|ico|txt)",name,re.I) or name.lower() in names:
-                raise ValueError("Unexpected package layout")
-            names.add(name.lower())
             member=archive.read(entry)
+            if name.lower()=="vbcable_setup_x64.exe" and not native().lummix_cable_pinned_bytes(True, member, len(member)):
+                raise ValueError("The VB-Audio installer does not match the reviewed program.")
             path=folder/name
             with path.open("xb") as output:
                 output.write(member)
@@ -151,14 +175,29 @@ def package(fetch=download):
                 raise ValueError("Package member changed")
         if {p.name.lower() for p in folder.iterdir()}!=names:
             raise ValueError("Unexpected package contents")
-        if powershell("cable_setup_install.ps1",folder,"Verify").returncode:
-            raise ValueError("Vendor or driver catalog signature did not validate")
+        verify_signatures(folder)
         yield folder
 
 
+def verify_signatures(folder):
+    result=powershell("cable_setup_install.ps1",folder)
+    if result.returncode:
+        raise ValueError("Vendor or driver catalog signature did not validate")
+    proof=json.loads(result.stdout)
+    if not check(2,proof):
+        raise ValueError("Vendor or driver catalog signature did not validate")
+    return proof
+
+
 def launch(folder):
-    # Installer runs to natural completion. Never terminate a driver installer mid-flight.
-    return powershell("cable_setup_install.ps1",folder,"Launch",wait=None).returncode
+    proof=json.dumps(verify_signatures(folder),separators=(",", ":")).encode("ascii")
+    text=str(folder)
+    length=len(text.encode("utf-16-le",errors="surrogatepass")) // 2
+    # Rust runs only the pinned vendor executable and waits for it without a timeout.
+    code=native().lummix_cable_launch(text,length,proof,len(proof))
+    if code==0xFFFFFFFF:
+        raise ValueError("Windows did not start or confirm the pinned VB-Audio installer.")
+    return code
 
 
 class Controller:
@@ -227,11 +266,11 @@ class Controller:
                     marked = True
                 self._set(shape("awaiting-windows"))
                 code=self.install(folder)
-                if code==1223:
-                    self._set(shape("cancelled"))
-                    return
-                if code not in (0,3010,1641) and not self.probe()["ready"]:
-                    self._set(shape("failed"))
+                outcome=native().lummix_cable_install_result(code, False)
+                if outcome==2:
+                    outcome=native().lummix_cable_install_result(code, self.probe()["ready"])
+                if outcome!=1:
+                    self._set(shape("cancelled" if outcome==0 else "failed"))
                     return
                 self.needs_restart = True
                 self._set(shape("restart-needed"))

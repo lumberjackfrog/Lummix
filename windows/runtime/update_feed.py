@@ -11,6 +11,8 @@ import os
 from pathlib import Path
 import re
 import stat
+import subprocess
+import sys
 import time
 from urllib.parse import urlsplit
 import urllib.request
@@ -79,6 +81,14 @@ def verify_signature(data, signature, public_key=PUBLIC_KEY):
     key_blob = base64.b64decode(public_key, validate=True)
     if len(signature) != 64 or len(key_blob) != 72:
         raise InvalidUpdate("signature size")
+    if getattr(sys, "frozen", False):
+        host = Path(sys.executable).resolve().with_name("Lummix Host.exe")
+        args = [base64.b64encode(value).decode("ascii") for value in (key_blob, data, signature)]
+        result = subprocess.run([str(host), "verify-update", *args], creationflags=subprocess.CREATE_NO_WINDOW,
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if result.returncode:
+            raise InvalidUpdate("signature verification")
+        return
     api = bcrypt()
     alg, key = ctypes.c_void_p(), ctypes.c_void_p()
     if api.BCryptOpenAlgorithmProvider(ctypes.byref(alg),"ECDSA_P256",None,0) != 0:

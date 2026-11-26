@@ -6,7 +6,7 @@ from detect_devices import get_scan
 import cable_setup_http
 
 here = Path(__file__).resolve().parent
-installed = None  # Set by runtime_main from the current user’s Steam libraries.
+installed = None  # Set by runtime_main from the current user's Steam libraries.
 wrist = "/vendor/_UI/Default/Wrist.html"
 config = Path.home() / "AppData/LocalLow/Xiexe/XSOverlay/config/overlaySettings.json"
 allowed = {".js", ".css", ".woff", ".woff2", ".ttf", ".otf", ".png", ".jpg", ".webp", ".svg", ".html"}

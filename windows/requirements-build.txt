@@ -25,5 +25,4 @@ pywin32-ctypes==0.2.3
 setuptools==84.0.0
 sounddevice==0.5.6
 typing_extensions==4.16.0
-winsdk==1.0.0b10
 yarl==1.24.5

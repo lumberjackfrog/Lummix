@@ -344,7 +344,9 @@ class Tests(unittest.IsolatedAsyncioTestCase):
         from cable_mixer import CableMixer
         from mix_gains_http import MixOutput
         mixer=CableMixer()
-        mixer.stream,mixer.mic_rms=NS(active=True),.23
+        mixer.stream=NS(active=True)
+        from unittest.mock import PropertyMock
+        self.enterContext(patch.object(CableMixer, "mic_rms", new_callable=PropertyMock, return_value=.23))
         output=MixOutput(Path(self.enterContext(TemporaryDirectory()))/"gains.json",mixer)
         with patch.object(mod, "MicRoutes", return_value=mic):
             app=mod.create_app(self.sessions,inventory=lambda:self.installed,mix_output=output,

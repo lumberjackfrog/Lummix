@@ -1,127 +1,73 @@
-"""Keep a local, atomic recovery copy of each explicitly saved user preference."""
-from contextlib import contextmanager
+"""Pass settings validation to the native profile and recovery transaction."""
+import ctypes
+from functools import cache
 import json
 import logging
-import math
-import msvcrt
-import os
-from pathlib import Path
-import tempfile
+
+from native_host import library, wide_path
 
 
-def _atomic(path, data):
-    fd, name = tempfile.mkstemp(dir=path.parent)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            json.dump(data, stream, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(name, path)
-    finally:
-        Path(name).unlink(missing_ok=True)
+_SAVE, _LOAD, _UPDATE = range(3)
+_INVALID_JSON = 0x10000
+_SCHEMA_ERRORS = (0x10001, 0x10002)
+_VALIDATE = ctypes.CFUNCTYPE(ctypes.c_uint32, ctypes.c_void_p, ctypes.c_size_t)
 
 
-@contextmanager
-def _locked(folder):
-    folder.mkdir(parents=True, exist_ok=True)
-    with (folder / ".settings-lock").open("a+b") as lock:
-        lock.seek(0)
-        msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)
+@cache
+def _transaction():
+    function = library().lummix_profile_transaction
+    function.argtypes = [ctypes.c_wchar_p, ctypes.c_size_t, ctypes.c_uint32,
+                         ctypes.c_char_p, ctypes.c_size_t, _VALIDATE, ctypes.POINTER(ctypes.c_uint32)]
+    function.restype = ctypes.c_uint32
+    return function
+
+
+def _run(path, operation, validate=None, data=None):
+    encoded = b"" if data is None else json.dumps(
+        data, ensure_ascii=True, allow_nan=False, separators=(",", ":"),
+    ).encode("ascii")
+    accepted, error = None, None
+
+    @_VALIDATE
+    def check(pointer, length):
+        nonlocal accepted, error
         try:
-            yield
-        finally:
-            lock.seek(0)
-            msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+            candidate = json.loads(ctypes.string_at(pointer, length))
+            validate(candidate)
+        except (ValueError, TypeError, KeyError) as invalid:
+            error = invalid
+            return 1
+        except BaseException as failure:
+            error = failure
+            return 2
+        accepted = candidate
+        return 0
 
-
-def _read(path):
-    def unique(pairs):
-        fields = dict(pairs)
-        if len(fields) != len(pairs):
-            raise ValueError("Duplicate settings field")
-        return fields
-    def invalid_number(value):
-        raise ValueError(f"Non-finite settings number: {value}")
-
-    def finite_float(value):
-        decoded = float(value)
-        if not math.isfinite(decoded):
-            invalid_number(value)
-        return decoded
-
-    try:
-        data = json.loads(path.read_text(encoding="utf-8-sig"), object_pairs_hook=unique,
-                          parse_float=finite_float, parse_constant=invalid_number)
-    except RecursionError as error:
-        raise ValueError("Settings are nested too deeply") from error
-    if not isinstance(data, dict):
-        raise ValueError("Expected a settings object")
-    return data
-
-
-def _sections(path):
-    try:
-        data = _read(path)
-        if data.get("version") == 1 and isinstance(data.get("settings"), dict):
-            return data["settings"]
-    except (FileNotFoundError, ValueError):
-        pass
-    return {}
-
-
-def _mirror(path, value):
-    backup = path.with_name("settings-backup.json")
-    try:
-        sections = _sections(backup)
-        if sections.get(path.name) != value:
-            sections[path.name] = value
-            _atomic(backup, {"version": 1, "settings": sections})
-    except OSError as error:
-        logging.getLogger(__name__).warning("Could not update recovery copy for %s: %s", path.name, error)
+    warnings = ctypes.c_uint32()
+    callback = check if validate is not None else _VALIDATE()
+    status = _transaction()(*wide_path(path), operation, encoded, len(encoded), callback, ctypes.byref(warnings))
+    if warnings.value & 1:
+        logging.getLogger(__name__).warning("Could not update recovery copy for %s", path.name)
+    if warnings.value & 2:
+        logging.getLogger(__name__).warning("Could not restore %s", path.name)
+    if status == _INVALID_JSON:
+        raise ValueError("Invalid settings JSON")
+    if status in _SCHEMA_ERRORS and error is not None:
+        raise error
+    if status:
+        raise ctypes.WinError(status)
+    return accepted
 
 
 def save(path, data):
-    with _locked(path.parent):
-        _atomic(path, data)
-        _mirror(path, data)
-
-
-def _load_locked(path, validate):
-    try:
-        data = _read(path)
-        validate(data)
-    except (FileNotFoundError, ValueError, TypeError, KeyError):
-        sections = _sections(path.with_name("settings-backup.json"))
-        if path.name not in sections:
-            raise
-        data = sections[path.name]
-        if not isinstance(data, dict):
-            raise ValueError("Invalid backup section")
-        validate(data)
-        try:
-            _atomic(path, data)
-        except OSError as error:
-            logging.getLogger(__name__).warning("Could not restore %s: %s", path.name, error)
-    else:
-        _mirror(path, data)
-    return data
+    _run(path, _SAVE, data=data)
 
 
 def load(path, validate):
-    """Validate before mirroring, and repair missing or invalid originals from the local backup."""
-    with _locked(path.parent):
-        return _load_locked(path, validate)
+    """Validate before mirroring and recover invalid originals from their backup."""
+    return _run(path, _LOAD, validate)
 
 
 def update(path, changes, validate):
-    """Merge changes with the latest valid settings under the same lock as the write."""
-    with _locked(path.parent):
-        try:
-            previous = _load_locked(path, validate)
-        except (FileNotFoundError, ValueError, TypeError, KeyError):
-            previous = {}
-        data = previous | changes
-        validate(data)
-        if data != previous:
-            _atomic(path, data)
-            _mirror(path, data)
+    """Merge changes with the latest valid settings under the native lock."""
+    _run(path, _UPDATE, validate, changes)

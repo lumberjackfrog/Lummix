@@ -80,8 +80,14 @@ def chromium_probe(directory):
     fixture.write_text("""<title>Lummix-private-60</title><div role="group" aria-label="Now playing bar">
         <button id="mute">Mute</button><input aria-label="Change volume" id="vol" type="range"
         min="0" max="1" step=".01" value=".60"><input aria-label="Change progress" type="range"></div>
+        <aside><section aria-label="Current track">
+        <a href="https://open.spotify.com/track/2N6k0xq9jTYO1234567890">Fixture track</a>
+        <a href="https://open.spotify.com/artist/3N6k0xq9jTYO1234567890">Fixture artist</a></section>
+        <div role="group" aria-label="Player controls"><button>Previous</button>
+        <button id="play">Play</button><button>Next</button></div></aside>
         <script>vol.oninput=()=>document.title='Lummix-private-'+Math.round(vol.value*100);
-        mute.onclick=()=>mute.textContent=mute.textContent==='Mute'?'Unmute':'Mute';</script>""")
+        mute.onclick=()=>mute.textContent=mute.textContent==='Mute'?'Unmute':'Mute';
+        play.onclick=()=>play.textContent=play.textContent==='Play'?'Pause':'Play';</script>""")
     command=[str(chromium),"--no-first-run","--no-default-browser-check","--disable-background-networking",
              "--disable-component-update","--disable-sync","--mute-audio","--force-renderer-accessibility",
              "--disable-extensions","--user-data-dir="+str(directory/"profile"),"--app="+fixture.as_uri()]
@@ -118,6 +124,31 @@ def chromium_probe(directory):
         assert not call(key,{"muted":False})[1]["muted"]
         assert call(key,{"volume":60})[1]["volume"]==60
         assert page_received(initial)
+        from spotify_native import provider
+        native = provider()
+        if native is not None:
+            key, answer = native.volume(ids, None, None)
+            assert answer == {"state": "ready", "source": "spotify_player", "volume": 60, "muted": False}
+            assert native.volume(ids, [*key[:-1], []], {"volume": 23}) == {
+                "reason": "selection_changed", "http": 409
+            }
+            assert page_received(initial)
+            assert native.volume(ids, key, {"volume": 23})[1]["volume"] == 23
+            assert page_received("Lummix-private-23")
+            assert native.volume(ids, key, {"muted": True})[1]["muted"]
+            assert not native.volume(ids, key, {"muted": False})[1]["muted"]
+            assert native.volume(ids, key, {"volume": 60})[1]["volume"] == 60
+            assert page_received(initial)
+            playing = native.call(9, hwnd, 0, browser.pid)
+            assert playing.get("itemUrl") == "https://open.spotify.com/track/2N6k0xq9jTYO1234567890", playing
+            assert playing["title"] == "Fixture track" and playing["artist"] == "Fixture artist"
+            assert playing["canPlay"] and not playing["playing"]
+            assert "reason" not in native.call(9, hwnd, 1, browser.pid)
+            deadline = time.monotonic() + 1.25
+            while not native.call(9, hwnd, 0, browser.pid)["playing"] and time.monotonic() < deadline:
+                time.sleep(.025)
+            assert native.call(9, hwnd, 0, browser.pid)["playing"]
+            assert "reason" not in native.call(9, hwnd, 2, browser.pid)
     finally:
         if hwnd: win32gui.PostMessage(hwnd,0x10,0,0)
         try: browser.wait(timeout=5)

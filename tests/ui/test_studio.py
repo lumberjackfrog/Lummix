@@ -21,6 +21,7 @@ class LocalServices:
         self.devices = [dict(id="desk", name="Desk microphone", defaultInput=True),
                         dict(id="headset", name="Headset microphone", headset=True)]
         self.preferences = {}
+        self.duck = dict(configured=True, enabled=True, depthDb=12, reductionDb=0)
         self.saved_mic = None
         self.started = False
         self.cable_state = "ready"
@@ -93,6 +94,8 @@ class LocalServices:
                     self.gains.update(body)
                 elif path == "/mix/preferences":
                     self.preferences.update(body["settings"])
+                elif path == "/mix/duck":
+                    self.duck.update(body)
                 elif path == "/mix/mic":
                     action = body["action"]
                     if action == "select":
@@ -109,9 +112,9 @@ class LocalServices:
             data = {
                 "/mix/mic":self.mic(), "/mix/gains":self.gains | {"token":TOKEN,"revision":len(self.commands)},
                 "/mix/preferences":{"token":TOKEN,"settings":self.preferences},
-                "/mix/duck":dict(token=TOKEN, configured=True, enabled=True, depthDb=12, reductionDb=0,
-                                 state="waiting_music" if self.started else "waiting_mic",
-                                 spotifyCapture="waiting_spotify" if self.started else "off"),
+                "/mix/duck":self.duck | dict(token=TOKEN,
+                    state="off" if not self.duck["enabled"] else "waiting_music" if self.started else "waiting_mic",
+                    spotifyCapture="waiting_spotify" if self.started else "off"),
                 "/spotify/status":dict(state="no_session", installations=[], installationKnown=True),
                 "/spotify/changes":dict(events=False, revision="fixture"),
                 "/spotify/volume":dict(state="unavailable", volume=None, muted=False),
@@ -123,6 +126,37 @@ class LocalServices:
 
 
 class StudioTests(unittest.TestCase):
+    def test_ducking_writes_use_saved_snap_preference(self):
+        services = LocalServices()
+        with sync_playwright() as playwright, playwright.chromium.launch(
+            executable_path=os.environ.get("LUMMIX_TEST_CHROMIUM")
+        ) as browser, browser.new_context(service_workers="block") as context:
+            context.route("**/*", services.intercept)
+            context.add_init_script("window.WebSocket=class extends EventTarget {close(){} send(){}};")
+            page = context.new_page()
+            page.goto(ORIGIN + "/?view=desktop")
+            frame = page.frame_locator("#canvas")
+            frame.locator("#settings").click()
+            duck = frame.locator("#duck-live")
+            expect(duck).to_have_attribute("aria-pressed", "true")
+            frame.locator("#slider-snapping").select_option("20")
+
+            def is_duck_write(response):
+                return response.url.endswith("/mix/duck") and response.request.method == "POST"
+
+            with page.expect_response(is_duck_write):
+                duck.press("Space")
+            expect(duck).to_have_attribute("aria-pressed", "false")
+            frame.get_by_role("button", name="Close settings").click()
+            depth = frame.locator("#duck")
+            expect(depth).to_have_value("12")
+            with page.expect_response(is_duck_write):
+                depth.press("ArrowUp")
+            expect(depth).to_have_value("15")
+            self.assertEqual(services.duck["depthDb"], 15)
+            self.assertFalse(services.duck["enabled"])
+            self.assertFalse(services.unexpected)
+
     def test_first_cable_setup_waits_for_windows_restart(self):
         services = LocalServices()
         services.cable_state = "missing"

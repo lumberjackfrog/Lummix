@@ -1,6 +1,9 @@
 /.tools/
 /.build/
 /windows/dsp/target/
+/windows/host-rs/target/
+/windows/media_native/target/
+/windows/controls-rs/target/
 /.venv*/
 /build/
 /dist/
@@ -23,3 +26,4 @@
 !.env.example
 .DS_Store
 Thumbs.db
+/studio/controls.wasm

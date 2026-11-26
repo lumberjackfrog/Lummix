@@ -17,7 +17,7 @@ DIST = BUILD / "frozen"
 DEST = DIST / "runtime"
 sys.path.insert(0,str(SRC))
 import cable_setup
-from dsp.build_dsp import build_dsp
+from native_build import build_all, copy_rust_notices
 
 
 def webview_sdk():
@@ -51,6 +51,7 @@ def webview_sdk():
 def write_notices(webview):
     notices = DEST / "licenses"
     notices.mkdir(exist_ok=True)
+    copy_rust_notices(notices)
     shutil.copy2(SRC/"packaging/PortAudio-LICENSE.txt",notices/"PortAudio.txt")
     shutil.copy2(SRC/"packaging/Rust-LICENSE-MIT.txt",notices/"Rust.txt")
     (notices/"WebView2").mkdir(exist_ok=True)
@@ -59,7 +60,7 @@ def write_notices(webview):
     shutil.copy2(Path(sys.base_prefix)/"LICENSE.txt", notices/"Python.txt")
     # Retain wheel-distributed notices for direct and transitive runtime components.
     packages = ("numpy","pycaw","comtypes","psutil","sounddevice","cffi","pycparser",
-                "pillow","winsdk","aiohttp","aiohappyeyeballs","aiosignal","attrs","frozenlist","multidict",
+                "pillow","aiohttp","aiohappyeyeballs","aiosignal","attrs","frozenlist","multidict",
                 "propcache","yarl","idna","packaging","typing_extensions","pyinstaller","pywin32","charset-normalizer")
     lines = ["Bundled Windows x64 runtime", "Python " + platform.python_version()]
     for package in packages:
@@ -79,6 +80,8 @@ def main():
     if platform.system() != "Windows" or platform.machine().upper() != "AMD64":
         raise RuntimeError("Use an x64 Windows environment to build this runtime")
     BUILD.mkdir(parents=True, exist_ok=True)
+    native = build_all()
+    os.environ["LUMMIX_HOST_DLL"] = str(native["host_lib"])
     archive = BUILD / "VBCABLE_Driver_Pack46.zip"
     if not archive.exists():
         archive.write_bytes(cable_setup.download())
@@ -92,11 +95,10 @@ def main():
     uia = GetModule("UIAutomationCore.dll")
     webview = webview_sdk()
     wv = GetModule(str(webview/"WebView2.tlb"))
-    args += ["--add-binary", str(build_dsp())+";."]
+    for name in ("dsp", "media", "host_lib"):
+        args += ["--add-binary", str(native[name])+";."]
     args += ["--add-binary", str(webview/"WebView2Loader.dll")+";.", "--add-data", str(SRC/"packaging/Lummix.ico")+";."]
-    for module in (wv.__name__, wv.__wrapper_module__.__name__, uia.__name__, uia.__wrapper_module__.__name__, "wrist-server","spotify-helper","detect_openvr","winsdk._winrt","winsdk.system",
-                   "winsdk.windows.media.control","winsdk.windows.management.deployment",
-                   "winsdk.windows.storage.streams"):
+    for module in (wv.__name__, wv.__wrapper_module__.__name__, uia.__name__, uia.__wrapper_module__.__name__, "wrist-server","spotify-helper","detect_openvr"):
         args += ["--hidden-import",module]
     # Optional third-party integrations of Python packages, unused in this application.
     for module in ("matplotlib","scipy","torch","tensorflow","pandas","IPython","jupyter","pytest",
@@ -105,7 +107,8 @@ def main():
         args += ["--exclude-module",module]
     for path in (SRC/"wrist-tile.html",SRC/"wrist-fixture.js",SRC/"cable_setup_install.ps1",
                  SRC/"cable_setup_status.ps1",SRC/"xsoverlay-icon.png",SRC/"xsoverlay-live.js",
-                 SRC/"xsoverlay-panel.html",archive):
+                 SRC/"xsoverlay-panel.html",HERE/"studio-assets.txt",SRC.parent/"studio/controls-bridge.js",
+                 native["controls"],archive):
         args += ["--add-data",str(path)+";."]
     args += [str(HERE/"runtime_main.py")]
     subprocess.run(args,check=True)
@@ -116,6 +119,7 @@ def main():
             raise RuntimeError("Unexpected destination")
         shutil.rmtree(DEST)
     built.rename(DEST)
+    shutil.copy2(native["host"],DEST/"Lummix Host.exe")
     write_notices(webview)
     print("Packaged",DEST,hashlib.sha256((DEST/"Lummix Helper.exe").read_bytes()).hexdigest())
 

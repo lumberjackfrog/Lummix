@@ -180,6 +180,10 @@ def main(installed_exe=None):
                 report["studioAssetsWithDifferentLineEndings"] = verify_studio_assets(
                     fetch, Path(exe).parent / "studio"
                 )
+                native_studio = Path(exe).with_name("Lummix Host.exe")
+                assert any(Path(child.exe()) == native_studio for child in
+                           psutil.Process(proc[41835].pid).children()), "Packaged Studio did not run the Rust host"
+                report["nativeStudioSha256"] = hashlib.sha256(native_studio.read_bytes()).hexdigest()
                 assert fetch(41835,"/private-runtime-test.log").status_code == 404
                 report["studioAssetsExact"] = len(STUDIO_FILES)
                 report["wrist"] = fetch(41836,"/lummix-health").json()
@@ -216,6 +220,13 @@ def main(installed_exe=None):
                 health=fetch(41838,"/lummix-health").json()
                 assert health["service"]=="lummix-media" and health["protocol"]==2
                 assert MEDIA_CAPABILITIES<=set(health["capabilities"])
+                media_dll = Path(exe).parent / "_internal/lummix_media.dll"
+                assert "spotify-smtc-rust-v1" in health["capabilities"]
+                assert media_dll.is_file() and any(Path(mapping.path) == media_dll for mapping in
+                    psutil.Process(proc[41838].pid).memory_maps()), "Packaged Spotify service did not load Rust media"
+                report["loadedRustMedia"] = {
+                    "bytes": media_dll.stat().st_size, "sha256": hashlib.sha256(media_dll.read_bytes()).hexdigest()
+                }
                 report["mediaCapabilities"]=sorted(health["capabilities"])
                 mic=fetch(41838,"/mix/mic").json()
                 assert isinstance(mic["inputs"],list) and mic["routeActive"] is False

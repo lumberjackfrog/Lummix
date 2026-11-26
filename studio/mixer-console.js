@@ -68,7 +68,8 @@
     });
     el('install-player').addEventListener('click',event=>{if(event.isTrusted)setupBridge.postMessage('spotify-setup');});
   }
-  let currentPlayer=null, scanPending=false, playerPending=false, actionPending=false, selectionEpoch=0;
+  let currentPlayer=null, actions;
+  const loadActions=window.LumControls.then(controls=>{actions=controls.actions; return actions;}).catch(()=>null);
   const transportActions={'media-back':['seekBack15','canSeek'],'media-forward':['seekForward15','canSeek'],'media-next':['next','canNext'],'media-previous':['previous','canPrevious'],'media-stop':['stop','canStop']};
   let lastArtworkId=null, lastArtwork=null, artworkRetry=0, retryTrack='', retries=0;
   async function query(url,options={}){
@@ -104,6 +105,7 @@
     transport.textContent=ready && info.playing?'Pause Spotify':'Play Spotify';
     const label=ready && info.playing?'Pause Spotify':'Play Spotify';
     shortcut.setAttribute('aria-label',label);shortcut.title=label;
+    const actionPending=actions?.spotify.writing();
     icon(shortcut.querySelector('.glyph'),info?.playing?'pause':'play');shortcut.disabled=actionPending || !ready || transport.disabled;
     for(const [id,[,cap]] of Object.entries(transportActions)){el(id).disabled=actionPending || !ready || !info[cap];}
     window.LumGlobalPulse?.bind(info);
@@ -123,26 +125,27 @@
     }
   }
   async function scanPlayer(quiet=false){
-    if(playerPending || actionPending)return false;
-    const epoch=selectionEpoch;
-    playerPending=true;
+    const gate=(actions||await loadActions)?.spotify;
+    const epoch=gate?.read();
+    if(!epoch)return false;
     if(!quiet){busy(el('retry-player'),true);el('player-result').textContent='Looking for Spotify…';}
-    try{const snapshot=await query(spotifyOrigin+'/spotify/status'+(lastArtworkId?'?artworkId='+encodeURIComponent(lastArtworkId):''));if(epoch!==selectionEpoch)return false;drawPlayer(snapshot);return true;}
-    catch{if(epoch===selectionEpoch)drawPlayer(null);return false;}finally{playerPending=false;busy(el('retry-player'),false);}
+    try{const snapshot=await query(spotifyOrigin+'/spotify/status'+(lastArtworkId?'?artworkId='+encodeURIComponent(lastArtworkId):''));if(!gate.current(epoch))return false;drawPlayer(snapshot);return true;}
+    catch{if(gate.current(epoch))drawPlayer(null);return false;}finally{gate.finishRead(epoch);busy(el('retry-player'),false);}
   }
   function openPlayer(){el('player-connect-dialog').showModal();setupBridge?.postMessage('spotify-setup-state');scanPlayer();}
   el('connect-spotify').onclick=openPlayer;
   el('retry-player').onclick=()=>scanPlayer();
   el('spotify-play').onclick=()=>{if(currentPlayer?.state==='ready')el('personal-transport').click();};
   async function control(action){
-    if(actionPending || currentPlayer?.state!=='ready')return;
-    actionPending=true;selectionEpoch++;busy(el('personal-transport'),true);busy(el('spotify-play'),true);
+    const gate=actions?.spotify;
+    if(currentPlayer?.state!=='ready' || !gate?.write())return;
+    busy(el('personal-transport'),true);busy(el('spotify-play'),true);
     for(const id of Object.keys(transportActions))el(id).disabled=true;
     try{
       const snapshot=await query(spotifyOrigin+'/spotify/control',{method:'POST',headers:{'Content-Type':'application/json','X-Lum-Spotify-Token':currentPlayer.token},body:JSON.stringify({action})});
-      actionPending=false;drawPlayer(snapshot);el('transport-message').textContent='';
+      gate.finishWrite();drawPlayer(snapshot);el('transport-message').textContent='';
     }catch{
-      actionPending=false;drawPlayer(currentPlayer);
+      gate.finishWrite();drawPlayer(currentPlayer);
       el('transport-message').textContent='Spotify could not complete that action.';
       await scanPlayer(true);
     }finally{for(const id of ['personal-transport','spotify-play'])el(id).removeAttribute('aria-busy');}
@@ -168,9 +171,8 @@
     unavailable:['Couldn’t check VB-CABLE','Reopen Lummix or check again.'],
     'restart-needed':['Restart Windows to finish','After restarting, reopen Lummix from Start and choose Set up Lummix.']
   };
-  let scanVersion=0;
   const micPanelOpen=()=>el('mic-connect-dialog').open||el('settings-dialog').open;
-  const currentScan=version=>version===scanVersion && micPanelOpen();
+  const currentScan=version=>actions?.setup.current(version) && micPanelOpen();
   const micSource=el('mic-recording-source'),micButton=el('mic-live-action');
   const micURL=spotifyOrigin+'/mix/mic';
   const captureStates={
@@ -195,7 +197,7 @@
     showCapture(detail?.state);
     if(captureStates[detail?.state])quickState(detail.state!=='off',quickBusy);
   });
-  let micSnapshot=null,micRead=0,micReading=0,micWriting=false,micNotice='',micPoll=0,ownedRoute=null;
+  let micSnapshot=null,micNotice='',micPoll=0,ownedRoute=null;
   let quickBusy=false, quickLive=false;
   function quickState(live,working=false){
     quickLive=live;
@@ -243,7 +245,7 @@
       micSource.dataset.choices=signature;
     }
     micSource.value=saved||'';
-    micSource.disabled=!s || active || micWriting || quickBusy || (!devices.length && !saved);
+    micSource.disabled=!s || active || actions?.mic.writing() || quickBusy || (!devices.length && !saved);
     let note='';
     if(s){
       if(active)note='Stop the mic to change its recording device.';
@@ -257,7 +259,7 @@
     el('mic-source-note').textContent=note;
     micButton.textContent=active?'Stop mix':'Start mix';
     micButton.title=active?'Stop sending the mix to VB-CABLE':'Send your mic and available Spotify audio to VB-CABLE';
-    micButton.disabled=!s?.token || micWriting || quickBusy || (!active && (!selected || !s.cableReady));
+    micButton.disabled=!s?.token || actions?.mic.writing() || quickBusy || (!active && (!selected || !s.cableReady));
     const status=el('mic-live-status');
     status.dataset.active=String(active);
     status.textContent=!s?'Route status unavailable':active?'Mic live'+(live?' · '+live.name:''):!s.cableReady?'Waiting for VB-CABLE':'Mix stopped';
@@ -273,21 +275,23 @@
     el('mic-live-error').hidden=!message;el('mic-live-error').textContent=message;
   }
   async function readInput(){
-    if(!micPanelOpen() || micWriting || (micReading && micReading===micRead))return;
-    const version=++micRead;
-    micReading=version;
+    const gate=(actions||await loadActions)?.mic;
+    if(!micPanelOpen())return;
+    const version=gate?.read();
+    if(!version)return;
     try{
       const s=await query(micURL);
-      if(version!==micRead || !micPanelOpen())return;
+      if(!gate.current(version) || !micPanelOpen())return;
       micSnapshot=Array.isArray(s.inputs) && typeof s.token==='string'?s:null;
-    }catch{if(version!==micRead)return;micSnapshot=null;}
-    finally{if(micReading===version)micReading=0;}
+    }catch{if(!gate.current(version))return;micSnapshot=null;}
+    finally{gate.finishRead(version);}
     paintInput();
   }
   async function changeInput(body){
-    if(!micSnapshot?.token || micWriting)return;
+    const gate=actions?.mic;
+    if(!micSnapshot?.token || !gate?.write())return;
     const token=micSnapshot.token;
-    micWriting=true;++micRead;micNotice='';paintInput();
+    micNotice='';paintInput();
     el('mic-live-status').textContent={select:'Saving input…',setup:'Setting up your mix…',start:'Starting mix…',stop:'Stopping mix…'}[body.action];
     try{
       const response=await fetch(micURL,{method:'POST',cache:'no-store',credentials:'omit',
@@ -302,7 +306,7 @@
     }catch{
       micSnapshot=null;micNotice='Couldn’t confirm the route change. Check again to see its current state.';
     }finally{
-      micWriting=false;paintInput();
+      gate.finishWrite();paintInput();
       if(!micSnapshot)readInput();
     }
   }
@@ -408,9 +412,11 @@
     }
   }
   async function detect(intent,setupSpotify=false){
-    if(scanPending)return;
-    const version=++scanVersion;
-    scanPending=true;busy(el('redetect'),true);
+    const gate=(actions||await loadActions)?.setup;
+    if(!micPanelOpen())return;
+    const version=gate?.read();
+    if(!version)return;
+    busy(el('redetect'),true);
     micNotice='';
     const start=['setup','retry'].includes(intent),stop=intent==='stop';
     if(start||stop){quickBusy=true;quickState(quickLive,true);paintInput();}
@@ -434,19 +440,24 @@
       }
       await scan;
     }
-    finally{if(version===scanVersion){quickBusy=false;quickState(!!micSnapshot?.routeActive);busy(el('redetect'),false);scanPending=false;paintInput();}}
+    finally{
+      if(gate.current(version)){
+        quickBusy=false;quickState(!!micSnapshot?.routeActive);busy(el('redetect'),false);paintInput();
+      }
+      gate.finishRead(version);
+    }
   }
   function closeMicPanel(){
     if(micPanelOpen())return;
-    clearInterval(micPoll);++micRead;
-    ++scanVersion;scanPending=false;quickBusy=false;quickState(!!micSnapshot?.routeActive);busy(el('redetect'),false);
+    clearInterval(micPoll);actions?.mic.cancelRead();
+    actions?.setup.cancelRead();quickBusy=false;quickState(!!micSnapshot?.routeActive);busy(el('redetect'),false);
   }
   el('mic-connect-dialog').addEventListener('close',closeMicPanel);
   el('settings-dialog').addEventListener('close',closeMicPanel);
   const mixPanels=el('mix-progress-panels');
   const diagnostics=[el('cable-panel'),el('headset-panel'),mixPanels.querySelector('.sheet-credit')];
   function pollMic(){
-    clearInterval(micPoll);micPoll=setInterval(()=>{if(!document.hidden && !scanPending)readInput();},5000);
+    clearInterval(micPoll);micPoll=setInterval(()=>{if(!document.hidden && !actions?.setup.reading())readInput();},5000);
   }
   function openSetup(intent,setupSpotify){
     mixPanels.append(el('mic-input-panel'),...diagnostics);

@@ -7,7 +7,7 @@ def build_dsp():
     crate = Path(__file__).resolve().parent
     target = crate.parents[1] / ".build/dsp"
     try:
-        subprocess.run(["cargo", "build", "--release", "--locked", "--offline",
+        subprocess.run(["cargo", "build", "--release", "--locked",
                         "--manifest-path", str(crate / "Cargo.toml"), "--target-dir", str(target)], check=True)
     except FileNotFoundError as exc:
         raise SystemExit("Building Lummix requires the Rust x64 MSVC toolchain (rustc and cargo).") from exc

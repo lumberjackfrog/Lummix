@@ -15,7 +15,7 @@ import psutil
 
 WINDOWS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(WINDOWS))
-import cable_mixer as current
+import first_rust_mixer as current
 
 
 def original_module():

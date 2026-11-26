@@ -46,7 +46,7 @@ class MixDucking:
             active = False
         source=getattr(mixer,"spotify_feed",None) if active else None
         present = bool(active and mixer._stage.last_music)
-        reduction = mixer._stage.duck.amount if present else 0.
+        reduction = mixer._stage.reduction_db if present else 0.
         if mixer is None:
             state = "unavailable"
         elif not self.settings["enabled"]:

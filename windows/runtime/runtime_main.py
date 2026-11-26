@@ -5,6 +5,7 @@ import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import re
+import subprocess
 import sys
 import threading
 from urllib.parse import urlsplit
@@ -13,6 +14,7 @@ from studio_assets import STUDIO_FILES, studio_asset
 EXECUTABLE = Path(sys.executable).resolve()
 ROOT = (EXECUTABLE.parent if EXECUTABLE.stem.lower() == "lummix" else EXECUTABLE.parent.parent) if getattr(sys,"frozen",False) else Path(__file__).resolve().parents[2]
 DATA = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
+NATIVE_HOST = EXECUTABLE.with_name("Lummix Host.exe")
 
 
 class Studio(BaseHTTPRequestHandler):
@@ -180,6 +182,13 @@ def main():
         from cable_alias import worker
         raise SystemExit(worker(mode[1]))
     elif mode == ["studio"]:
+        if getattr(sys, "frozen", False):
+            args = [str(NATIVE_HOST), "studio"]
+            if linked:
+                args.append("--parent-stdin")
+            result = subprocess.run(args, stdin=sys.stdin if linked else None, stdout=sys.stdout,
+                                    stderr=sys.stderr, creationflags=subprocess.CREATE_NO_WINDOW)
+            raise SystemExit(result.returncode)
         serve(ThreadingHTTPServer((bind,41835),Studio), linked)
     elif mode == ["wrist"]:
         start_wrist(bind, linked)

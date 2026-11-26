@@ -23,7 +23,15 @@
       else localStorage.removeItem(pendingKey);
     } catch {}
   }
-  let token = '', needsMigration = true, queue = Promise.resolve();
+  let token = '', queue = Promise.resolve();
+  const select = (values,names) => Object.fromEntries(names.map(name=>[name,values[name]]));
+  let engine;
+  const loadEngine = window.LumControls.then(({preferences})=>{
+    engine=preferences;
+    engine.change(pending);
+    return engine;
+  });
+  loadEngine.catch(()=>{});
   const native = (() => {
     try { return new URL(top.location.href).searchParams.get('app')==='1' && top.chrome?.webview; }
     catch { return null; }
@@ -186,16 +194,16 @@
   }
   async function sync() {
     try {
+      const prefs=await loadEngine;
       let saved;
-      if(!token || needsMigration || !Object.keys(pending).length) saved=await request();
-      if(needsMigration) {
+      if(prefs.needsRead(Boolean(token))) {
+        saved=await request();
         const old=legacy();
-        for(const key of Object.keys(saved)) delete old[key];
-        for(const key of Object.keys(pending)) delete old[key];
-        if(Object.keys(old).length) saved=await request({settings:old,migrate:true});
-        needsMigration=false;
+        const migrate=prefs.migration(old,saved);
+        if(migrate.length) saved=await request({settings:select(old,migrate),migrate:true});
+        prefs.finishMigration();
       }
-      const patch={...pending};
+      const patch=select(pending,prefs.batch());
       if(Object.keys(patch).length) {
         try { saved=await request({settings:patch}); }
         catch(error) {
@@ -203,7 +211,7 @@
           await request();
           saved=await request({settings:patch});
         }
-        for(const [key,val] of Object.entries(patch)) if(pending[key]===val) delete pending[key];
+        for(const key of prefs.confirm()) delete pending[key];
         rememberPending();
       }
       restore(saved);
@@ -216,7 +224,7 @@
     }
   }
   function schedule() {queue=queue.then(sync,sync); return queue;}
-  function save(values) {Object.assign(pending,values); rememberPending(); schedule();}
+  function save(values) {Object.assign(pending,values); engine?.change(values); rememberPending(); schedule();}
   for(const [name,id] of controls) el(id).addEventListener('change',()=>{
     save({[name]:name==='snap'?Number(el(id).value):el(id).checked});
   });

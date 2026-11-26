@@ -1,10 +1,12 @@
 """Manage the two Lummix XSOverlay entry points without replacing vendor or user content."""
 import ctypes
+from functools import lru_cache
 import hashlib
 import json
 import os
 import re
 import stat
+import sys
 import tempfile
 import threading
 from pathlib import Path
@@ -70,16 +72,94 @@ def writable_directory(path, create_child=False):
     return True
 
 
-def split_wrist(wrist):
-    if wrist.count(BEGIN)!=wrist.count(END) or wrist.count(BEGIN)>1:
+class Layout(ctypes.Structure):
+    _fields_ = [("start", ctypes.c_size_t), ("end", ctypes.c_size_t),
+                ("insert", ctypes.c_size_t), ("compatible", ctypes.c_uint)]
+
+
+FileOperation = ctypes.CFUNCTYPE(ctypes.c_uint, ctypes.c_uint, ctypes.c_uint)
+
+
+@lru_cache(maxsize=1)
+def planner():
+    if getattr(sys, "frozen", False):
+        from native_host import library
+    else:
+        from runtime.native_host import library
+    dll = library()
+    layout = dll.lummix_xsoverlay_layout
+    layout.argtypes = [ctypes.c_char_p, ctypes.c_size_t, ctypes.POINTER(Layout)]
+    layout.restype = ctypes.c_uint
+    ownership = dll.lummix_xsoverlay_ownership
+    ownership.argtypes = [ctypes.c_char_p, ctypes.c_size_t]
+    ownership.restype = ctypes.c_uint
+    disposition = dll.lummix_xsoverlay_disposition
+    disposition.argtypes = [ctypes.c_bool, ctypes.c_bool, ctypes.c_uint]
+    disposition.restype = ctypes.c_uint
+    transaction = dll.lummix_xsoverlay_transaction
+    transaction.argtypes = [ctypes.c_bool, FileOperation]
+    transaction.restype = ctypes.c_uint
+    return layout, ownership, disposition, transaction
+
+
+def inspect_layout(wrist):
+    layout = Layout()
+    status = planner()[0](wrist, len(wrist), ctypes.byref(layout))
+    if status == 1:
         raise Conflict("The Lummix markers in Wrist.html are incomplete or duplicated.")
-    if BEGIN not in wrist:
-        return wrist,None
-    start=wrist.index(BEGIN)
-    finish=wrist.index(END)+len(END)
-    if finish<=start:
+    if status == 2:
         raise Conflict("The Lummix wrist markers are out of order.")
-    return wrist[:start]+wrist[finish:],wrist[start:finish]
+    if status:
+        raise ValueError("The wrist layout could not be read.")
+    clean = wrist[:layout.start] + wrist[layout.end:]
+    block = wrist[layout.start:layout.end] if layout.end else None
+    return layout, clean, block
+
+
+def inspect_ownership(before, new, installed, block, directory):
+    receipt = before[RECEIPT]
+    try:
+        proof = json.loads(receipt) if receipt is not None else None
+    except (ValueError, TypeError):
+        proof = None
+    facts = dict(receipt=proof, hasReceipt=receipt is not None, directory=directory,
+                 manifest=digest(before["app.json"]) if before["app.json"] is not None else None,
+                 icon=digest(before["icon.png"]) if before["icon.png"] is not None else None,
+                 block=digest(installed) if installed is not None else None,
+                 expectedBlock=digest(block), sameFiles=before == new)
+    try:
+        data = json.dumps(facts, separators=(",", ":"), allow_nan=False).encode()
+    except ValueError:
+        facts["receipt"] = None
+        data = json.dumps(facts, separators=(",", ":")).encode()
+    status = planner()[1](data, len(data))
+    errors = {
+        3: "The Lummix ownership receipt is unrecognized. Existing files were preserved.",
+        4: "The existing Lummix app.json was edited. Your copy was preserved.",
+        5: "The existing Lummix icon.png was edited. Your copy was preserved.",
+        6: "The installed Lummix wrist code was edited. Your copy was preserved.",
+        7: "An unrecognized Lummix folder or wrist block already exists. Your files were preserved.",
+    }
+    if status in errors:
+        raise Conflict(errors[status])
+    if status not in (0, 1, 2):
+        raise ValueError("The wrist ownership could not be read.")
+    return status
+
+
+def installation_status(layout, writable, ownership):
+    status = planner()[2](bool(layout.compatible), bool(writable), ownership)
+    states = {
+        0: ("installable", "XSOverlay is ready for the wrist add-on.", False),
+        1: ("ready", "Installed in XSOverlay.", True),
+        2: ("ready", "Installed. This Steam library is read-only.", False),
+        3: ("update", "The add-on has an update or a missing file to restore.", True),
+        4: ("unsupported", "This XSOverlay wrist layout is not supported.", False),
+        5: ("unsupported", "This XSOverlay wrist layout is not supported.", True),
+        6: ("blocked", "Windows denied write access to the XSOverlay Steam library.", False),
+    }
+    name, message, removable = states[status]
+    return result(name, message, removable=removable)
 
 
 def write_atomic(path, data):
@@ -133,43 +213,17 @@ class AddonInstall:
         wrist=read(wrist_path)
         if wrist is None:
             return result("unsupported","XSOverlay's wrist page is missing. Verify its files in Steam."),None
-        clean,installed_block=split_wrist(wrist)
-        supported=(clean.lower().count(b"</body>")==1 and
-                   all(key in clean for key in (b'uiContainer',b'./_Shared/js/uiComponents.js',b'./_Shared/js/toolbar.js')))
+        layout,clean,installed_block=inspect_layout(wrist)
         files,block=self.assets()
         appdir=root/NAME
         exists=regular(appdir,directory=True)
         before={n:read(appdir/n) for n in (*FILES,RECEIPT)} if exists else {n:None for n in (*FILES,RECEIPT)}
-        old=before[RECEIPT]
-        if old is not None:
-            try:
-                proof=json.loads(old)
-                valid=(proof["owner"]==NAME and proof["format"]==1 and set(proof["files"])==set(FILES)
-                       and all(re.fullmatch("[0-9a-f]{64}",v) for v in [proof["block"],*proof["files"].values()]))
-            except (TypeError,ValueError,KeyError,AttributeError):
-                valid=False
-            if not valid:
-                raise Conflict("The Lummix ownership receipt is unrecognized. Existing files were preserved.")
-            for n in FILES:
-                if before[n] is not None and digest(before[n])!=proof["files"][n]:
-                    raise Conflict(f"The existing Lummix {n} was edited. Your copy was preserved.")
-            if installed_block is not None and digest(installed_block)!=proof["block"]:
-                raise Conflict("The installed Lummix wrist code was edited. Your copy was preserved.")
-        elif exists or (installed_block is not None and installed_block!=block):
-            raise Conflict("An unrecognized Lummix folder or wrist block already exists. Your files were preserved.")
-        installed=old is not None or installed_block is not None
-        bundle=(appdir,wrist_path,wrist,clean,before,files,block)
-        if not supported:
-            return result("unsupported","This XSOverlay wrist layout is not supported.",removable=installed),bundle
-        writable=writable_directory(wrist_path.parent) and writable_directory(appdir if exists else root,create_child=not exists)
-        if installed and before==files and installed_block==block:
-            return result("ready","Installed in XSOverlay." if writable else "Installed. This Steam library is read-only.",
-                          removable=writable),bundle
-        if not writable:
-            return result("blocked","Windows denied write access to the XSOverlay Steam library."),None
-        if installed:
-            return result("update","The add-on has an update or a missing file to restore.",removable=True),bundle
-        return result("installable","XSOverlay is ready for the wrist add-on."),bundle
+        ownership=inspect_ownership(before,files,installed_block,block,exists)
+        writable=layout.compatible and writable_directory(wrist_path.parent) and writable_directory(
+            appdir if exists else root,create_child=not exists)
+        status=installation_status(layout,writable,ownership)
+        bundle=(appdir,wrist_path,wrist,clean,before,files,block,layout.insert)
+        return status,bundle if status["state"]!="blocked" else None
 
     def inspect(self):
         try:
@@ -178,7 +232,7 @@ class AddonInstall:
             return result("conflict",str(exc)),None
         except PermissionError:
             return result("blocked","Windows denied access to the XSOverlay Steam library."),None
-        except (ValueError,OSError):
+        except (ValueError,OSError,AttributeError):
             return result("unsupported","The Lummix add-on files or XSOverlay installation could not be read."),None
 
     def status(self):
@@ -192,44 +246,57 @@ class AddonInstall:
             state,bundle=self.inspect()
             if not (state["canRemove"] if action=="remove" else state["canInstall"] or state["canUpdate"]):
                 return state
-            appdir,wrist_path,wrist,clean,before,files,block=bundle
+            appdir,wrist_path,wrist,clean,before,files,block,index=bundle
             installing=action=="install"
             after=clean
             if installing:
-                index=clean.lower().index(b"</body>")
                 after=clean[:index]+block+clean[index:]
-            app_changes=[(appdir/n,before[n],files[n] if installing else None)
-                         for n in ((RECEIPT,*FILES) if installing else (*FILES,RECEIPT))]
-            wrist_change=(wrist_path,wrist,after)
-            changes=app_changes+[wrist_change] if installing else [wrist_change]+app_changes
-            written=[]
-            created=False
-            try:
-                if installing and not appdir.exists():
-                    appdir.mkdir()
-                    created=True
-                for path,previous,next_value in changes:
-                    if previous==next_value:continue
-                    if read(path)!=previous:
-                        raise Conflict("An XSOverlay file changed during the operation. Check again.")
-                    write_atomic(path,next_value)
-                    written.append((path,previous,next_value))
-            except (OSError,Conflict) as exc:
-                restored=True
-                for path,previous,ours in reversed(written):
-                    try:
-                        if read(path)!=ours:restored=False
-                        else:write_atomic(path,previous)
-                    except (OSError,Conflict):
-                        restored=False
-                if created:
-                    try:appdir.rmdir()
-                    except OSError:restored=False
-                if not restored:
-                    return result("conflict","The change stopped during rollback. Check your XSOverlay files before retrying.")
-                return result("conflict" if isinstance(exc,Conflict) else "blocked",
+            changes=[(appdir/name,before[name],files[name] if installing else None)
+                     for name in (RECEIPT,*FILES)]
+            changes.append((wrist_path,wrist,after))
+            unexpected=[]
+
+            @FileOperation
+            def file_operation(phase,slot):
+                try:
+                    if phase==0:  # Prepare the managed directory for install.
+                        if appdir.exists():
+                            return 0
+                        appdir.mkdir()
+                        return 1
+                    if phase==3:
+                        appdir.rmdir()
+                        return 1
+                    if phase==4:  # Users can keep other files in this directory.
+                        try:
+                            appdir.rmdir()
+                        except OSError:
+                            pass
+                        return 1
+                    path,previous,next_value=changes[slot]
+                    if phase==1 and previous==next_value:
+                        return 0
+                    expected,replacement=(previous,next_value) if phase==1 else (next_value,previous)
+                    if read(path)!=expected:
+                        return 2
+                    write_atomic(path,replacement)
+                    return 1
+                except Conflict:
+                    return 2
+                except OSError:
+                    return 3
+                except BaseException as error:
+                    # Exceptions cannot cross a ctypes callback. Let Rust
+                    # restore already-written files before raising in Python.
+                    unexpected.append(error)
+                    return 3
+
+            outcome=planner()[3](installing,file_operation)
+            if unexpected:
+                raise unexpected[0]
+            if outcome==4:
+                return result("conflict","The change stopped during rollback. Check your XSOverlay files before retrying.")
+            if outcome!=1:
+                return result("conflict" if outcome==2 else "blocked",
                               "The change was rolled back. Close XSOverlay and check Steam library write access.")
-            if not installing and appdir.exists():
-                try:appdir.rmdir()
-                except OSError:pass  # Other files belong to the user.
             return self.status()

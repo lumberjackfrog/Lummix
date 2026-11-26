@@ -3,41 +3,25 @@ import asyncio
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
-from unittest.mock import patch
+from pa_fixture import Driver
 import numpy as np
 import sounddevice as sd
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from cable_mixer import CableMixer, BLOCK
 from mix_gains_http import MixOutput
-from mic_routes import MicRoutes, capture_kind, recommended, HW, INSTANCE
+from mic_routes import MicRoutes, recommended
 
 
 def row(id, name, kind, comm=False, default=False):
     return dict(id=id,name=name,kind=kind,headset=kind!="physical",defaultCommunications=comm,defaultInput=default)
 
 
-class Stream:
-    def __init__(self, **opts):
-        self.opts=opts
-        self.active=False
-        self.closed=False
-        self.latency=(.011,.014)
-    def start(self): self.active=True
-    def abort(self): self.active=False
-    def close(self): self.closed=True
-    def generated(self, amplitude=.15):
-        mic=np.full((BLOCK,1),amplitude,dtype=np.float32)
-        out=np.empty((BLOCK,2),dtype=np.float32)
-        for i in range(4):
-            self.opts["callback"](mic,out,BLOCK,None,0)
-        return out
-
-
 class RouteTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         tmp=self.enterContext(TemporaryDirectory())
-        self.mixer=CableMixer(process_feed_factory=lambda _:None)
+        self.driver=Driver()
+        self.mixer=CableMixer(process_feed_factory=lambda _,**kw:None, stream_factory=self.driver.stream)
         self.output=MixOutput(Path(tmp)/"output-gains.json",self.mixer)
         self.rows=[row("phys","Physical", "physical",default=True),
                    row("vr","Pico microphone","headsetBridge",comm=True)]
@@ -54,16 +38,6 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         self.client=TestClient(TestServer(app));await self.client.start_server()
         self.addAsyncCleanup(self.client.close)
         self.origin={"Origin":"http://127.0.0.1:41835"}
-        self.enterContext(patch("cable_mixer.sd.Stream",side_effect=self.stream))
-        self.streams=[]
-        self.low_failure=False
-
-    def stream(self,**opts):
-        self.calls.append(("open",opts["latency"]))
-        if self.low_failure and opts["latency"]=="low":
-            raise sd.PortAudioError("simulated latency rejection")
-        opened=Stream(**opts);self.streams.append(opened);return opened
-
     async def get(self):
         response=await self.client.get("/mix/mic",headers=self.origin)
         self.assertEqual(response.status,200)
@@ -85,9 +59,9 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         code,active=await self.post(t,{"action":"setup","id":"vr"})
         self.assertEqual(code,200);o=active["ownerToken"]
         self.assertTrue(active["routeActive"]);self.assertEqual(active["activeId"],"vr")
-        self.assertEqual(self.calls,[("indexes","vr"),("open","low")])
-        stream=self.streams[0]
-        self.assertEqual(stream.opts["device"],(31,71)); self.assertEqual(active["latencyMs"],{"input":11,"output":14})
+        self.assertEqual(self.calls,[("indexes","vr")])
+        stream=self.driver
+        self.assertEqual(stream.opens,[("low",31,71,480,48000.,0)]); self.assertEqual(active["latencyMs"],{"input":11,"output":14})
         np.testing.assert_allclose(stream.generated(),.15,atol=.0001)
         self.assertAlmostEqual((await self.get())["micRms"],.15,places=4)
         h=self.origin|{"X-Lum-Mix-Token":t}
@@ -104,28 +78,25 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_disconnected_saved_device_latency_fallback_and_no_auto_resume(self):
         t=(await self.get())["token"]
-        await self.post(t,{"action":"select","id":"vr"});self.low_failure=True
+        await self.post(t,{"action":"select","id":"vr"});self.driver.reject_low=True
         code,active=await self.post(t,{"action":"start","id":"vr"})
         self.assertEqual((code,active["latencyMode"]),(200,"high"))
         self.rows.pop()
         await asyncio.sleep(2.15)
         s=await self.get();self.assertEqual(s["error"],"input_disconnected")
         self.assertFalse(s["routeActive"]);self.assertEqual(s["savedId"],"vr");self.assertIsNone(s["selectedId"])
-        self.assertTrue(self.streams[0].closed)
+        self.assertTrue(self.driver.closed)
         self.rows.append(row("vr","renamed microphone","headsetBridge"))
         self.assertFalse((await self.get())["routeActive"])
         await self.post(t,{"action":"select","id":None})
         self.cables.clear()
         self.assertEqual((await self.post(t,{"action":"start","id":"phys"}))[1]["error"],"cable_unavailable")
-        self.assertEqual(len(self.streams),1)
+        self.assertEqual(len(self.driver.opens),2)
 
     def test_device_recommendation_and_exclusion(self):
         self.assertEqual(recommended(self.rows,None,"pico 4"),"vr")
         self.assertEqual(recommended(self.rows,None,""),"phys")
         self.assertEqual(recommended(self.rows,"phys","pico 4"),"phys")
-        self.assertIsNone(capture_kind("Renamed cable",{HW:"VBAudioVACWDM"}))
-        self.assertIsNone(capture_kind("Renamed Steam",{HW:r"ROOT\SteamStreamingMicrophone"}))
-        self.assertEqual(capture_kind("Line microphone",{HW:r"USB\Class_01"}),"physical")
 
 
 if __name__=="__main__":

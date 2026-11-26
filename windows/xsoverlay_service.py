@@ -54,6 +54,9 @@ def make_server(discover, data_dir, bind="127.0.0.1", port=41839):
     controls = WristControls(bind)
     install_token = secrets.token_urlsafe(32)
     panel_html = (data_dir / "xsoverlay-panel.html").read_bytes()
+    # Frozen builds carry their own copy; source runs share the Studio assets.
+    controls_dir = data_dir if (data_dir / "controls.wasm").is_file() else data_dir.parent / "studio"
+    panel_assets = {"/controls-bridge.js": "text/javascript", "/controls.wasm": "application/wasm"}
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -77,7 +80,7 @@ def make_server(discover, data_dir, bind="127.0.0.1", port=41839):
                 self.send_header("Access-Control-Allow-Origin", DESKTOP)
                 self.send_header("Vary", "Origin")
             if mime.startswith("text/html"):
-                self.send_header("Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'self' file: http://localhost:* http://127.0.0.1:*")
+                self.send_header("Content-Security-Policy", "default-src 'none'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'self' file: http://localhost:* http://127.0.0.1:*")
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             if data:
@@ -101,6 +104,12 @@ def make_server(discover, data_dir, bind="127.0.0.1", port=41839):
             path = urlsplit(self.path).path
             if path == "/wrist":
                 return self.reply(200, panel_html, "text/html; charset=utf-8")
+            if path in panel_assets:
+                try:
+                    data = (controls_dir / path.removeprefix("/")).read_bytes()
+                except OSError:
+                    return self.reply(404, {})
+                return self.reply(200, data, panel_assets[path])
             if path == "/lummix-addon" and self.permit(config=True):
                 with lock:
                     result = manager.status()

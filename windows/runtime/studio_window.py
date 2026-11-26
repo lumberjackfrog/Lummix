@@ -1,6 +1,7 @@
 """Windows-owned studio window, notification icon and Microsoft WebView2 surface."""
 import ctypes
 from ctypes import wintypes as wt
+from functools import cache
 import json
 import os
 from pathlib import Path
@@ -8,6 +9,7 @@ import secrets
 import sys
 from urllib.parse import urlsplit
 from studio_assets import attach_installed_assets
+from native_host import library
 import profile_save
 import diagnostics
 from client_update import Updates
@@ -36,29 +38,21 @@ NATIVE = "http://127.0.0.1:41835/?view=desktop&app=1"
 USER = ctypes.windll.user32
 PROJECT = Path(__file__).resolve().parent.parent
 
-class MinMaxInfo(ctypes.Structure):
-    _fields_ = [(key, wt.POINT) for key in ("reserved", "maximum", "position", "minimum_track", "maximum_track")]
-
-def resize_hit(rect, x, y, edge):
-    left, top, right, bottom = rect
-    horizontal = -1 if x < left+edge else 1 if x >= right-edge else 0
-    vertical = -1 if y < top+edge else 1 if y >= bottom-edge else 0
-    return ((wc.HTTOPLEFT,wc.HTTOP,wc.HTTOPRIGHT),
-            (wc.HTLEFT,wc.HTCLIENT,wc.HTRIGHT),
-            (wc.HTBOTTOMLEFT,wc.HTBOTTOM,wc.HTBOTTOMRIGHT))[vertical+1][horizontal+1]
-
-class NotifyIcon(ctypes.Structure):
-    _fields_=[("size",wt.DWORD),("window",wt.HWND),("id",wt.UINT),("flags",wt.UINT),
-        ("callback",wt.UINT),("icon",wt.HICON),("tip",wt.WCHAR*128),("state",wt.DWORD),
-        ("stateMask",wt.DWORD),("info",wt.WCHAR*256),("version",wt.UINT),("infoTitle",wt.WCHAR*64),
-        ("infoFlags",wt.DWORD),("guid",ctypes.c_byte*16),("balloon",wt.HICON)]
-
-def notify(operation,hwnd,icon):
-    data=NotifyIcon()
-    data.size=ctypes.sizeof(data);data.window=hwnd;data.id=1
-    data.flags=gui.NIF_ICON|gui.NIF_TIP|gui.NIF_MESSAGE|0x80
-    data.callback=TRAY;data.icon=icon;data.tip="Lummix";data.version=4
-    return bool(ctypes.windll.shell32.Shell_NotifyIconW(operation,ctypes.byref(data)))
+@cache
+def _native_shell():
+    host = library()
+    host.lummix_tray_show.argtypes = [wt.HWND, wt.HICON, wt.UINT, wt.BOOL]
+    host.lummix_tray_show.restype = wt.BOOL
+    host.lummix_tray_hide.argtypes = [wt.HWND, wt.HICON, wt.UINT]
+    host.lummix_tray_hide.restype = None
+    host.lummix_tray_menu.argtypes = [wt.HWND, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t,
+                                     ctypes.c_int32, ctypes.c_int32]
+    host.lummix_tray_menu.restype = None
+    host.lummix_frame_edge.argtypes = [wt.HWND, wt.BOOL]
+    host.lummix_frame_edge.restype = ctypes.c_int32
+    host.lummix_frame_message.argtypes = [wt.HWND, wt.UINT, wt.LPARAM, wt.BOOL]
+    host.lummix_frame_message.restype = ctypes.c_ssize_t
+    return host
 
 def local_dir():
     return Path(os.environ["LOCALAPPDATA"])/"LumMix"
@@ -113,6 +107,7 @@ def data_file(name):
 
 class StudioWindow:
     def __init__(self):
+        self.native = _native_shell()
         self.hwnd=0;self.tray=False;self.full=False;self.exiting=False
         self.exit_nonce=None
         self.controller=self.web=None
@@ -270,8 +265,7 @@ class StudioWindow:
         return 0
 
     def edge_size(self, hwnd):
-        if self.full or USER.IsZoomed(hwnd):return 0
-        return max(3,round(5 * (USER.GetDpiForWindow(hwnd) or 96) / 96))
+        return self.native.lummix_frame_edge(hwnd, self.full)
 
     def resize(self):
         if self.controller:
@@ -316,9 +310,7 @@ class StudioWindow:
         self.send_window_state()
 
     def add_tray(self):
-        if self.tray and notify(gui.NIM_MODIFY,self.hwnd,self.icon):return True
-        self.tray=notify(gui.NIM_ADD,self.hwnd,self.icon)
-        if self.tray:notify(4,self.hwnd,self.icon) # NIM_SETVERSION, NOTIFYICON_VERSION_4
+        self.tray = bool(self.native.lummix_tray_show(self.hwnd, self.icon, TRAY, self.tray))
         return self.tray
 
     def show(self):
@@ -330,18 +322,7 @@ class StudioWindow:
         if hidden:self.resize()
 
     def popup(self):
-        menu=gui.CreatePopupMenu()
-        try:
-            for cmd,label in ((OPEN,"Open Lummix"),(FULL,"Full screen"),(EXIT,"Exit Lummix")):
-                if cmd==EXIT:gui.AppendMenu(menu,wc.MF_SEPARATOR,0,"")
-                gui.AppendMenu(menu,wc.MF_STRING,cmd,label)
-            try:gui.SetForegroundWindow(self.hwnd)
-            except Exception:pass
-            try:x,y=gui.GetCursorPos()
-            except Exception:x,y=self.normal[:2]
-            cmd=gui.TrackPopupMenu(menu,wc.TPM_RETURNCMD|wc.TPM_RIGHTBUTTON,x,y,0,self.hwnd,None)
-            if cmd:gui.PostMessage(self.hwnd,wc.WM_COMMAND,cmd,0)
-        finally:gui.DestroyMenu(menu)
+        self.native.lummix_tray_menu(self.hwnd, OPEN, FULL, EXIT, *self.normal[:2])
 
     def quit(self):
         if self.exiting:return
@@ -365,7 +346,7 @@ class StudioWindow:
         USER.KillTimer(self.hwnd,EXIT_TIMER)
         self.exit_nonce=None
         if self.tray:
-            notify(gui.NIM_DELETE,self.hwnd,self.icon)
+            self.native.lummix_tray_hide(self.hwnd, self.icon, TRAY)
         if self.controller:self.controller.Close()
         gui.DestroyWindow(self.hwnd)
 
@@ -380,32 +361,8 @@ class StudioWindow:
             return 0
         # Preserve the native resize/minimize/maximize/system menu styles so Windows
         # owns the resize loop, keyboard snapping and shell layout. The HTML owns the caption.
-        if msg==wc.WM_NCCALCSIZE:
-            if USER.IsZoomed(hwnd) and not self.full:
-                # Windows extends a thick frame beyond the work area on maximize.
-                # Keep the entire visible WebView inside the real monitor work area.
-                rect=ctypes.cast(lp,ctypes.POINTER(wt.RECT)).contents
-                proposed=rect.left,rect.top,rect.right,rect.bottom
-                work=win32api.GetMonitorInfo(win32api.MonitorFromRect(proposed,2))["Work"]
-                rect.left,rect.top=max(rect.left,work[0]),max(rect.top,work[1])
-                rect.right,rect.bottom=min(rect.right,work[2]),min(rect.bottom,work[3])
-            return 0
-        if msg==wc.WM_NCHITTEST:
-            edge=self.edge_size(hwnd)
-            if edge:
-                return resize_hit(gui.GetWindowRect(hwnd),ctypes.c_short(lp & 0xffff).value,
-                                  ctypes.c_short((lp >> 16) & 0xffff).value,edge)
-            return wc.HTCLIENT
-        if msg==wc.WM_GETMINMAXINFO:
-            info=ctypes.cast(lp,ctypes.POINTER(MinMaxInfo)).contents
-            monitor=win32api.GetMonitorInfo(win32api.MonitorFromWindow(hwnd,2))
-            ml,mt,_,_=monitor["Monitor"]
-            left,top,right,bottom=monitor["Monitor" if self.full else "Work"]
-            info.position.x,info.position.y=left-ml,top-mt
-            info.maximum.x,info.maximum.y=right-left,bottom-top
-            dpi=USER.GetDpiForWindow(hwnd) or 96
-            info.minimum_track.x,info.minimum_track.y=round(320*dpi/96),round(360*dpi/96)
-            return 0
+        if msg in (wc.WM_NCCALCSIZE, wc.WM_NCHITTEST, wc.WM_GETMINMAXINFO):
+            return self.native.lummix_frame_message(hwnd, msg, ctypes.c_ssize_t(lp).value, self.full)
         if msg==wc.WM_COMMAND and wp in (MINIMIZE,MAXIMIZE,DRAG):
             if wp==MINIMIZE:gui.ShowWindow(hwnd,wc.SW_MINIMIZE)
             elif wp==MAXIMIZE:
