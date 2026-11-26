@@ -6,14 +6,14 @@ Lummix gives VRChat one microphone for your voice and music. It mixes your Windo
 | --- | --- |
 | [![Lummix desktop mixer with album artwork and separate microphone and Spotify faders](docs/mixer.png)](docs/mixer.png) | [![XSOverlay music drawer with mic mute, music mute, and the music gain slider beside the clock](docs/xsoverlay-wrist.png)](docs/xsoverlay-wrist.png) |
 
-**[Download Lummix 1.0.9 for Windows x64](https://github.com/lumberjackfrog/Lummix/releases/download/v1.0.9/Lummix.Setup.exe)** · [Release notes and SHA-256](https://github.com/lumberjackfrog/Lummix/releases/tag/v1.0.9)
+**[Download Lummix 1.0.8 for Windows x64](https://github.com/lumberjackfrog/Lummix/releases/download/v1.0.8/Lummix.Setup.exe)** · [Release notes and SHA-256](https://github.com/lumberjackfrog/Lummix/releases/tag/v1.0.8)
 
 ## Start a mix
 
 The Windows installer is unsigned. Windows may show a publisher warning, and a PC configured to require trusted publishers can block the install.
 
 1. Open **Lummix Setup.exe**. It installs Lummix for your Windows account and opens the mixer. Double-click **Lummix** on your desktop to reopen it. You can also find it in Start. If you delete the shortcut, run Setup again to restore it.
-2. Click **Set up Lummix**. It opens your existing Spotify or gets the desktop app directly from Spotify and checks its publisher. Sign in if Spotify asks. If the virtual microphone needs installing, approve the Windows prompt for VB-Audio. When setup finishes, restart Windows, reopen Lummix and click **Set up Lummix**.
+2. Open Spotify, then click **Set up Lummix**. If Windows asks to install VB-CABLE, approve the VB-Audio prompt. Let it finish, restart your PC, reopen Lummix and click **Set up Lummix** again. Need Spotify? [Download the desktop app from Spotify](https://download.scdn.co/SpotifySetup.exe).
 3. In **VRChat → Settings → Audio & Voice → Microphone**, choose **Lummix (VB-Audio Virtual Cable)**, or the exact name shown by setup. Speak and watch the input meter. VRChat remembers the selection separately for desktop and VR mode.
 
 Next session, open Lummix and start the mix. To open the app automatically when you sign in, enable **Settings → Application → Start with Windows**. It defaults to off. Starting the mix is always manual. **Stop mix** releases the microphone and music capture.
@@ -44,7 +44,7 @@ If the mixer reports that Spotify is already playing directly into the cable, op
 
 ## Compatibility
 
-Use 64-bit Windows 11, or an x64 Windows build numbered 20348 or later, with Microsoft Edge WebView2. Setup uses Spotify’s website for new installations and recognizes an existing Microsoft Store player. Play music on this PC so it reaches the mix. The optional wrist view requires your own XSOverlay installation.
+Use 64-bit Windows 11, or an x64 Windows build numbered 20348 or later, with Microsoft Edge WebView2. Lummix recognizes the Spotify website and Microsoft Store editions. Play music on this PC so it reaches the mix. The optional wrist view requires your own XSOverlay installation.
 
 Lummix saves your Spotify locations, microphone choice, gains, ducking, window placement and appearance for your Windows account. A local recovery copy in `%LOCALAPPDATA%\Lummix\settings-backup.json` restores saved settings if an individual file goes missing or becomes invalid. After reinstalling Spotify, Lummix checks its current installation.
 
