@@ -103,6 +103,15 @@ jobs:
         with:
           ref: ${{ steps.package.outputs.ref }}
           persist-credentials: false
+      # Keep release-specific runtime fixtures pinned. A maintainer can use the current
+      # UI test to verify the original public installer without replacing the release.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        if: github.event_name == 'workflow_dispatch' && !inputs.build_run && steps.package.outputs.runtime == 'true'
+        with:
+          ref: ${{ github.sha }}
+          path: qa-harness
+          sparse-checkout: windows/tests
+          persist-credentials: false
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         if: inputs.upgrade_from != ''
         with:
@@ -246,12 +255,13 @@ jobs:
                 if ([version]$version -ge [version]'1.0.7') {
                   $startupArgs = @()
                   if ($env:UPGRADE_FROM) { $startupArgs += '--upgraded' }
-                  python -B windows/tests/verify_sign_in.py $exe @startupArgs
-                  if ($LASTEXITCODE -ne 0) { throw 'Installed sign-in switch or launcher failed.' }
-                  if ([version]$version -ge [version]'1.0.8' -and !$env:BUILD_RUN -and $env:GITHUB_EVENT_NAME -eq 'release') {
-                    python -B windows/tests/verify_sign_in.py $exe --updates
-                    if ($LASTEXITCODE -ne 0) { throw 'Native updater and diagnostics check failed.' }
+                  $nativeTest = 'windows/tests/verify_sign_in.py'
+                  if ([version]$version -ge [version]'1.0.8') {
+                    if (Test-Path -LiteralPath "qa-harness/$nativeTest") { $nativeTest = "qa-harness/$nativeTest" }
+                    $startupArgs += '--with-updates'
                   }
+                  python -B $nativeTest $exe @startupArgs
+                  if ($LASTEXITCODE -ne 0) { throw 'Installed native Settings verification failed.' }
                 }
               } elseif ($exeHash -ne $firstExeHash -or $product -ne $firstProduct) {
                 throw 'Reinstall changed the launcher hash or MSI product.'
