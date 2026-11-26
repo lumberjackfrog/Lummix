@@ -20,7 +20,7 @@ Next session, open Lummix and start the mix. To open the app automatically when 
 
 **Updates.** Install 1.0.8 once to get the updater. Open **Settings → Application → Check for updates**, download the offered version, stop your mix and choose **Install and reopen**. Lummix checks the publisher’s release signature and the installer’s SHA-256. Windows applies its normal application checks.
 
-**Troubleshooting.** **Settings → Application → Diagnostics → Open logs** shows local event codes, app version, Windows build and times. The two log files together use at most 128 KiB. You can clear them there or share one yourself when reporting a problem.
+**Troubleshooting.** **Settings → Application → Diagnostics → Open logs** saves a snapshot of the mix, cable and Spotify capture status. The local files contain event codes, app version, Windows build and times. Together they use at most 128 KiB. You can clear them there or share one yourself when reporting a problem.
 
 ## At the controls
 

@@ -113,6 +113,8 @@ class ReleaseTests(unittest.TestCase):
             self.assertEqual([p.name for p in updates.directory.iterdir()],["last-check"])
 
     def test_log_disk_cap_privacy_and_native_handle_lifetime(self):
+        summary=diagnostics.audio_summary({"routeActive":True,"cableReady":False,"spotifyCapture":"private title","token":"secret","inputs":["My Mic"]})
+        self.assertEqual(summary,"audio_snapshot mix=yes cable=no spotify=unknown")
         with tempfile.TemporaryDirectory() as path, patch.dict(os.environ,LOCALAPPDATA=path):
             validate(HISTORICAL)
             process=psutil.Process()

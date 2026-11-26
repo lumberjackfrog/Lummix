@@ -4,6 +4,7 @@ import binascii
 import ctypes
 from ctypes import wintypes as wt
 from dataclasses import dataclass
+from functools import cache
 import hashlib
 import json
 import os
@@ -60,19 +61,26 @@ def read_json(url, limit, opener):
         raise InvalidUpdate("metadata") from error
 
 
-def verify_signature(data, signature, public_key=PUBLIC_KEY):
-    # Windows CNG returns NTSTATUS. Its P-256 signatures are fixed-size r || s.
-    key_blob = base64.b64decode(public_key, validate=True)
-    if len(signature) != 64 or len(key_blob) != 72:
-        raise InvalidUpdate("signature size")
+@cache
+def bcrypt():
+    # Keep one DLL reference. Per-verification algorithm and key handles are released below.
     api = ctypes.WinDLL("bcrypt")
     handle = ctypes.c_void_p
-    alg, key = handle(), handle()
     api.BCryptOpenAlgorithmProvider.argtypes = [ctypes.POINTER(handle), wt.LPCWSTR, wt.LPCWSTR, wt.ULONG]
     api.BCryptImportKeyPair.argtypes = [handle, handle, wt.LPCWSTR, ctypes.POINTER(handle), ctypes.c_char_p, wt.ULONG, wt.ULONG]
     api.BCryptVerifySignature.argtypes = [handle, handle, ctypes.c_char_p, wt.ULONG, ctypes.c_char_p, wt.ULONG, wt.ULONG]
     api.BCryptDestroyKey.argtypes = [handle]
     api.BCryptCloseAlgorithmProvider.argtypes = [handle, wt.ULONG]
+    return api
+
+
+def verify_signature(data, signature, public_key=PUBLIC_KEY):
+    # Windows CNG returns NTSTATUS. Its P-256 signatures are fixed-size r || s.
+    key_blob = base64.b64decode(public_key, validate=True)
+    if len(signature) != 64 or len(key_blob) != 72:
+        raise InvalidUpdate("signature size")
+    api = bcrypt()
+    alg, key = ctypes.c_void_p(), ctypes.c_void_p()
     if api.BCryptOpenAlgorithmProvider(ctypes.byref(alg),"ECDSA_P256",None,0) != 0:
         raise InvalidUpdate("signature provider")
     try:
@@ -103,7 +111,7 @@ class Release:
         return f"{REPO}/download/v{self.version}/{ASSET}"
 
 
-def signed_release(document, tag, size, digest):
+def signed_release(document, tag, size, digest, verifier=verify_signature):
     if (not isinstance(document,dict) or type(document.get("format")) is not int or document["format"]!=1
             or not version_number(tag.removeprefix("v")) or not tag.startswith("v")
             or document.get("tag")!=tag or type(size) is not int or not 0<size<=LIMIT
@@ -115,7 +123,7 @@ def signed_release(document, tag, size, digest):
     except (KeyError, TypeError, ValueError, binascii.Error) as error:
         raise InvalidUpdate("signature encoding") from error
     data = f"Lummix Windows x64 update v1\n{tag}\n{size}\n{digest}\n".encode("ascii")
-    verify_signature(data, signature)
+    verifier(data, signature)
     return Release(tag[1:],size,digest)
 
 
@@ -138,7 +146,7 @@ def latest(current, opener=open_url):
     return from_release(release,opener)
 
 
-def from_release(release, opener=open_url):
+def from_release(release, opener=open_url, verifier=verify_signature):
     tag = release["tag_name"]
     if (not isinstance(tag,str) or not tag.startswith("v") or not version_number(tag[1:])
             or release.get("draft") is not False or not release.get("published_at")
@@ -158,7 +166,7 @@ def from_release(release, opener=open_url):
     digest = exe.get("digest") or ""
     if not isinstance(digest,str) or not digest.startswith("sha256:"):
         raise InvalidUpdate("asset digest")
-    return signed_release(read_json(prefix+MANIFEST,8192,opener),tag,exe.get("size"),digest[7:])
+    return signed_release(read_json(prefix+MANIFEST,8192,opener),tag,exe.get("size"),digest[7:],verifier)
 
 
 def plain(path):

@@ -79,8 +79,11 @@ class Updates:
             try:
                 stamp=self.directory/"last-check"
                 meta=stamp.stat()
-                if meta.st_size<=20 and 0 <= time.time()-meta.st_mtime < 21600 and stamp.read_bytes()==VERSION.encode("ascii"):
-                    return
+                if meta.st_size<=20 and 0 <= time.time()-meta.st_mtime < 21600:
+                    with stamp.open("rb") as stream:
+                        if stream.read(21)==VERSION.encode("ascii"):
+                            with self.lock: self.phase="current"
+                            return
             except OSError:
                 pass
             command="check"
@@ -113,7 +116,9 @@ class Updates:
                     try:
                         feed.plain(self.directory)
                         self.directory.mkdir(exist_ok=True,parents=True)
-                        (self.directory/"last-check").write_text(VERSION,encoding="ascii")
+                        stamp=self.directory/"last-check"
+                        stamp.unlink(missing_ok=True)
+                        with stamp.open("xb") as stream: stream.write(VERSION.encode("ascii"))
                     except OSError:
                         pass
             elif command=="download":

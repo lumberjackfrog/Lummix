@@ -231,6 +231,7 @@ class StudioWindow:
                 if command=="logs-open":
                     folder=diagnostics.folder()
                     folder.mkdir(exist_ok=True,parents=True)
+                    diagnostics.request_audio_snapshot()
                     os.startfile(str(folder))
                     result="Opened the local diagnostics folder."
                 else:
