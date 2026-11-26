@@ -54,7 +54,7 @@ If Windows media controls stop responding, Lummix can still detect the desktop o
 
 The browser interface lives in `studio/` and the audio, device discovery and desktop window live in `windows/`. The one-file installer is built from `setup/Lummix.nsi`. The Windows build instructions list the native toolchain and verified vendor downloads. [Windows build guide](windows/BUILD.md)
 
-The development build runs the Windows launcher, device setup, Spotify integration, local API and audio mixer in Rust. It uses WebView2 for the desktop and ships without a Python runtime. You can reproduce the callback benchmarks and Windows receiver latency tests on the same hardware. [Audio measurements](docs/native-audio.md)
+The development build runs the Windows launcher, device setup, Spotify integration, local API and audio mixer in Rust. It uses WebView2 for the desktop and ships without a Python runtime. You can reproduce the callback benchmarks and Windows receiver latency tests on the same hardware. [Rust benchmark chart and measurements](docs/native-audio.md)
 
 The UI smoke tests run without a microphone, Spotify account or headset.
 

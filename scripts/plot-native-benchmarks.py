@@ -3,6 +3,7 @@ import argparse
 import json
 import math
 from pathlib import Path
+from statistics import median
 
 import matplotlib
 matplotlib.use("Agg")
@@ -24,10 +25,18 @@ def measurements(app, audio):
         app_row("Desktop ready to use",
                 *(desktop[side]["desktopReadyMs"]["median"] for side in ("before", "after")),
                 1000, 2, "s")
+        trials = app["desktop"]["trials"]
+        working_sets = [
+            median(row["lummixWorkingSetBytes"] + row["webViewWorkingSetBytes"]
+                   for row in trials if row["version"] == side)
+            for side in ("before", "after")
+        ]
+        app_row("Desktop incl. WebView2", *working_sets, 1024 ** 2, 1, "MiB")
     app_row("Media service startup", *medians("media_medians", "ready_ms"), 1, 1, "ms")
     app_row("Read a gain fader", *medians("media_medians", "gains_median_ms"), 1, 2, "ms")
     app_row("Media service memory", *medians("media_medians", "private_mib"), 1, 1, "MiB")
     app_row("Install Lummix", *medians("setup_medians", "install_ms"), 1000, 2, "s")
+    app_row("Verify driver files", *medians("setup_medians", "driver_verification_ms"), 1, 0, "ms")
     app_row("Installer size", *(app["installer_bytes"][s] for s in ("before", "after")),
             1_000_000, 2, "MB")
     for name, key in (("Microphone + music", "normal"), ("Voice ducking", "ducking"),
@@ -64,7 +73,7 @@ def render(app, audio, target):
     label(left, .42, "Lummix", 15, mint, "bold")
     label(right, .42, "WINDOWS  /  x64", 9, secondary, "bold", "right")
     label(left, 1.02, "The Rust conversion, measured", 26, weight="bold")
-    label(left, 1.49, "Times and memory are medians. Bars show the percentage saved against each baseline.", 12, secondary)
+    label(left, 1.49, "Times and memory are medians. Bars left of zero show an increase against the baseline.", 12, secondary)
     ax.plot([left, right], [1.82, 1.82], color=rule, lw=1)
     section_heads = ("Windows application", "Audio processing")
     descriptions = ("Hybrid launcher and services  →  standalone Rust",
@@ -101,7 +110,7 @@ def render(app, audio, target):
     foot_y = y + .035
     desktop = f"{app['desktop']['pairCount']} desktop, " if "desktop" in app else ""
     label(left, foot_y,
-          f"Windows Server 2022  ·  {desktop}{len(app['setup_trials']['after'])} install and {app['pairs']} media pairs  ·  Memory is private to the media service.",
+          f"Windows Server 2022  ·  {desktop}{len(app['setup_trials']['after'])} install and {app['pairs']} media pairs  ·  Desktop uses working sets. Media uses private bytes.",
           9, secondary)
     label(left, foot_y + .25,
           f"Ryzen 9 9950X3D  ·  {audio['block_frames']} frames at {audio['sample_rate'] // 1000} kHz  ·  "

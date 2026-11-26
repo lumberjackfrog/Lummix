@@ -2,9 +2,11 @@
 
 Lummix captures the selected microphone and the verified Spotify renderer, mixes them in Rust, and writes stereo audio to the selected VB-CABLE endpoint. The process-loopback worker, packet queue, speech detector, gain ramps, limiter and device callback run without a Python callback. The capture and render threads use a bounded queue. The capture worker checks the process creation time and discards its old queue when the selected renderer changes.
 
+![Before and after timings, memory use and installer size for the Lummix Rust conversion](rust-benchmarks.png)
+
 ## Measurements
 
-Measured on an AMD Ryzen 9 9950X3D running Windows x64. The baseline is commit `c8a5a2d`, which already used Rust for the inner sample mix. Both builds processed the same 48 kHz input. Each measurement covers delivering a process packet and running the complete device callback through the test driver. Each workload ran three times per build with 60,000 blocks per run. The table gives the median time per 480-frame block.
+Measured on an AMD Ryzen 9 9950X3D running Windows x64. The baseline is commit `c8a5a2d`, which already used Rust for the inner sample mix. Both builds processed the same 48 kHz input. Each measurement covers delivering a process packet and running the complete device callback through the test driver. Each workload ran three times per build with 60,000 blocks per run. The table gives the median time per 480-frame block. [Audio samples](benchmarks/audio.json)
 
 | Workload | Previous implementation | Rust capture and routing | Speedup |
 | --- | ---: | ---: | ---: |
@@ -46,18 +48,23 @@ The standalone Windows build runs its launcher, setup, Spotify and local mixer s
 
 The shipped 1.0.8 installer was 42,824,066 bytes. The intermediate hybrid installer was 14,787,610 bytes with 61.65% Rust. The standalone candidate was 5,014,554 bytes. [Hybrid installer and upgrade checks](https://github.com/lumberjackfrog/Lummix/actions/runs/45869354743)
 
-The following medians compare the actual hybrid and standalone installers on the same Windows Server 2022 x64 runner. Six alternating pairs measured the media service, and four pairs timed real per-user installs. The API measurement is a request to read mixer gains. The memory figure is private memory for the media worker, sampled after startup and its first Spotify status request. The driver check times verification of the bundled vendor files.
+The same Windows Server 2022 x64 runner compared the hybrid installer with the exact standalone EXE supplied for testing. Each desktop launch used a fresh profile and waited until the real mixer displayed its controls. Four alternating pairs measured desktop startup and four measured per-user installation. Six pairs measured the media service. Each row gives the median across trials. [Windows samples](benchmarks/windows.json) · [Benchmark run](https://github.com/lumberjackfrog/Lummix/actions/runs/45882706350)
 
 | Measurement | Hybrid | Standalone Rust |
 | --- | ---: | ---: |
-| Media service ready | 444 ms | 35 ms |
-| Gain API response | 20.53 ms | 0.46 ms |
-| Gain API p95 | 25.13 ms | 7.16 ms |
-| Media service private memory | 31.51 MiB | 3.00 MiB |
-| Per-user install | 1.93 s | 1.48 s |
-| Driver file verification | 746 ms | 623 ms |
+| Visible window | 2.45 s | 2.28 s |
+| Mixer ready to use | 3.92 s | 3.74 s |
+| Desktop working sets including WebView2 | 409.2 MiB | 333.2 MiB |
+| Media service ready | 364.9 ms | 35.3 ms |
+| Gain API response | 20.58 ms | 15.16 ms |
+| Gain API p95 | 24.97 ms | 15.95 ms |
+| Media service private memory | 31.34 MiB | 2.71 MiB |
+| Per-user install | 1.89 s | 1.18 s |
+| Driver file verification | 580 ms | 587 ms |
 
-The run saved the underlying samples before its separate desktop timing probe timed out. Physical microphone-to-headset and VRChat network latency require a receiver measurement. [Raw timing artifact in the installer run](https://github.com/lumberjackfrog/Lummix/actions/runs/45877908963)
+Desktop memory sums the Lummix and WebView2 working sets within each trial. Shared pages can appear in more than one process. The Lummix processes fell from 120.2 to 44.6 MiB. WebView2 used about 289 MiB in both builds. The separate media memory figure measures private bytes after the first Spotify status request.
+
+Reading a gain fader measures one local API request. The Windows receiver tests above measure when audio actually arrives. The installation timing covers Lummix itself. Checking the bundled driver files took about 7 ms longer in this run. The separate installer qualification covered a 1.0.8 upgrade, fresh installs, repair and uninstall. [Installed application checks](https://github.com/lumberjackfrog/Lummix/actions/runs/45879692339)
 
 ## Reproduce
 
@@ -65,5 +72,6 @@ The run saved the underlying samples before its separate desktop timing probe ti
 - Run `windows/tests/device_route.py` on Windows with the named, idle Steam virtual devices to check actual capture, routing and gain. The test checks the system defaults and active sessions before opening a stream.
 - Run `windows/tests/route_latency.py --baseline <previous-checkout> --output latency.json` with the same Python test environment and built release DLLs to compare device timing. The baseline checkout must include its own built DSP.
 - Run `windows/tests/signal_latency.py --baseline <previous-checkout> --order ABBA --output signal-abba.json` and repeat with `--order BAAB --output signal-baab.json` to time audio arriving at the receiver. Use the same dedicated Windows virtual devices, and run the two commands sequentially.
-- Enable the hybrid comparison in the **Build and verify Windows installer** workflow to compare the two shipped payloads on one Windows runner.
+- Enable the hybrid comparison in the **Build and verify Windows installer** workflow to compare the two shipped payloads on one Windows runner. To benchmark an installer you already tested, supply its successful build run ID in the comparison input.
+- With Matplotlib installed, run `python scripts/plot-native-benchmarks.py docs/benchmarks/windows.json docs/benchmarks/audio.json docs/rust-benchmarks.png` to redraw the chart from the Windows and audio results.
 - Run `scripts/count-native-source.py --help` for an installer-backed language inventory. It checks the installer digest, inspects the MSI file table and compares its shipped interface files to the source commit.
