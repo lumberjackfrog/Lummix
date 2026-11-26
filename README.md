@@ -6,7 +6,7 @@ Lummix gives VRChat one microphone for your voice and music. It mixes your Windo
 | --- | --- |
 | [![Lummix desktop mixer with album artwork and separate microphone and Spotify faders](docs/mixer.png)](docs/mixer.png) | [![XSOverlay music drawer with mic mute, music mute, and the music gain slider beside the clock](docs/xsoverlay-wrist.png)](docs/xsoverlay-wrist.png) |
 
-**[Download Lummix 1.0.7 for Windows x64](https://github.com/lumberjackfrog/Lummix/releases/download/v1.0.7/Lummix.Setup.exe)** · [Prerelease notes and SHA-256](https://github.com/lumberjackfrog/Lummix/releases/tag/v1.0.7)
+**[Download Lummix 1.0.8 for Windows x64](https://github.com/lumberjackfrog/Lummix/releases/download/v1.0.8/Lummix.Setup.exe)** · [Prerelease notes and SHA-256](https://github.com/lumberjackfrog/Lummix/releases/tag/v1.0.8)
 
 ## Start a mix
 
@@ -17,6 +17,10 @@ The Windows installer is unsigned. Windows may show a publisher warning, and a P
 3. In **VRChat → Settings → Audio & Voice → Microphone**, choose **Lummix (VB-Audio Virtual Cable)**, or the exact name shown by setup. Speak and watch the input meter. VRChat remembers the selection separately for desktop and VR mode.
 
 Next session, open Lummix and start the mix. To open the app automatically when you sign in, enable **Settings → Application → Start with Windows**. It defaults to off. Starting the mix is always manual. **Stop mix** releases the microphone and music capture.
+
+**Updates.** Install 1.0.8 once to get the updater. Open **Settings → Application → Check for updates**, download the offered version, stop your mix and choose **Install and reopen**. Lummix checks the publisher’s release signature and the installer’s SHA-256. Windows applies its normal application checks.
+
+**Troubleshooting.** **Settings → Application → Diagnostics → Open logs** shows local event codes, app version, Windows build and times. The two log files together use at most 128 KiB. You can clear them there or share one yourself when reporting a problem.
 
 ## At the controls
 

@@ -150,6 +150,11 @@ button:active:not(:disabled){outline-offset:2px}
 <label class="setting-line" id="tray-row" hidden><span>Close to system tray</span><input type="checkbox" id="close-to-tray" role="switch" checked></label>
 <label class="setting-line" id="startup-row" hidden><span>Start with Windows</span><input type="checkbox" id="start-with-windows" role="switch" aria-describedby="startup-status" disabled></label>
 <small id="startup-status" role="status" hidden></small>
+<div class="setting-line" id="update-row" hidden><span>Updates <small id="app-version"></small></span><button type="button" id="app-update">Check for updates</button></div>
+<small id="update-status" role="status" hidden></small>
+<details id="app-diagnostics" hidden><summary>Diagnostics</summary><small>Local event logs · 128 KiB maximum</small>
+<div class="diagnostic-actions"><button type="button" id="logs-open">Open logs</button><button type="button" id="logs-clear">Clear logs</button></div>
+<small id="logs-status" role="status"></small></details>
 <div class="setting-line" id="exit-row" hidden><span>Quit Lummix completely</span><button type="button" id="app-exit">Exit app</button></div>
 <small id="preferences-status" role="status" hidden></small>
 </section>

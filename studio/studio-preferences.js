@@ -32,6 +32,41 @@
     const toolbar=el('window-controls'), drag=el('window-drag');
     const startup=el('start-with-windows'), startupStatus=el('startup-status'), settings=el('settings-dialog');
     el('startup-row').hidden=false;
+    el('update-row').hidden=el('app-diagnostics').hidden=false;
+    const updateControl=el('app-update'), updateStatus=el('update-status');
+    let updateAction='check';
+    native.addEventListener('message',({data})=>{
+      if(data?.type==='lummix-diagnostics'){
+        el('logs-status').textContent=data.message;
+        return;
+      }
+      if(data?.type!=='lummix-update') return;
+      const choices={
+        idle:['check','Check for updates',''], checking:['','Checking…','Checking GitHub.'],
+        current:['check','Check for updates','You’re up to date.'],
+        available:['download','Download '+data.version,'Version '+data.version+' is available.'],
+        downloading:['','Downloading…','Downloading and verifying the installer.'],
+        ready:['install','Install and reopen','Verified and ready to install.'],
+        installing:['','Opening installer…',''], launched:['','Reopening…',''],
+        error:['check','Check for updates','']
+      };
+      if(!Object.hasOwn(choices,data.phase)) return;
+      const [action,label,description]=choices[data.phase];
+      updateAction=action;
+      updateControl.textContent=label;
+      updateControl.disabled=!action;
+      el('app-version').textContent='v'+data.current;
+      updateStatus.textContent=data.message || description;
+      updateStatus.hidden=!updateStatus.textContent;
+      const available=['available','downloading','ready'].includes(data.phase);
+      el('settings').toggleAttribute('data-update',available);
+      el('settings').title=available?'Settings · update available':'Settings';
+    });
+    updateControl.addEventListener('click',()=>{
+      if(updateAction) native.postMessage('update-'+updateAction);
+    });
+    for(const id of ['logs-open','logs-clear']) el(id).addEventListener('click',()=>native.postMessage(id));
+    native.postMessage('update-state');
     native.addEventListener('message',({data})=>{
       if(data?.type!=='lummix-startup-state') return;
       startup.indeterminate=typeof data.enabled!=='boolean';
@@ -40,7 +75,7 @@
       startupStatus.textContent=data.message || '';
       startupStatus.hidden=!data.message;
     });
-    const readStartup=()=>{if(settings.open) native.postMessage('startup-state');};
+    const readStartup=()=>{if(settings.open){native.postMessage('startup-state');native.postMessage('update-state');}};
     new MutationObserver(readStartup).observe(settings,{attributes:true,attributeFilter:['open']});
     top.addEventListener('focus',readStartup);
     startup.addEventListener('change',()=>{

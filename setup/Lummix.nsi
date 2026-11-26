@@ -4,6 +4,7 @@ RequestExecutionLevel user
 ManifestDPIAware true
 !include "LogicLib.nsh"
 !include "x64.nsh"
+!include "FileFunc.nsh"
 
 Name "Lummix"
 Caption "Installing Lummix"
@@ -20,6 +21,25 @@ Page instfiles
 ShowInstDetails nevershow
 AutoCloseWindow true
 SetCompress off
+
+Function .onInit
+  ${GetParameters} $0
+  ClearErrors
+  ${GetOptions} $0 "/LUMMIXWAITPID=" $1
+  ${IfNot} ${Errors}
+    ; The old desktop exits after Windows accepts the installer launch.
+    System::Call 'kernel32::OpenProcess(i 0x100000, i 0, i r1) p.r2'
+    ${If} $2 != 0
+      System::Call 'kernel32::WaitForSingleObject(p r2, i 30000) i.r3'
+      System::Call 'kernel32::CloseHandle(p r2)'
+      ${If} $3 != 0
+        MessageBox MB_ICONEXCLAMATION|MB_OK "Exit Lummix before installing the update." /SD IDOK
+        SetErrorLevel 1618
+        Quit
+      ${EndIf}
+    ${EndIf}
+  ${EndIf}
+FunctionEnd
 
 Section
   SetErrorLevel 0

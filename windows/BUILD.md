@@ -36,3 +36,9 @@ Use a clean, interactive Windows test account for `windows/tests/verify_setup_ex
 Unsigned local builds may be refused by an organization's Windows Application Control policy. A build hash proves the artifact's identity; a successful install and launch on the target policy is a separate release check. Keep code-signing and release approval with the publisher. Build tools, local paths and MSI package identifiers can affect the output hash.
 
 For a signed release, supply `-SigningThumbprint` for a publisher certificate in the current user’s Personal certificate store and `-TimestampUrl` for its HTTPS RFC 3161 timestamp service. The build signs the launcher, followed by the MSI and final setup EXE. It runs SignTool’s Authenticode trust check at each step. Run the normal install and launch check on a machine with the intended Windows policy. [Microsoft application signing guidance](https://learn.microsoft.com/en-us/windows/security/application-security/application-control/smart-app-control)
+
+### Publishing an in-app update
+
+Set the version in `windows/release_identity.py`, build and qualify the Windows installer, then run `./scripts/sign-update.ps1 -Setup ./dist/Lummix.Setup.exe -Version <version>` against the final release bytes on the publisher’s Windows account. The script requires the non-exportable CNG key named `Lummix GitHub release manifests v1`. Publish `Lummix.Setup.exe`, `Lummix.Update.json` and `SHA256SUMS.txt` together on a numeric `vX.Y.Z` GitHub release. Drafts stay private. Published preview builds with numeric tags are eligible.
+
+The public key travels in the client. The private key stays in the publisher’s Windows key store. If that key becomes unavailable, distribute a manually installed build with a new verification key. The release-manifest signature authenticates in-app downloads. Windows publisher trust continues to use Authenticode.

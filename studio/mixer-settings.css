@@ -142,6 +142,10 @@ dialog.studio-sheet[open],dialog#settings-dialog.studio-sheet[open] {display:gri
 .studio-sheet .sheet-actions a {border:1px solid var(--sheet-line);color:var(--sheet-ink);}
 .studio-sheet .sheet-credit {grid-column:1/-1;margin:0;color:var(--sheet-dim);font-size:.95em;}
 .studio-sheet .sheet-credit a {color:inherit;text-underline-offset:.17em;}
+#app-version {margin-inline-start:.4em;font-variant-numeric:tabular-nums;}
+#app-diagnostics .diagnostic-actions {display:flex;gap:.65em;flex-wrap:wrap;margin:.4em 0;}
+#settings[data-update] {position:relative;}
+#settings[data-update]::after {content:"";position:absolute;right:.45em;top:.45em;width:.5em;height:.5em;border-radius:50%;background:var(--deck-accent,currentColor);}
 .studio-sheet #device-evidence {margin:1.2em 0 0;border-top:1px solid var(--sheet-line);}
 .studio-sheet summary {cursor:pointer;min-height:44px;padding:.85em 0 .25em;color:var(--sheet-ink);}
 .studio-sheet #device-list ul,.studio-sheet #device-details ul {margin:.25em 0 1em;padding-left:1.3em;}

@@ -79,6 +79,7 @@ def ensure(name,port,helper,owned):
 def launch():
     user.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
     import win32gui
+    import diagnostics
     from studio_window import CAN_REOPEN, CLASS, OPEN, run
     mutex=kernel.CreateMutexW(None,True,r"Local\LummixNativeStudio")
     if not mutex: raise ctypes.WinError(ctypes.get_last_error())
@@ -103,12 +104,19 @@ def launch():
         helper=Path(sys.executable).resolve()
         if not getattr(sys,"frozen",False):
             helper=Path(__file__).resolve().parents[2]/".build/frozen/runtime/Lummix Helper.exe"
-        for name,port in SERVICES.items(): ensure(name,port,helper,owned)
+        for name,port in SERVICES.items():
+            try: ensure(name,port,helper,owned)
+            except Exception:
+                diagnostics.record(name+"_failed")
+                raise
         from runtime_main import DATA, wrist_sources
         from xsoverlay_service import serve_with_window
         with serve_with_window(wrist_sources, DATA):
+            diagnostics.record("opened")
             run()
+            diagnostics.record("closed")
     except Exception as exc:
+        diagnostics.record("startup_failed")
         user.MessageBoxW(None,str(exc),"Lummix",0x10)
         raise SystemExit(1) from exc
     finally:

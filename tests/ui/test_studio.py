@@ -273,9 +273,20 @@ class StudioTests(unittest.TestCase):
             context.add_init_script("""
               window.WebSocket=class extends EventTarget {close(){} send(){}};
               const bridge=new EventTarget(); window.chrome ||= {}; window.chrome.webview=bridge;
-              window.commands=[]; let maximized=false, fullscreen=false, startup=false;
+              window.commands=[]; let maximized=false, fullscreen=false, startup=false, update='idle';
               bridge.postMessage=command=>{
                 window.commands.push(command);
+                if(command.startsWith('update-')){
+                  if(command==='update-check')update='available';
+                  if(command==='update-download')update='ready';
+                  if(command==='update-install')update='installing';
+                  bridge.dispatchEvent(new MessageEvent('message',{data:{type:'lummix-update',phase:update,current:'1.0.8',version:'1.0.9',message:''}}));
+                  return;
+                }
+                if(command==='logs-clear'){
+                  bridge.dispatchEvent(new MessageEvent('message',{data:{type:'lummix-diagnostics',message:'Local logs cleared.'}}));
+                  return;
+                }
                 if(command.startsWith('startup-')){
                   if(command!=='startup-state')startup=command==='startup-on';
                   bridge.dispatchEvent(new MessageEvent('message',{data:{type:'lummix-startup-state',enabled:startup,editable:true,message:''}}));
@@ -329,7 +340,7 @@ class StudioTests(unittest.TestCase):
             x,y=rect["x"]+rect["width"]/2,rect["y"]+rect["height"]/2
             page.mouse.move(x,y);page.mouse.down();page.mouse.move(x+7,y);page.mouse.up()
             self.assertEqual(page.evaluate("window.commands"),
-                             ["window-state","minimize","maximize","maximize","fullscreen","fullscreen","close","maximize","drag"])
+                             ["update-state","window-state","minimize","maximize","maximize","fullscreen","fullscreen","close","maximize","drag"])
             settings.click()
             startup=frame.get_by_role("switch",name="Start with Windows")
             expect(startup).to_be_enabled()
@@ -342,6 +353,14 @@ class StudioTests(unittest.TestCase):
             startup.uncheck()
             expect(startup).not_to_be_checked()
             self.assertIn("startup-off",page.evaluate("window.commands"))
+            frame.get_by_role("button",name="Check for updates").click()
+            frame.get_by_role("button",name="Download 1.0.9").click()
+            expect(frame.locator("#update-status")).to_have_text("Verified and ready to install.")
+            frame.get_by_role("button",name="Install and reopen").click()
+            expect(frame.locator("#app-update")).to_be_disabled()
+            frame.locator("#app-diagnostics > summary").click()
+            frame.get_by_role("button",name="Clear logs").click()
+            expect(frame.locator("#logs-status")).to_have_text("Local logs cleared.")
             with page.expect_response(lambda r:r.url.endswith("/mix/preferences") and r.request.method=="GET"):
                 page.goto(ORIGIN+"/?view=wrist&app=1")
             expect(frame.locator("#close-to-tray")).to_be_enabled()

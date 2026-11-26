@@ -27,7 +27,7 @@ def run_entry():
 
 
 @contextmanager
-def settings(command, profile, chromium):
+def settings(command, profile, chromium, *, return_frame=False):
     with socket.socket() as reserved:
         reserved.bind(("127.0.0.1", 0))
         port = reserved.getsockname()[1]
@@ -54,7 +54,7 @@ def settings(command, profile, chromium):
         frame.get_by_role("button", name="Settings", exact=True).click(timeout=30000)
         switch = frame.get_by_role("switch", name="Start with Windows")
         expect(switch).to_be_enabled()
-        yield switch
+        yield frame if return_frame else switch
     finally:
         if proc.poll() is None:
             hwnd = win32gui.FindWindow("LumMixStudioHost", None)
@@ -93,9 +93,31 @@ def verify(exe, upgraded):
     print("Verified Settings, the Windows Run value, enabled sign-in, and disabled sign-in.")
 
 
+def verify_updates(exe):
+    from release_identity import VERSION
+    assert not win32gui.FindWindow("LumMixStudioHost", None), "Run on an idle test account"
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp, sync_playwright() as pw:
+        with settings([str(exe)],tmp,pw.chromium,return_frame=True) as frame:
+            expect(frame.locator("#app-version")).to_have_text("v"+VERSION)
+            status=frame.locator("#update-status")
+            expect(status).to_have_text("You’re up to date.",timeout=45000)
+            frame.get_by_role("button",name="Check for updates").click()
+            expect(status).to_have_text("You’re up to date.",timeout=45000)
+            frame.locator("#app-diagnostics > summary").click()
+            log=Path(tmp)/"LumMix/Diagnostics/lummix.log"
+            assert "opened" in log.read_text()
+            frame.get_by_role("button",name="Clear logs").click()
+            expect(frame.locator("#logs-status")).to_have_text("Local logs cleared.")
+            assert not log.exists()
+    print("Verified native updater status, installed version and clearing disposable local diagnostics.")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("exe", type=Path)
     parser.add_argument("--upgraded", action="store_true")
+    parser.add_argument("--updates", action="store_true")
     args = parser.parse_args()
-    verify(args.exe.resolve(strict=True), args.upgraded)
+    exe=args.exe.resolve(strict=True)
+    if args.updates: verify_updates(exe)
+    else: verify(exe, args.upgraded)

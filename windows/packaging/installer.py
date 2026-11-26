@@ -9,7 +9,8 @@ import zipfile
 import msilib
 from msilib import schema, sequence
 
-VERSION = "1.0.7"
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from release_identity import VERSION
 FAMILY = uuid.UUID("10e85f80-e023-4eb2-9170-71537d744202")
 def guid(text):
     return "{"+str(uuid.uuid5(FAMILY,text)).upper()+"}"

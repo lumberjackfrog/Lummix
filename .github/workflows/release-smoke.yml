@@ -119,6 +119,15 @@ jobs:
         run: |
           python -m pip install --only-binary=:all: -r windows/requirements-test.txt
 
+      - name: Verify the publisher signature on the public download
+        if: steps.package.outputs.runtime == 'true' && !inputs.build_run
+        run: |
+          if ([version]$env:RELEASE_TAG.Substring(1) -ge [version]'1.0.8') {
+            $env:PYTHONPATH = "$(Join-Path $PWD 'windows');$(Join-Path $PWD 'windows/runtime')"
+            python -B windows/tests/verify_published_update.py $env:RELEASE_TAG (Join-Path $env:RUNNER_TEMP 'lummix-release/Lummix.Setup.exe')
+            if ($LASTEXITCODE -ne 0) { throw 'Public update signature or downloaded installer did not verify.' }
+          }
+
       - name: Install, verify, repair and uninstall
         env:
           VERIFY_RUNTIME: ${{ steps.package.outputs.runtime }}
@@ -203,7 +212,13 @@ jobs:
             }
           }
           for ($cycle = 1; $cycle -le $cycles; $cycle++) {
-            $result = Start-Process -FilePath $setup -ArgumentList '/S' -WindowStyle Hidden -Wait -PassThru
+            $arguments = '/S'
+            if ($cycle -eq 1 -and [version]$version -ge [version]'1.0.8') {
+              $oldHost = Start-Process -FilePath pwsh -ArgumentList '-NoProfile -Command Start-Sleep -Seconds 5' -WindowStyle Hidden -PassThru
+              $arguments += " /LUMMIXWAITPID=$($oldHost.Id)"
+            }
+            $result = Start-Process -FilePath $setup -ArgumentList $arguments -WindowStyle Hidden -Wait -PassThru
+            if ($oldHost -and !$oldHost.HasExited) { throw 'Installer returned while the previous host was still running.' }
             if ($result.ExitCode -ne 0) { throw "Setup cycle $cycle exited $($result.ExitCode)." }
             $cache = @(Get-ChildItem -LiteralPath $cacheDir -Filter Lummix.msi -File -Recurse)
             if ($cache.Count -ne 1) { throw 'Expected exactly one registered MSI repair source.' }
@@ -233,6 +248,10 @@ jobs:
                   if ($env:UPGRADE_FROM) { $startupArgs += '--upgraded' }
                   python -B windows/tests/verify_sign_in.py $exe @startupArgs
                   if ($LASTEXITCODE -ne 0) { throw 'Installed sign-in switch or launcher failed.' }
+                  if ([version]$version -ge [version]'1.0.8' -and !$env:BUILD_RUN -and $env:GITHUB_EVENT_NAME -eq 'release') {
+                    python -B windows/tests/verify_sign_in.py $exe --updates
+                    if ($LASTEXITCODE -ne 0) { throw 'Native updater and diagnostics check failed.' }
+                  }
                 }
               } elseif ($exeHash -ne $firstExeHash -or $product -ne $firstProduct) {
                 throw 'Reinstall changed the launcher hash or MSI product.'

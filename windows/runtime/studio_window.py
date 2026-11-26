@@ -9,6 +9,8 @@ import sys
 from urllib.parse import urlsplit
 from studio_assets import attach_installed_assets
 import profile_save
+import diagnostics
+from client_update import Updates
 
 import comtypes
 from comtypes.gen import WebView2 as wv
@@ -26,6 +28,7 @@ TRAY = wc.WM_APP + 290
 READY = wc.WM_APP + 291
 FINISH_EXIT = wc.WM_APP + 292
 CAN_REOPEN = wc.WM_APP + 293
+UPDATE_CHANGED = wc.WM_APP + 294
 EXIT_TIMER = 17
 NATIVE = "http://127.0.0.1:41835/?view=desktop&app=1"
 USER = ctypes.windll.user32
@@ -127,6 +130,7 @@ class StudioWindow:
         style=wc.WS_POPUP | (wc.WS_OVERLAPPEDWINDOW & ~wc.WS_CAPTION) | wc.WS_CLIPCHILDREN
         self.hwnd=gui.CreateWindowEx(0,CLASS,"Lummix",style,
             *pos,0,0,wcinfo.hInstance,None)
+        self.updates=Updates(local_dir(),self.update_changed)
         if sys.getwindowsversion().build >= 22000:
             # Ask the compositor to omit the accent outline on active and inactive windows.
             no_border = wt.DWORD(0xfffffffe)  # DWMWA_COLOR_NONE
@@ -186,7 +190,13 @@ class StudioWindow:
         studio_root = Path(sys.executable).parent if getattr(sys, "frozen", False) else PROJECT.parent
         attach_installed_assets(self, studio_root / "studio")
         self.resize();self.web.Navigate(NATIVE)
+        self.updates.command("auto")
         return 0
+
+    def update_changed(self):
+        if self.hwnd and not self.exiting:
+            try: gui.PostMessage(self.hwnd,UPDATE_CHANGED,0,0)
+            except OSError: pass
 
     def navigation(self,sender,args):
         if urlsplit(args.Uri).netloc!="127.0.0.1:41835" or not args.Uri.startswith("http://127.0.0.1:41835/"):
@@ -212,6 +222,23 @@ class StudioWindow:
         elif command in RESIZE_COMMANDS:gui.PostMessage(self.hwnd,wc.WM_COMMAND,RESIZE,RESIZE_COMMANDS[command])
         elif command=="close":gui.PostMessage(self.hwnd,wc.WM_CLOSE,0,0)
         elif command=="window-state":self.send_window_state(force=True)
+        elif command in ("update-state","update-check","update-download","update-install") and args.Source==NATIVE and not self.exiting:
+            if command!="update-state":
+                self.updates.command(command.removeprefix("update-"))
+            self.web.PostWebMessageAsJson(json.dumps(self.updates.status()))
+        elif command in ("logs-open","logs-clear") and args.Source==NATIVE:
+            try:
+                if command=="logs-open":
+                    folder=diagnostics.folder()
+                    folder.mkdir(exist_ok=True,parents=True)
+                    os.startfile(str(folder))
+                    result="Opened the local diagnostics folder."
+                else:
+                    diagnostics.clear()
+                    result="Local logs cleared."
+            except OSError:
+                result="Windows couldn’t access the diagnostics folder."
+            self.web.PostWebMessageAsJson(json.dumps({"type":"lummix-diagnostics","message":result}))
         elif command in ("startup-state","startup-on","startup-off") and args.Source==NATIVE:
             from sign_in import SignIn
             startup = SignIn()
@@ -305,6 +332,7 @@ class StudioWindow:
 
     def quit(self):
         if self.exiting:return
+        self.updates.cancelled.set()
         self.exiting=True;self.remember()
         if self.web and self.web.Source.startswith("http://127.0.0.1:41835/"):
             self.exit_nonce=secrets.token_hex(12)
@@ -380,6 +408,13 @@ class StudioWindow:
                 USER.ReleaseCapture()
                 gui.PostMessage(hwnd, wc.WM_NCLBUTTONDOWN, lp, USER.GetMessagePos())
             return 0
+        if msg==UPDATE_CHANGED:
+            if self.exiting: return 0
+            state=self.updates.status()
+            if state["phase"]=="launched": self.quit()
+            elif self.web and self.web.Source==NATIVE:
+                self.web.PostWebMessageAsJson(json.dumps(state))
+            return 0
         if msg==CAN_REOPEN:return int(not self.exiting)
         if msg==FINISH_EXIT or (msg==wc.WM_TIMER and wp==EXIT_TIMER):
             if self.exiting:self.finish_exit()
@@ -423,6 +458,7 @@ class StudioWindow:
             if not self.add_tray() and not gui.IsWindowVisible(hwnd):self.show()
             return 0
         if msg==READY and wp:
+            diagnostics.record("window_failed")
             gui.MessageBox(hwnd,self.native_error or "The studio could not initialize.","Lummix",wc.MB_ICONERROR)
             self.quit();return 0
         if msg==wc.WM_DESTROY:gui.PostQuitMessage(0);return 0

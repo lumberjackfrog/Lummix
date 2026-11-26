@@ -12,7 +12,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Test package restore failed.' }
 $previous = $env:PYTHONPATH
 try {
     $env:PYTHONPATH = "$windows;$windows\runtime;$windows\packaging"
-    $tests = @('profile_recovery_test.py','cable_setup_test.py','cable_gain_test.py','cable_alias_test.py','spotify_cable_guard_test.py',
+    $tests = @('update_test.py','profile_recovery_test.py','cable_setup_test.py','cable_gain_test.py','cable_alias_test.py','spotify_cable_guard_test.py',
                'mic_route_test.py','mix_duck_test.py','spotify-test.py','mix_gains_test.py','spotify_volume_test.py')
     if ($Frozen) { $tests += 'test_runtime.py' }
     foreach ($test in $tests) {
