@@ -1,29 +1,13 @@
 """One user-controlled update at a time, off the audio and window threads."""
-from contextlib import contextmanager
 from http.client import HTTPException
-import os
 from pathlib import Path
 import threading
 import time
 from urllib.error import URLError
-import pywintypes
 
 import diagnostics
 from release_identity import VERSION
 import update_feed as feed
-
-
-@contextmanager
-def locked_installer(path):
-    # Deny replacement/deletion between the final hash check and the shell opening the EXE.
-    import msvcrt
-    import win32con
-    import win32file
-    handle = win32file.CreateFile(str(path), win32con.GENERIC_READ, win32con.FILE_SHARE_READ,
-                                  None, win32con.OPEN_EXISTING, win32con.FILE_ATTRIBUTE_NORMAL, None)
-    fd = msvcrt.open_osfhandle(handle.Detach(), os.O_RDONLY | os.O_BINARY)
-    with os.fdopen(fd,"rb") as stream:
-        yield stream
 
 
 class Updates:
@@ -106,7 +90,7 @@ class Updates:
             event,message="update_invalid","Release verification failed. Check again when the publisher has corrected the download."
         except (URLError,TimeoutError,ConnectionError,HTTPException):
             event,message="update_network","Couldn’t reach GitHub. Try again when you’re online."
-        except (OSError,pywintypes.error):
+        except OSError:
             if command=="install":
                 phase,event,message="ready","update_blocked","Windows could not open the installer. Check Windows Security or try again."
             else:

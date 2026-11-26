@@ -59,9 +59,8 @@ def write_notices(webview):
         shutil.copy2(webview/name,notices/"WebView2"/name)
     shutil.copy2(Path(sys.base_prefix)/"LICENSE.txt", notices/"Python.txt")
     # Retain wheel-distributed notices for direct and transitive runtime components.
-    packages = ("pycaw","comtypes","psutil","sounddevice","cffi","pycparser",
-                "aiohttp","aiohappyeyeballs","aiosignal","attrs","frozenlist","multidict",
-                "propcache","yarl","idna","packaging","typing_extensions","pyinstaller","pywin32","charset-normalizer")
+    packages = ("aiohttp","aiohappyeyeballs","aiosignal","attrs","frozenlist","multidict",
+                "propcache","yarl","idna","packaging","typing_extensions","pyinstaller","charset-normalizer")
     lines = ["Bundled Windows x64 runtime", "Python " + platform.python_version()]
     for package in packages:
         d = metadata.distribution(package)
@@ -88,19 +87,23 @@ def main():
     with cable_setup.package(archive.read_bytes):
         pass
     args = [sys.executable,"-m","PyInstaller","--noconfirm","--onedir","--windowed","--noupx",
-            "--additional-hooks-dir",str(HERE/"hooks"),"--name","Lummix Helper","--icon",str(SRC/"packaging/Lummix.ico"),"--paths",str(SRC),"--distpath",str(DIST),
+            "--name","Lummix Helper","--icon",str(SRC/"packaging/Lummix.ico"),"--paths",str(SRC),"--distpath",str(DIST),
             "--workpath",str(BUILD/"analysis"),"--specpath",str(BUILD)]
-    # Package the system UIA typelib wrappers so portable installs can run read-only.
-    from comtypes.client import GetModule
-    uia = GetModule("UIAutomationCore.dll")
     webview = webview_sdk()
+    pa_folder = metadata.distribution("sounddevice").locate_file("_sounddevice_data/portaudio-binaries")
+    portaudio = pa_folder / "libportaudio64bit.dll"
+    if hashlib.sha256(portaudio.read_bytes()).hexdigest() != "ec080194f01e4095c7fb43dbd7ed05af922c5b34295056a9ff56782741d65481":
+        raise RuntimeError("Unexpected Windows x64 PortAudio library")
+    args += ["--add-binary", str(portaudio)+";."]
     for name in ("dsp", "media", "host_lib"):
         args += ["--add-binary", str(native[name])+";."]
     args += ["--add-binary", str(webview/"WebView2Loader.dll")+";.", "--add-data", str(SRC/"packaging/Lummix.ico")+";."]
-    for module in (uia.__name__, uia.__wrapper_module__.__name__, "spotify-helper","detect_openvr"):
+    for module in ("spotify-helper","detect_openvr"):
         args += ["--hidden-import",module]
     # Optional third-party integrations of Python packages, unused in this application.
-    for module in ("numpy","PIL","matplotlib","scipy","torch","tensorflow","pandas","IPython","jupyter","pytest",
+    for module in ("numpy","PIL","sounddevice","_sounddevice_data","cffi","_cffi_backend","pycparser",
+                    "spotify_duck","spotify_duck_http","pycaw","comtypes","psutil","win32file","win32con","pywintypes",
+                    "matplotlib","scipy","torch","tensorflow","pandas","IPython","jupyter","pytest",
                    "tkinter","PySide6","PyQt6","cv2","openpyxl","sklearn","sphinx","cryptography",
                    "av","soundfile","numba","onnx","fsspec","Cython"):
         args += ["--exclude-module",module]

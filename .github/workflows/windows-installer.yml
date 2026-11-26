@@ -29,7 +29,10 @@ jobs:
           ./scripts/build.ps1 -Python ./.venv/Scripts/python.exe -MakeNsis $env:NSIS_COMPILER
       - name: Install, verify the payload, repair and uninstall
         shell: pwsh
-        run: ./.venv/Scripts/python.exe windows/tests/verify_setup_exe.py "dist/Lummix Setup.exe" --silent
+        run: |
+          ./.venv/Scripts/python.exe -m pip install --only-binary=:all: -r windows/requirements-test.txt
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          ./.venv/Scripts/python.exe windows/tests/verify_setup_exe.py "dist/Lummix Setup.exe" --silent
       - name: Exercise the Rust controller in the installed WebView2 runtime
         shell: pwsh
         run: |

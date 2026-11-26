@@ -21,9 +21,13 @@ WINDOWS=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(WINDOWS))
 
 
+def wasapi_devices():
+    apis = sd.query_hostapis()
+    return [(i, d) for i, d in enumerate(sd.query_devices()) if apis[d["hostapi"]]["name"] == "Windows WASAPI"]
+
+
 def indices():
-    from cable_mixer import _devices
-    rows=_devices()
+    rows=wasapi_devices()
     result=[]
     for name in NAMES:
         found=[i for i,d in rows if d["name"]==name]

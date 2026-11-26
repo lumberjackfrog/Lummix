@@ -20,13 +20,12 @@ from mix_gains_http import MixOutput
 from studio_preferences import StudioPreferences
 from mic_routes import MicRoutes
 from mix_duck_http import MixDucking
-from spotify_duck_http import DUCK_METHODS, DuckRoutes, native_controller
 from spotify_volume_http import VolumeError, VolumeRoutes
 from spotify_window_transport import WindowPlayer, transport as window_transport
 from spotify_artwork import ArtworkCache
 from spotify_peak import SpotifyPeak
-from spotify_locations import STORE_FAMILY, store_installed, website_installed
-from spotify_native import NativeManager, NativeSession, provider as media_provider
+from spotify_locations import STORE_FAMILY, _remember, _saved, store_installed, website_installed
+from spotify_native import NativeChangeListener, NativeManager, NativeSession, provider as media_provider
 
 HOST = "127.0.0.1"
 PORT = 41838
@@ -318,6 +317,58 @@ class ChangeFeed:
         self.notify()
 
 
+class NativeChangeFeed:
+    """Turn Rust event notifications into a shared asyncio wakeup for HTTP waiters."""
+
+    def __init__(self):
+        self.prefix = secrets.token_hex(8)
+        self.wakeup = asyncio.Event()
+        self.lock = asyncio.Lock()
+        self.listener = self.loop = None
+        self.closed = False
+        self.retry_after = 0
+
+    def notify(self):
+        previous, self.wakeup = self.wakeup, asyncio.Event()
+        previous.set()
+
+    def wake(self, _sequence):
+        if not self.closed and not self.loop.is_closed():
+            self.loop.call_soon_threadsafe(self.notify)
+
+    async def changes(self, since):
+        async with self.lock:
+            if self.listener is None and not self.closed and time.monotonic() >= self.retry_after:
+                self.retry_after = time.monotonic() + 30
+                try:
+                    self.loop = asyncio.get_running_loop()
+                    native = media_provider()
+                    if native is not None:
+                        self.listener = await asyncio.to_thread(NativeChangeListener, native, self.prefix, self.wake)
+                except (OSError, RuntimeError):
+                    pass
+        if self.listener is None:
+            return {"revision": f"{self.prefix}.0", "events": False}
+        current = self.listener.read()
+        try:
+            async with asyncio.timeout(CHANGE_WAIT):
+                while self.listener is not None and current["events"] and since == current["revision"]:
+                    await self.wakeup.wait()
+                    if self.listener is not None:
+                        current = self.listener.read()
+        except TimeoutError:
+            pass
+        return current if self.listener is not None else dict(current, events=False)
+
+    async def close(self, app):
+        self.closed = True
+        self.notify()
+        async with self.lock:
+            listener, self.listener = self.listener, None
+            if listener is not None:
+                await asyncio.to_thread(listener.close)
+
+
 @dataclass
 class Selection:
     session: object
@@ -549,12 +600,101 @@ class Player:
             return 200, await self.snapshot(origin)
 
 
+class NativePlayer(Player):
+    """Adapt the native player, exact session handles and async artwork fetches to HTTP."""
+
+    def __init__(self, sessions, inventory):
+        super().__init__(sessions, inventory)
+        self.location_revision = 0
+        self.saved_desktop = _saved().get("desktop")
+
+    @staticmethod
+    def remember_locations(paths):
+        for edition, path in paths.items():
+            if path:
+                _remember(edition, path)
+
+    async def snapshot(self, origin, previous_artwork_id=None):
+        try:
+            native = media_provider()
+            if native is None:
+                return await super().snapshot(origin, previous_artwork_id)
+            fields = await asyncio.to_thread(native.player_snapshot, self.saved_desktop)
+        except (OSError, RuntimeError, UnicodeError):
+            return status("unavailable")
+        revision = fields.pop("inventoryRevision")
+        paths = fields.pop("inventoryPaths")
+        if revision != self.location_revision:
+            self.location_revision = revision
+            self.saved_desktop = paths.get("desktop")
+            await asyncio.to_thread(self.remember_locations, paths)
+        session = fields.pop("session", None)
+        window = fields.pop("window", None)
+        if session:
+            fields["token"] = self.issue(session, origin)
+        elif window:
+            fields["token"] = self.issue(WindowPlayer(window[0], tuple(window[1])), origin)
+        if fields.get("itemUrl") and not fields.get("artwork"):
+            cover = await self.spotify_covers.get(fields["itemUrl"])
+            if cover:
+                fields["artworkId"], fields["artwork"] = cover
+        result = status(**fields)
+        if result["artworkId"] and result["artworkId"] == previous_artwork_id:
+            result.pop("artwork", None)
+        return result
+
+    async def validate_duck_start(self, origin, token):
+        selection = self.valid_selection(token, origin)
+        if selection is None:
+            return 403, "refresh_selection"
+        session = selection.session
+        if isinstance(session, WindowPlayer):
+            return 409, "windows_media_unavailable"
+        try:
+            if await asyncio.to_thread(session.native.call, 22, session.identity):
+                return 200, None
+        except (OSError, RuntimeError):
+            pass
+        return 409, "selection_changed"
+
+    async def control(self, origin, token, action):
+        async with self.lock:
+            selection = self.valid_selection(token, origin)
+            if selection is None:
+                return 403, status("unavailable", error="refresh_selection")
+            target = selection.session
+            if isinstance(target, WindowPlayer):
+                try:
+                    await asyncio.to_thread(window_transport, target, action)
+                except VolumeError as error:
+                    return error.http, status("unavailable", error=error.reason)
+                return 200, await self.snapshot(origin)
+            command = ("play", "pause", "previous", "next", "stop", "seekBack15", "seekForward15").index(action)
+            try:
+                result = await asyncio.to_thread(target.native.call, 21, target.identity, command)
+            except (OSError, RuntimeError):
+                return 503, status("unavailable", error="check_player")
+            code = result["status"]
+            if result.get("error") == "selection_changed":
+                self.revoke(token)
+            if result["refresh"]:
+                snapshot = await self.snapshot(origin)
+                if result.get("error"):
+                    snapshot["error"] = result["error"]
+                return code, snapshot
+            return code, status(result["state"], error=result["error"])
+
+
 def create_app(sessions=None, *, expected_host=f"{HOST}:{PORT}", inventory=read_installations,
                duck_factory=None, mix_output=None, peak_meter=None):
-    player = Player(sessions if sessions is not None else WindowsSessions(), inventory)
-    feed = ChangeFeed(player.sessions)
+    player_type = NativePlayer if sessions is None and inventory is read_installations else Player
+    player = player_type(sessions if sessions is not None else WindowsSessions(), inventory)
+    feed = NativeChangeFeed() if player_type is NativePlayer else ChangeFeed(player.sessions)
     peak_meter = peak_meter if peak_meter is not None else SpotifyPeak()
-    allowed_methods = {path: (method,) for path, method in DUCK_METHODS.items()} if duck_factory is not None else {}
+    allowed_methods = {}
+    if duck_factory is not None:
+        from spotify_duck_http import DUCK_METHODS, DuckRoutes
+        allowed_methods.update({path: (method,) for path, method in DUCK_METHODS.items()})
     allowed_methods["/lummix-health"] = ("GET",)
     allowed_methods["/mix/duck"] = ("GET", "POST")
     allowed_methods["/mix/preferences"] = ("GET", "POST")

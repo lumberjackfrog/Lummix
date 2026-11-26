@@ -4,7 +4,7 @@ import ctypes
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from aiohttp.test_utils import TestClient, TestServer
 
@@ -22,6 +22,8 @@ class NativeMediaTests(unittest.IsolatedAsyncioTestCase):
                             for field, value in native.call(8)))
         with self.assertRaises(OSError):
             native.call(1, 0)
+        with self.assertRaises(OSError):
+            native.call(21, 0, 3)  # Reject a stale target before any transport dispatch.
         self.assertEqual(native.call(9, 0, 0, 0), {"reason": "selection_changed"})
         self.assertEqual(native.volume([], None, None), {"reason": "no_player_slider", "http": 409})
         self.assertIsNone(native.direct_to_cable(0, {"invalid-fixture-id"}))
@@ -53,7 +55,9 @@ class NativeMediaTests(unittest.IsolatedAsyncioTestCase):
         profile = TemporaryDirectory()
         self.addCleanup(profile.cleanup)
         mix = MixOutput(path=Path(profile.name) / "gains.json", mixer=Mock())
-        app = service.create_app(expected_host=headers["Host"], inventory=lambda: ([], False), mix_output=mix)
+        self.enterContext(patch.object(service, "_saved", return_value={}))
+        self.enterContext(patch.object(service, "_remember"))
+        app = service.create_app(expected_host=headers["Host"], mix_output=mix)
         async with TestClient(TestServer(app)) as client:
             async with client.get("/lummix-health", headers=headers) as reply:
                 self.assertEqual(reply.status, 200)
@@ -62,6 +66,9 @@ class NativeMediaTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(reply.status, 200)
                 state = await reply.json()
                 self.assertIn(state["state"], {"no_session", "ready", "detected", "unavailable", "ambiguous"})
+                self.assertNotIn("inventoryPaths", state)
+                self.assertNotIn("inventoryRevision", state)
+                self.assertNotIn("session", state)
                 if state["state"] == "ready":
                     self.assertIn(state["edition"], {"desktop", "store"})
                     self.assertEqual(len(state["token"]), 43)

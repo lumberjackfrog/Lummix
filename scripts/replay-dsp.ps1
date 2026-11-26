@@ -26,7 +26,9 @@ $cases = @('impulse','normal','limiter','talkover','faders','nonfinite')
 $inputs = Join-Path $qa.FullName 'dsp-cases.jsonl'
 $cases | ForEach-Object { @{name=$_;args=@($_)} | ConvertTo-Json -Compress } | Set-Content -LiteralPath $inputs -Encoding utf8NoBOM
 $toolExe = $tool[0].FullName
-& $toolExe app record $replay.FullName --inputs $inputs -- $pythonExe -B $test fingerprint numpy
+# Pass the exact argv to CreateProcess on Windows, including paths with spaces.
+$runTool = 'import subprocess, sys; sys.exit(subprocess.run(sys.argv[1:]).returncode)'
+& $pythonExe -c $runTool $toolExe app record $replay.FullName --inputs $inputs -- $pythonExe -B $test fingerprint numpy
 if ($LASTEXITCODE) { throw 'Recording the original mixer failed.' }
 $records = @(Get-ChildItem -Path (Join-Path $replay.FullName 'rust/app-cases/*.stdout') |
     ForEach-Object { (Get-Content -Raw -LiteralPath $_.FullName).Trim() })
@@ -35,5 +37,5 @@ foreach ($case in $cases) {
     if ($LASTEXITCODE -or $digest -notmatch '^[a-f0-9]{64}$' -or $digest -notin $records) { throw "Missing recorded PCM for $case." }
 }
 $command = '"{0}" -B "{1}" fingerprint rust' -f $pythonExe.Replace('\','/'),$test.Replace('\','/')
-& $toolExe app replay $replay.FullName --build $command
+& $pythonExe -c $runTool $toolExe app replay $replay.FullName --build $command
 if ($LASTEXITCODE) { throw 'rust-anything found a replay difference.' }

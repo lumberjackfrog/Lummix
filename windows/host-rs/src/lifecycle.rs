@@ -27,7 +27,9 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::desktop::{CAN_REOPEN, CLASS, OPEN};
+use crate::embedded_studio;
 use crate::local_http::LoopbackClient;
+use crate::private_http::Listener;
 
 const OWNED: u32 = 0;
 const ALREADY_RUNNING: u32 = 1;
@@ -167,6 +169,7 @@ impl Drop for Instance {
 
 struct Runtime {
     children: Vec<Child>,
+    studio: Option<Listener>,
     instance: Instance,
 }
 
@@ -175,6 +178,7 @@ impl Drop for Runtime {
         for child in &mut self.children {
             drop(child.stdin.take());
         }
+        drop(self.studio.take());
         let deadline = Instant::now() + Duration::from_secs(6);
         while Instant::now() < deadline {
             self.children
@@ -189,6 +193,26 @@ impl Drop for Runtime {
 }
 
 impl Runtime {
+    fn ensure_studio(&mut self, root: PathBuf, http: &LoopbackClient) -> Result<(), u32> {
+        let service = Service::Studio;
+        let port = service.port();
+        let address = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+        if TcpStream::connect_timeout(&address, Duration::from_millis(400)).is_ok() {
+            return if service.matches(http, false) {
+                Ok(())
+            } else {
+                Err(PORT_CONFLICT + service as u32)
+            };
+        }
+        let (listener, _) = embedded_studio::listen(root, Ipv4Addr::LOCALHOST, port)
+            .ok_or(SERVICE_FAILED + service as u32)?;
+        self.studio = Some(listener);
+        if !service.matches(http, false) {
+            return Err(SERVICE_FAILED + service as u32);
+        }
+        Ok(())
+    }
+
     fn ensure(
         &mut self,
         service: Service,
@@ -232,9 +256,10 @@ impl Runtime {
     }
 }
 
-fn prepare(helper: PathBuf, modern: bool) -> Result<Runtime, u32> {
+fn prepare(helper: PathBuf, studio_root: PathBuf, modern: bool) -> Result<Runtime, u32> {
     let mut runtime = Runtime {
         children: Vec::new(),
+        studio: None,
         instance: Instance::acquire(w!("Local\\LummixNativeStudio")).map_err(|_| WINDOWS_ERROR)?,
     };
     let http = LoopbackClient::new().map_err(|_| WINDOWS_ERROR)?;
@@ -277,12 +302,7 @@ fn prepare(helper: PathBuf, modern: bool) -> Result<Runtime, u32> {
             return Err(ALREADY_RUNNING);
         }
     }
-    runtime.ensure(
-        Service::Studio,
-        &helper.with_file_name("Lummix Host.exe"),
-        &http,
-        modern,
-    )?;
+    runtime.ensure_studio(studio_root, &http)?;
     runtime.ensure(Service::Wrist, &helper, &http, modern)?;
     runtime.ensure(Service::Media, &helper, &http, modern)?;
     Ok(runtime)
@@ -294,21 +314,34 @@ pub extern "C" fn lummix_host_dpi() {
     unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
 }
 
-/// The UTF-16 span is valid for the declared length.
+/// The UTF-16 spans are valid for their declared lengths.
 /// The token out pointer is writable, and the token must be closed on the caller's thread.
 #[no_mangle]
-pub unsafe extern "C" fn lummix_host_start(
+pub unsafe extern "C" fn lummix_host_start_embedded(
     helper: PCWSTR,
     helper_len: usize,
+    studio_root: PCWSTR,
+    studio_root_len: usize,
     modern_media: u32,
     token: *mut *mut c_void,
 ) -> u32 {
-    if helper.is_null() || helper_len == 0 || token.is_null() {
+    if helper.is_null()
+        || helper_len == 0
+        || studio_root.is_null()
+        || studio_root_len == 0
+        || token.is_null()
+    {
         return WINDOWS_ERROR;
     }
     *token = null_mut();
     let helper = std::ffi::OsString::from_wide(std::slice::from_raw_parts(helper, helper_len));
-    match prepare(PathBuf::from(helper), modern_media != 0) {
+    let studio_root =
+        std::ffi::OsString::from_wide(std::slice::from_raw_parts(studio_root, studio_root_len));
+    match prepare(
+        PathBuf::from(helper),
+        PathBuf::from(studio_root),
+        modern_media != 0,
+    ) {
         Ok(runtime) => {
             *token = Box::into_raw(Box::new(runtime)).cast();
             OWNED
@@ -317,7 +350,7 @@ pub unsafe extern "C" fn lummix_host_start(
     }
 }
 
-/// A non-null token was returned by lummix_host_start and has not already been closed.
+/// A non-null token was returned by lummix_host_start_embedded and has not already been closed.
 #[no_mangle]
 pub unsafe extern "C" fn lummix_host_stop(token: *mut c_void) {
     if !token.is_null() {

@@ -1,6 +1,7 @@
 """Exercise packaged helpers from a different directory without a Python on PATH."""
 import argparse
 import base64
+import ctypes
 import hashlib
 import io
 import json
@@ -25,6 +26,24 @@ EVIDENCE.mkdir(parents=True, exist_ok=True)
 UI = HERE.parents[1] / "studio"
 TEST_PREFERENCES = {"snap": 5, "followTheme": False, "closeToTray": False}
 TEST_GAINS = {"micGain": 72, "musicGain": 138, "micMuted": True, "musicMuted": False}
+
+def verify_audio_driver(dsp):
+    portaudio = dsp.with_name("libportaudio64bit.dll")
+    digest = hashlib.sha256(portaudio.read_bytes()).hexdigest()
+    assert digest == "ec080194f01e4095c7fb43dbd7ed05af922c5b34295056a9ff56782741d65481"
+    library = ctypes.CDLL(str(dsp))
+    load = library.lummix_driver_load
+    load.argtypes = (ctypes.c_wchar_p, ctypes.c_size_t)
+    load.restype = ctypes.c_void_p
+    free = library.lummix_driver_free
+    free.argtypes = (ctypes.c_void_p,)
+    free.restype = None
+    path = str(portaudio)
+    for _ in range(2):
+        handle = load(path, len(path.encode("utf-16-le")) // 2)
+        assert handle, "Could not initialize the packaged PortAudio library"
+        free(handle)
+    return digest
 
 
 def verify_studio_assets(fetch, installed):
@@ -205,7 +224,9 @@ def main(installed_exe=None):
                 for port in (41836, 41838, 41839):
                     assert any(Path(m.path) == host_library for m in psutil.Process(proc[port].pid).memory_maps()), (
                         f"The installed service on {port} did not load its native host")
-                assert not any(p.name.lower().startswith("numpy") for p in dll.parent.iterdir())
+                report["portAudioSha256"] = verify_audio_driver(dll)
+                assert not any(p.name.lower().startswith(("numpy", "_cffi_backend", "_sounddevice", "pil."))
+                               for p in dll.parent.iterdir())
                 report["nativeServicePorts"] = [41835, 41836, 41838, 41839]
                 if os.environ.get("GITHUB_ACTIONS") == "true" and not any(
                         p.info["name"] == "Spotify.exe" for p in psutil.process_iter(["name"])):

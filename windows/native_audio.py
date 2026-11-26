@@ -7,9 +7,6 @@ import sys
 import threading
 from weakref import finalize
 
-import sounddevice as sd
-
-
 class Settings(ct.Structure):
     _fields_ = [("mic", ct.c_double), ("music", ct.c_double), ("depth", ct.c_double), ("flags", ct.c_uint32)]
 
@@ -26,11 +23,6 @@ class Metrics(ct.Structure):
 class PortAudio(ct.Structure):
     _fields_ = [(n, ct.c_void_p) for n in ("Pa_GetDeviceInfo", "Pa_GetHostApiInfo", "Pa_OpenStream", "Pa_StartStream",
                                              "Pa_IsStreamActive", "Pa_GetStreamInfo", "Pa_AbortStream", "Pa_CloseStream")]
-
-    @classmethod
-    def loaded(cls):
-        return cls(*(int(sd._ffi.cast("uintptr_t", getattr(sd._lib, n))) for n, _ in cls._fields_))
-
 
 class OpenResult(ct.Structure):
     _fields_ = [("handle", ct.c_void_p), ("error", ct.c_int), ("high", ct.c_int)]
@@ -71,13 +63,16 @@ def bind_library(path):
     bind("watch_close", None, ptr)
     bind("watch_status", ct.c_uint32, ptr)
     bind("route_open", OpenResult, ptr, ct.POINTER(PortAudio), ct.c_int, ct.c_int, ptr)
+    bind("driver_load", ptr, ct.c_wchar_p, ct.c_size_t)
+    bind("driver_free", None, ptr)
+    bind("driver_pair", Pair, ptr, ct.c_char_p, ct.c_char_p)
+    bind("driver_stream", OpenResult, ptr, ptr, ct.c_int, ct.c_int)
     bind("route_close", ct.c_int, ptr)
     bind("route_active", ct.c_int, ptr)
     bind("route_frames", ct.c_size_t, ptr)
     bind("route_latency", Latency, ptr)
     bind("inputs", ptr)
     bind("inputs_free", None, ptr)
-    bind("route_indexes", Pair, ct.POINTER(PortAudio), ptr, ptr, ptr, ct.c_char_p, ct.c_char_p)
     return dll
 
 
@@ -92,13 +87,33 @@ def endpoint_inventory():
         dll.lummix_inputs_free(value)
 
 
+class AudioDriver:
+    def __init__(self):
+        if getattr(sys, "frozen", False):
+            path = Path(sys._MEIPASS) / "libportaudio64bit.dll"
+        else:
+            from importlib.metadata import distribution
+            path = distribution("sounddevice").locate_file("_sounddevice_data/portaudio-binaries/libportaudio64bit.dll")
+        name = str(path.resolve(strict=True))
+        self.dll = library()
+        self.handle = self.dll.lummix_driver_load(name, len(name.encode("utf-16-le")) // 2)
+        if not self.handle:
+            raise OSError("Windows could not initialize the Lummix audio driver")
+        self._release = finalize(self, self.dll.lummix_driver_free, self.handle)
+
+
+_load_driver = lru_cache(maxsize=1)(AudioDriver)
+_driver_lock = threading.Lock()
+
+
+def driver():
+    with _driver_lock:
+        return _load_driver()
+
+
 def device_pair(input_id, sinks):
-    pa = ct.CDLL(sd._libname)
-    def address(name):
-        return ct.cast(getattr(pa, name, None), ct.c_void_p).value
-    result = library().lummix_route_indexes(ct.byref(PortAudio.loaded()), address("Pa_GetDeviceCount"),
-                    address("PaWasapi_GetIMMDevice"), address("PaWasapi_UpdateDeviceList"),
-                    input_id.encode("utf8"), json.dumps(sinks).encode("utf8"))
+    audio = driver()
+    result = audio.dll.lummix_driver_pair(audio.handle, input_id.encode("utf8"), json.dumps(sinks).encode("utf8"))
     return result.mic, result.sink
 
 
@@ -131,18 +146,20 @@ class Engine:
 class NativeStream:
     def __init__(self, engine, mic, sink, *, api=None):
         self.engine = engine
-        self.api = PortAudio.loaded() if api is None else api
-        self.options = sd.WasapiSettings(auto_convert=True)
-        settings = int(sd._ffi.cast("uintptr_t", self.options._streaminfo))
-        result = engine.dll.lummix_route_open(engine.handle, ct.byref(self.api), mic, sink, settings)
+        if api is None:
+            self.api = driver()
+            result = engine.dll.lummix_driver_stream(self.api.handle, engine.handle, mic, sink)
+        else:
+            self.api = api
+            result = engine.dll.lummix_route_open(engine.handle, ct.byref(api), mic, sink, None)
         if not result.handle:
-            raise sd.PortAudioError("Could not open the selected Lummix WASAPI route", result.error)
+            raise OSError(f"Could not open the selected Lummix WASAPI route ({result.error})")
         self.handle = result.handle
         self.frames = engine.dll.lummix_route_frames(self.handle)
         self.mode = "high" if result.high else "low"
         self.lock = threading.Lock()
         self._release = finalize(self, _release_owned, engine.dll.lummix_route_close, self.handle,
-                                 engine, self.api, self.options)
+                                 engine, self.api)
 
     @property
     def active(self):
@@ -163,7 +180,7 @@ class NativeStream:
                 self.handle = None
                 err = self._release()
                 if err:
-                    raise sd.PortAudioError("Could not close the Lummix route", err)
+                    raise OSError(f"Could not close the Lummix route ({err})")
 
 
 class ProcessCapture:

@@ -3,16 +3,9 @@ from dataclasses import dataclass, replace
 import math
 from weakref import finalize
 
-import sounddevice as sd
-
 from native_audio import Engine, NativeStream
 
 RATE, BLOCK, GAIN_RAMP, PEAK_CEILING = 48000, 480, 720, .98
-
-
-def _devices():
-    apis = sd.query_hostapis()
-    return [(i, d) for i,d in enumerate(sd.query_devices()) if apis[d["hostapi"]]["name"] == "Windows WASAPI"]
 
 
 @dataclass(frozen=True)

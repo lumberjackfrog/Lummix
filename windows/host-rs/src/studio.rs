@@ -1,14 +1,12 @@
-use std::fs;
 use std::io::{self, Cursor};
 use std::path::Path;
 use std::thread;
 
 use tiny_http::{Header, Method, Request, Response, Server};
 
-use crate::studio_files;
+use crate::studio_response;
 
-pub const HOST: &str = "127.0.0.1:41835";
-const HEALTH: &[u8] = br#"{"service":"lummix-studio","ready":true}"#;
+pub use studio_response::HOST;
 
 fn valid_host(headers: &[Header]) -> bool {
     let mut hosts = headers.iter().filter(|header| header.field.equiv("Host"));
@@ -37,21 +35,13 @@ fn reply(status: u16, mime: &'static str, data: Vec<u8>) -> Response<Cursor<Vec<
 }
 
 fn response(request: &Request, root: &Path) -> Response<Cursor<Vec<u8>>> {
-    if request.method() != &Method::Get {
-        return reply(501, "text/plain", b"Unsupported method".to_vec());
-    }
-    if !valid_host(request.headers()) {
-        return reply(403, "text/plain", b"Forbidden".to_vec());
-    }
-    if studio_files::route(request.url()) == "/lummix-health" {
-        return reply(200, "application/json", HEALTH.to_vec());
-    }
-    if let Some((name, mime)) = studio_files::asset(request.url()) {
-        if let Ok(data) = fs::read(root.join(name)) {
-            return reply(200, mime, data);
-        }
-    }
-    reply(404, "text/plain", b"Not Found".to_vec())
+    let result = studio_response::response(
+        request.method() == &Method::Get,
+        valid_host(request.headers()),
+        request.url(),
+        root,
+    );
+    reply(result.status, result.mime, result.body)
 }
 
 pub fn serve(server: Server, root: &Path) -> io::Result<()> {
@@ -76,7 +66,7 @@ fn serve_requests(server: &Server, root: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use studio_files::asset;
+    use crate::studio_files::asset;
 
     #[test]
     fn studio_routes_cover_encoded_space_and_only_allowed_entries() {

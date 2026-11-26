@@ -6,7 +6,10 @@ from pathlib import Path
 import sys
 import time
 
-from native_host import library
+if getattr(sys, "frozen", False):
+    from native_host import library
+else:
+    from runtime.native_host import library
 
 ALIAS = "Lummix"
 ERRORS = ("ok", "name_unavailable", "name_collision", "name_not_applied", "name_timed_out", "name_busy")

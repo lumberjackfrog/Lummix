@@ -3,8 +3,12 @@ import ctypes
 from functools import cache
 import json
 import logging
+import sys
 
-from native_host import library, wide_path
+if getattr(sys, "frozen", False):
+    from native_host import library, wide_path
+else:
+    from runtime.native_host import library, wide_path
 
 
 _SAVE, _LOAD, _UPDATE = range(3)

@@ -14,8 +14,8 @@ import psutil
 
 def tone(frequency):
     import sounddevice as sd
-    from cable_mixer import _devices
-    sinks=[i for i,d in _devices() if d["name"]=="Speakers (Steam Streaming Speakers)" and d["max_output_channels"]>=2]
+    from device_route import wasapi_devices
+    sinks=[i for i,d in wasapi_devices() if d["name"]=="Speakers (Steam Streaming Speakers)" and d["max_output_channels"]>=2]
     if len(sinks)!=1:raise RuntimeError("The designated nonphysical test render endpoint is unavailable")
     phase=0
     def render(out,n,t,status):

@@ -48,6 +48,7 @@ class NativeMedia:
             "cable": (ctypes.c_uint32, ctypes.c_char_p),
             "peak": (ctypes.c_char_p,),
             "capability": (ctypes.c_uint32, ctypes.c_uint64, ctypes.c_char_p),
+            "player_snapshot": (ctypes.c_char_p,),
             "encode_artwork": (ctypes.c_char_p, ctypes.c_size_t),
             "artwork_url": (ctypes.c_uint32, ctypes.c_char_p),
             "artwork_cache_call": (ctypes.c_void_p, ctypes.c_uint32, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_double),
@@ -59,6 +60,12 @@ class NativeMedia:
         dll.lummix_media_release_session.restype = None
         dll.lummix_media_free.argtypes = (ctypes.c_void_p,)
         dll.lummix_media_free.restype = None
+        dll.lummix_feed_start.argtypes = (ctypes.c_char_p, _CALLBACK)
+        dll.lummix_feed_start.restype = ctypes.c_void_p
+        dll.lummix_feed_read.argtypes = (ctypes.c_void_p,)
+        dll.lummix_feed_read.restype = ctypes.c_void_p
+        dll.lummix_feed_close.argtypes = (ctypes.c_void_p,)
+        dll.lummix_feed_close.restype = None
         dll.lummix_media_artwork_cache_new.argtypes = ()
         dll.lummix_media_artwork_cache_new.restype = ctypes.c_void_p
         dll.lummix_media_artwork_cache_free.argtypes = (ctypes.c_void_p,)
@@ -104,6 +111,14 @@ class NativeMedia:
         request = json.dumps(fields).encode("ascii")
         return self.decode(self.dll.lummix_media_capability, operation, store, request)
 
+    def player_snapshot(self, preferred):
+        path = preferred.encode("utf-8") if preferred else None
+        result = self.worker.submit(self.decode, self.dll.lummix_media_player_snapshot, path).result()
+        session = result.get("session")
+        if session:
+            result["session"] = NativeSession(self, *session)
+        return result
+
     def setup(self, operation, root, preferred=None, notify=lambda _phase: True):
         request = json.dumps({"root": str(root), "preferred": preferred}).encode("ascii")
         return self.decode(self.dll.lummix_spotify_setup, operation, request, _SETUP(notify))
@@ -148,6 +163,22 @@ class NativeMedia:
         identity, token = binding
         self.events.pop(identity, None)
         self.call(7, session, kind, token)
+
+
+class NativeChangeListener:
+    def __init__(self, native, prefix, wake):
+        self.native = native
+        self.callback = _CALLBACK(wake)
+        self.handle = native.dll.lummix_feed_start(prefix.encode("ascii"), self.callback)
+        if not self.handle:
+            raise OSError("Could not start the native media event listener")
+        self._close = finalize(self, native.dll.lummix_feed_close, self.handle)
+
+    def read(self):
+        return self.native.decode(self.native.dll.lummix_feed_read, self.handle)
+
+    def close(self):
+        self._close()
 
 
 class NativeArtworkCache:

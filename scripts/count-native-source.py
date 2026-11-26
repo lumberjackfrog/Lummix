@@ -99,6 +99,9 @@ def inspect(args, temp):
         return identity
 
     native = {p: packaged(p) for p in [*NATIVE.values(), "Lummix Host.exe", "_internal/controls.wasm"]}
+    portaudio = "_internal/libportaudio64bit.dll"
+    if file_id(portaudio) in table:
+        native[portaudio] = packaged(portaudio)
     exe = packaged("Lummix.exe")
     assets = {}
     for name in files:
@@ -140,7 +143,9 @@ def inspect(args, temp):
         by_type[suffix] += lines
     total = sum(by_type.values())
     return {"commit": ref, "installer_sha256": checksum, "installer_bytes": args.installer.stat().st_size,
-            "bundles_numpy": "numpy" in modules, "bundles_pillow": "PIL" in modules, "native_payload_sha256": payloads,
+            "bundles_numpy": "numpy" in modules, "bundles_pillow": "PIL" in modules,
+            "bundles_sounddevice": "sounddevice" in modules, "bundles_cffi": "cffi" in modules,
+            "native_payload_sha256": payloads,
             "method": "Nonblank first-party runtime lines including comments. Checks installer payloads and frozen Python module membership. Excludes vendored assets, tests, Rust test-only items and replay injection, and build/packaging files. WASM is counted once from Rust source.",
             "counts": dict(sorted(by_type.items())), "total": total, "rust_percent": 100 * by_type[".rs"] / total,
             "files": inventory}

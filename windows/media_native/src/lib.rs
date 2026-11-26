@@ -25,6 +25,8 @@ use windows::{
 mod artwork;
 mod audio_sessions;
 mod capability;
+mod change_feed;
+mod player;
 mod processes;
 mod registry;
 mod setup;
@@ -106,12 +108,16 @@ fn session(id: u64) -> Result<Session> {
 
 fn current_sessions() -> Result<IVectorView<Session>> {
     let manager = manager()?;
-    manager.GetSessions().inspect_err(|_| {
-        let mut state = media();
-        if state.manager.as_ref() == Some(&manager) {
-            state.manager = None;
-        }
-    })
+    manager
+        .GetSessions()
+        .inspect_err(|_| discard_manager(&manager))
+}
+
+fn discard_manager(manager: &Manager) {
+    let mut state = media();
+    if state.manager.as_ref() == Some(manager) {
+        state.manager = None;
+    }
 }
 
 fn listed_spotify() -> Result<Vec<(Session, String)>> {
@@ -164,13 +170,16 @@ fn choose_session<T>(
 }
 
 fn selected_session() -> Result<Value> {
-    let chosen = choose_session(listed_spotify()?, |(session, _)| {
-        Ok(session.GetPlaybackInfo()?.PlaybackStatus()? == PlaybackStatus::Playing)
-    });
-    Ok(match chosen {
+    Ok(match selected_target()? {
         Ok(session) => json!({"state": "ready", "session": retain_session(session)}),
         Err(state) => json!({"state": state}),
     })
+}
+
+fn selected_target() -> Result<std::result::Result<(Session, String), &'static str>> {
+    Ok(choose_session(listed_spotify()?, |(session, _)| {
+        Ok(session.GetPlaybackInfo()?.PlaybackStatus()? == PlaybackStatus::Playing)
+    }))
 }
 
 fn timeline_values(
@@ -259,7 +268,7 @@ fn timeline(session: &Session) -> Result<Value> {
 
 fn artwork(
     properties: &windows::Media::Control::GlobalSystemMediaTransportControlsSessionMediaProperties,
-) -> Result<Option<String>> {
+) -> Result<Option<Vec<u8>>> {
     let thumbnail = properties.Thumbnail()?;
     let stream = wait_for!(thumbnail.OpenReadAsync(), 680)?;
     let size = stream.Size()?;
@@ -272,16 +281,22 @@ fn artwork(
     }
     let mut pixels = vec![0; size as usize];
     reader.ReadBytes(&mut pixels)?;
-    Ok(Some(STANDARD.encode(pixels)))
+    Ok(Some(pixels))
 }
 
 fn now_playing(session: &Session) -> Result<Value> {
-    let properties = wait_for!(session.TryGetMediaPropertiesAsync(), 1950)?;
+    let properties = media_properties(session)?;
     Ok(json!({
         "labels": [properties.Title()?.to_string(), properties.Artist()?.to_string(),
                    properties.AlbumTitle()?.to_string(), properties.TrackNumber()?],
-        "thumbnail": artwork(&properties).ok().flatten(),
+        "thumbnail": artwork(&properties).ok().flatten().map(|raw| STANDARD.encode(raw)),
     }))
+}
+
+fn media_properties(
+    session: &Session,
+) -> Result<windows::Media::Control::GlobalSystemMediaTransportControlsSessionMediaProperties> {
+    wait_for!(session.TryGetMediaPropertiesAsync(), 1950)
 }
 
 fn control(session: &Session, action: u32, position: i64) -> Result<Value> {
@@ -440,10 +455,23 @@ pub extern "C" fn lummix_media_call(op: u32, id: u64, action: u32, arg: i64) -> 
         12 => selected_session(),
         13 => window_player::visible_windows(),
         14 => Ok(window_player::window_title(id, action)),
+        21 => player::command(id, action),
+        22 => player::selection_matches(id),
         15 => source::diagnostic_target(),
         _ => Err(Error::from_hresult(windows::core::HRESULT(
             0x80070057u32 as i32,
         ))),
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn lummix_media_player_snapshot(preferred: *const c_char) -> *mut c_char {
+    response(|| {
+        let preferred = (!preferred.is_null())
+            .then(|| unsafe { CStr::from_ptr(preferred) })
+            .and_then(|value| value.to_str().ok())
+            .map(std::path::Path::new);
+        player::snapshot(preferred)
     })
 }
 

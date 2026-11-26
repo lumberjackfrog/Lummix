@@ -4,12 +4,12 @@ import json
 import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-import re
 import subprocess
 import sys
 import threading
 from urllib.parse import urlsplit
 from studio_assets import STUDIO_FILES, studio_asset
+from xsoverlay_install import discover as wrist_sources
 
 EXECUTABLE = Path(sys.executable).resolve()
 ROOT = (EXECUTABLE.parent if EXECUTABLE.stem.lower() == "lummix" else EXECUTABLE.parent.parent) if getattr(sys,"frozen",False) else Path(__file__).resolve().parents[2]
@@ -45,27 +45,6 @@ class Studio(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(data)
-
-
-def wrist_sources():
-    import winreg
-    steam = Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")) / "Steam"
-    try:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam") as key:
-            steam = Path(winreg.QueryValueEx(key, "SteamPath")[0])
-    except OSError:
-        pass
-    roots = [steam]
-    vdf = steam / "steamapps/libraryfolders.vdf"
-    if vdf.is_file():
-        roots.extend(Path(value.replace("\\\\", "\\")) for value in re.findall(
-            r'"path"\s*"([^"]+)"', vdf.read_text(encoding="utf-8", errors="replace")))
-    for library in roots:
-        for product in ("XSOverlay_Beta","XSOverlay"):
-            directory = library / "steamapps/common" / product / "XSOverlay_Data/StreamingAssets/Plugins/Applications"
-            if (directory/"_UI/Default/Wrist.html").is_file():
-                return directory.resolve()
-    return None
 
 
 def serve(server, linked):

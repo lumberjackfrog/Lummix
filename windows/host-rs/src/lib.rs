@@ -3,6 +3,8 @@ mod cable_setup;
 #[cfg(windows)]
 mod desktop;
 #[cfg(windows)]
+mod embedded_studio;
+#[cfg(windows)]
 mod endpoint_alias;
 #[cfg(windows)]
 mod lifecycle;
@@ -17,6 +19,8 @@ mod profile;
 #[cfg(windows)]
 mod release_feed;
 mod studio_files;
+#[cfg(windows)]
+mod studio_response;
 #[cfg(windows)]
 mod update;
 #[cfg(windows)]

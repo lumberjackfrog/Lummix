@@ -52,15 +52,18 @@ def launch():
         host.lummix_host_dpi.restype = None
         host.lummix_host_dpi()
         from studio_window import run
-        host.lummix_host_start.argtypes = [ctypes.c_wchar_p, ctypes.c_size_t,
+        host.lummix_host_start_embedded.argtypes = [ctypes.c_wchar_p, ctypes.c_size_t, ctypes.c_wchar_p, ctypes.c_size_t,
             ctypes.c_uint32, ctypes.POINTER(ctypes.c_void_p)]
-        host.lummix_host_start.restype = ctypes.c_uint32
+        host.lummix_host_start_embedded.restype = ctypes.c_uint32
         host.lummix_host_stop.argtypes = [ctypes.c_void_p]
         host.lummix_host_stop.restype = None
         helper=Path(sys.executable).resolve()
+        studio_root = helper.parent / "studio"
         if not getattr(sys,"frozen",False):
-            helper=Path(__file__).resolve().parents[2]/".build/frozen/runtime/Lummix Helper.exe"
-        status = host.lummix_host_start(*wide_path(helper),
+            project = Path(__file__).resolve().parents[2]
+            helper = project / ".build/frozen/runtime/Lummix Helper.exe"
+            studio_root = project / "studio"
+        status = host.lummix_host_start_embedded(*wide_path(helper), *wide_path(studio_root),
                                         sys.getwindowsversion().build >= 20348, ctypes.byref(token))
         if status == 1:
             return

@@ -10,7 +10,7 @@ const DESKTOP: u32 = 1;
 const STORE: u32 = 2;
 const EXECUTABLE: &str = "Spotify.exe";
 
-fn normalize(path: &Path) -> Option<String> {
+pub(super) fn normalize(path: &Path) -> Option<String> {
     let mut components = path.components();
     let Some(Component::Prefix(prefix)) = components.next() else {
         return None;

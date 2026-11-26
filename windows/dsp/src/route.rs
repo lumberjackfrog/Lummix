@@ -4,6 +4,9 @@ use std::ptr;
 #[cfg(windows)]
 #[path = "devices.rs"]
 mod devices;
+#[cfg(windows)]
+#[path = "driver.rs"]
+mod driver;
 
 #[repr(C)]
 pub struct Params {
@@ -80,6 +83,8 @@ pub struct Route {
     stream: Handle,
     _callback: Box<Callback>,
     frames: usize,
+    #[cfg(windows)]
+    driver: Option<std::sync::Arc<driver::Driver>>,
 }
 #[repr(C)]
 pub struct OpenResult {
@@ -129,6 +134,8 @@ pub unsafe extern "C" fn lummix_route_open(
         error,
         high_latency: 0,
     };
+    #[cfg(windows)]
+    let wasapi = if wasapi.is_null() { driver::settings() } else { wasapi };
     if mic < 0 || sink < 0 || wasapi.is_null() {
         return failed(-9996);
     } // paInvalidDevice
@@ -201,6 +208,8 @@ pub unsafe extern "C" fn lummix_route_open(
                 stream,
                 _callback: cb,
                 frames,
+                #[cfg(windows)]
+                driver: None,
             };
             return OpenResult {
                 handle: Box::into_raw(Box::new(route)),
@@ -242,8 +251,15 @@ pub unsafe extern "C" fn lummix_route_close(handle: *mut Route) -> c_int {
         return 0;
     }
     let route = unsafe { Box::from_raw(handle) };
-    unsafe {
+    #[cfg(windows)]
+    let mut active = route.driver.as_ref().map(|driver| driver.streams.lock().unwrap());
+    let error = unsafe {
         (route.api.abort)(route.stream);
         (route.api.close)(route.stream)
+    };
+    #[cfg(windows)]
+    if let Some(count) = active.as_mut() {
+        **count -= 1;
     }
+    error
 }

@@ -11,6 +11,7 @@ mod diagnostics;
 mod sign_in;
 mod studio;
 mod studio_files;
+mod studio_response;
 
 fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args: Vec<_> = env::args_os().skip(1).collect();
