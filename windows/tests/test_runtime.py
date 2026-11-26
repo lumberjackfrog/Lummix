@@ -15,6 +15,7 @@ import time
 from urllib.parse import unquote
 
 import requests
+import psutil
 from runtime_main import STUDIO_FILES
 from lummix_window import MEDIA_CAPABILITIES
 
@@ -191,6 +192,10 @@ def main(installed_exe=None):
                 assert cable_state in ("ready","missing","partial"), cable_state
                 assert fetch(41836,"/preview").status_code in (200,302)
                 mix = fetch(41838,"/mix/gains").json()
+                dll = Path(exe).parent / "_internal/lummix_dsp.dll"
+                assert dll.is_file() and any(Path(mapping.path) == dll for mapping in
+                    psutil.Process(proc[41838].pid).memory_maps()), "Installed media service did not load its Rust mixer"
+                report["loadedRustMixer"] = {"bytes":dll.stat().st_size, "sha256":hashlib.sha256(dll.read_bytes()).hexdigest()}
                 assert mix["engineAvailable"] and not mix["routeActive"]
                 report["nativeMix"] = {k:mix[k] for k in ("engineAvailable","micGain","musicGain","routeActive")}
                 panel = fetch(41839, "/wrist")

@@ -28,6 +28,26 @@ jobs:
           ./.venv/Scripts/python.exe -m playwright install chromium
       - shell: pwsh
         run: ./scripts/test-windows.ps1
+      - name: Fetch the pre-Rust mixer for independent verification
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: bc24de404252e4af8d2ea3cc5b4797cadd135ff7
+          path: .build/original
+          persist-credentials: false
+      - name: Replay and time the Windows audio callback
+        if: github.event_name == 'workflow_dispatch'
+        shell: pwsh
+        run: ./scripts/replay-dsp.ps1 -Python ./.venv/Scripts/python.exe -Original ./.build/original/windows/cable_mixer.py
+      - name: Save audio timing and replay evidence
+        if: always() && github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: audio-verification
+          include-hidden-files: true
+          path: |
+            .build/qa/dsp-benchmark.json
+            .build/qa/dsp-replay/rust/app-cases/
       - name: Test XSOverlay add-on installation and removal
         shell: pwsh
         run: ./.venv/Scripts/python.exe -m unittest discover -s tests -p test_xsoverlay_install.py -v
