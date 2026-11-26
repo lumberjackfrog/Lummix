@@ -1,6 +1,4 @@
 """Compare shipped Windows launchers on a disposable interactive hosted runner."""
-import ctypes
-from ctypes import wintypes
 import hashlib
 import json
 from http.client import HTTPConnection
@@ -13,13 +11,11 @@ import sys
 import tempfile
 import time
 import traceback
-import uuid
 
 from playwright.sync_api import Error as PlaywrightError, sync_playwright
 import psutil
 import win32api
 import win32con
-import win32event
 import win32gui
 import win32job
 import win32process
@@ -32,6 +28,7 @@ EXIT_COMMAND = 0x7140
 START_TIMEOUT = 50
 TRIAL_WALL_TIMEOUT = 95
 POLL_SECONDS = .04
+STUDIO_URL = "http://127.0.0.1:41835/"
 
 
 def _listeners():
@@ -49,7 +46,7 @@ def _wait_until(predicate, seconds, failure):
     raise AssertionError(failure)
 
 
-def _find_window(desktop):
+def _find_window():
     windows = []
 
     def collect(hwnd, _):
@@ -62,18 +59,22 @@ def _find_window(desktop):
             windows.append(hwnd)
         return True
 
-    win32gui.EnumDesktopWindows(desktop, collect, None)
+    win32gui.EnumWindows(collect, None)
     assert len(windows) <= 1, windows
     return windows[0] if windows else None
 
 
-def _endpoint_ready(port):
-    connection = HTTPConnection("127.0.0.1", port, timeout=.15)
+def _studio_target(port):
+    connection = HTTPConnection("127.0.0.1", port, timeout=.5)
     try:
-        connection.request("GET", "/json/version")
-        return connection.getresponse().status == 200
-    except OSError:
-        return False
+        connection.request("GET", "/json/list")
+        response = connection.getresponse()
+        if response.status != 200:
+            return None
+        return next((target["url"] for target in json.load(response)
+                     if target.get("type") == "page" and target.get("url", "").startswith(STUDIO_URL)), None)
+    except (OSError, ValueError):
+        return None
     finally:
         connection.close()
 
@@ -106,38 +107,15 @@ _MIXER_READY = f"""() => {{
 }}"""
 
 
-def _wait_for_mixer(browser, deadline, version, number):
-    cdp = browser.new_browser_cdp_session()
-    last_error = None
-    targets = []
+def _wait_for_mixer(page, deadline):
     try:
-        while (remaining := deadline - time.perf_counter()) > 0:
-            # A protocol round trip dispatches page creation and navigation events
-            # even when the sole page was about:blank when we attached.
-            targets = cdp.send("Target.getTargets")["targetInfos"]
-            for context in browser.contexts:
-                for page in context.pages:
-                    try:
-                        page.wait_for_function(_MIXER_READY, polling=40,
-                                               timeout=min(300, max(1, remaining * 1000)))
-                        return
-                    except PlaywrightError as error:
-                        last_error = str(error).splitlines()[0]
-            time.sleep(POLL_SECONDS)
-        diagnostics = []
-        for context in browser.contexts:
-            for page in context.pages:
-                try:
-                    diagnostics.append(page.evaluate(_MIXER_STATE))
-                except PlaywrightError as error:
-                    diagnostics.append({"url": page.url, "error": str(error).splitlines()[0]})
-        raise AssertionError(
-            f"{version} trial {number}: real mixer did not become ready. "
-            + json.dumps({"targets": [{"url": item["url"], "type": item["type"]} for item in targets],
-                          "pages": diagnostics, "lastPlaywrightError": last_error})
-        )
-    finally:
-        cdp.detach()
+        page.wait_for_function(_MIXER_READY, polling=40,
+                               timeout=max(1, (deadline - time.perf_counter()) * 1000))
+    except PlaywrightError as error:
+        # The renderer may have stopped responding. Avoid a second renderer call
+        # in the error path and report the last protocol-observed page state.
+        detail = str(error).splitlines()[0]
+        raise RuntimeError(f"Mixer readiness failed for {page.url!r}; live DOM state unavailable: {detail}") from error
 
 
 def _owns_image(exe, process):
@@ -195,86 +173,71 @@ def _started_processes(exe):
 def _trial(exe, version, number, work_dir, chromium):
     assert not _listeners(), "Lummix benchmark requires unused product service ports"
     assert not _started_processes(exe), f"An executable is already running from {exe.parent}"
-    u = ctypes.WinDLL("user32", use_last_error=True)
-    u.CreateDesktopW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, ctypes.c_void_p, wintypes.DWORD,
-                                wintypes.DWORD, ctypes.c_void_p]
-    u.CreateDesktopW.restype = wintypes.HANDLE
-    u.CloseDesktop.argtypes = [wintypes.HANDLE]
-    desktop_name = "LummixBench_" + uuid.uuid4().hex
-    desktop = u.CreateDesktopW(desktop_name, None, None, 0, 0x000F01FF, None)
-    if not desktop:
-        raise ctypes.WinError(ctypes.get_last_error())
-    process = thread = None
-    try:
-        with tempfile.TemporaryDirectory(prefix=f"{version}-{number}-", dir=work_dir,
-                                         ignore_cleanup_errors=True) as scratch:
-            profile = Path(scratch).resolve()
-            local = profile / "local"
-            local.mkdir()
-            renderer_profile = profile / "webview"
-            with socket.socket() as probe:
-                probe.bind(("127.0.0.1", 0))
-                debug_port = probe.getsockname()[1]
-            system = Path(os.environ["SystemRoot"])
-            env = dict(os.environ, LOCALAPPDATA=str(local), WEBVIEW2_USER_DATA_FOLDER=str(renderer_profile),
-                       WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=f"--remote-debugging-port={debug_port}",
-                       PATH=os.pathsep.join(map(str, (system / "System32", system))))
-            for variable in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV", "LUMMIX_QA_LOOPBACK",
-                             "WEBVIEW2_BROWSER_EXECUTABLE_FOLDER"):
-                env.pop(variable, None)
-            startup = win32process.STARTUPINFO()
-            startup.lpDesktop = "winsta0\\" + desktop_name
-            _stage(version, number, "starting launcher")
-            begin = time.perf_counter()
-            process, thread, _, _ = win32process.CreateProcess(
-                str(exe), subprocess.list2cmdline([str(exe)]), None, None, False,
-                win32con.CREATE_UNICODE_ENVIRONMENT | win32con.CREATE_NO_WINDOW,
-                env, str(exe.parent), startup)
-            hwnd = _wait_until(lambda: _find_window(desktop), START_TIMEOUT, "No visible Lummix window")
-            visible_ms = (time.perf_counter() - begin) * 1000
-            _stage(version, number, f"visible window at {visible_ms:.0f} ms")
-            def remaining():
-                return max(.01, START_TIMEOUT - (time.perf_counter() - begin))
-            _wait_until(lambda: _endpoint_ready(debug_port), remaining(), "WebView2 CDP did not start")
-            _stage(version, number, "connecting to WebView2")
-            browser = chromium.connect_over_cdp(f"http://127.0.0.1:{debug_port}", timeout=remaining() * 1000)
+    assert not _find_window(), "A Lummix window was already open on the runner desktop"
+    with tempfile.TemporaryDirectory(prefix=f"{version}-{number}-", dir=work_dir,
+                                     ignore_cleanup_errors=True) as scratch:
+        profile = Path(scratch).resolve()
+        local = profile / "local"
+        local.mkdir()
+        renderer_profile = profile / "webview"
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            debug_port = probe.getsockname()[1]
+        system = Path(os.environ["SystemRoot"])
+        env = dict(os.environ, LOCALAPPDATA=str(local), WEBVIEW2_USER_DATA_FOLDER=str(renderer_profile),
+                   WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=f"--remote-debugging-port={debug_port}",
+                   PATH=os.pathsep.join(map(str, (system / "System32", system))))
+        for variable in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV", "LUMMIX_QA_LOOPBACK",
+                         "WEBVIEW2_BROWSER_EXECUTABLE_FOLDER"):
+            env.pop(variable, None)
+        _stage(version, number, "starting launcher")
+        begin = time.perf_counter()
+        process = subprocess.Popen([str(exe)], env=env, cwd=exe.parent)
+        hwnd = _wait_until(_find_window, START_TIMEOUT, "No visible Lummix window")
+        visible_ms = (time.perf_counter() - begin) * 1000
+        window_pid = win32process.GetWindowThreadProcessId(hwnd)[1]
+        assert _owns_image(exe, psutil.Process(window_pid)), (exe, window_pid)
+        _stage(version, number, f"visible window at {visible_ms:.0f} ms")
 
-            _wait_for_mixer(browser, begin + START_TIMEOUT, version, number)
-            ready_ms = (time.perf_counter() - begin) * 1000
-            _stage(version, number, f"mixer ready at {ready_ms:.0f} ms, checking ownership")
-            children = []
+        def remaining():
+            return max(.01, START_TIMEOUT - (time.perf_counter() - begin))
 
-            def child_class(child, _):
-                children.append(win32gui.GetClassName(child))
-                return True
+        target = _wait_until(lambda: _studio_target(debug_port), remaining(), "WebView2 did not advertise a Studio page")
+        _stage(version, number, f"Studio URL advertised: {target}")
+        browser = chromium.connect_over_cdp(f"http://127.0.0.1:{debug_port}", timeout=remaining() * 1000)
+        _stage(version, number, "CDP attached")
+        page = next((page for context in browser.contexts for page in context.pages
+                     if page.url.startswith(STUDIO_URL)), None)
+        if page is None:
+            urls = [page.url for context in browser.contexts for page in context.pages]
+            raise RuntimeError(f"CDP attached without the advertised Studio page {target!r}: {urls}")
+        page.bring_to_front()
+        _wait_for_mixer(page, begin + START_TIMEOUT)
+        ready_ms = (time.perf_counter() - begin) * 1000
+        _stage(version, number, f"mixer ready at {ready_ms:.0f} ms, checking ownership")
+        children = []
 
-            win32gui.EnumChildWindows(hwnd, child_class, None)
-            assert any("Chrome" in item for item in children), children
-            window_pid = win32process.GetWindowThreadProcessId(hwnd)[1]
-            product, webview, ids = _snapshot(exe, window_pid, renderer_profile)
-            tracked = {item: psutil.Process(item) for item in ids if psutil.pid_exists(item)}
-            assert product and webview
-            _stage(version, number, "requesting normal exit")
-            win32gui.PostMessage(hwnd, win32con.WM_COMMAND, EXIT_COMMAND, 0)
-            assert win32event.WaitForSingleObject(process, 15000) == win32con.WAIT_OBJECT_0
-            assert win32process.GetExitCodeProcess(process) == 0
-            _wait_until(lambda: not _listeners() and not _started_processes(exe)
-                        and not any(item.is_running() for item in tracked.values()), 12,
-                        "Lummix or WebView processes survived the normal shutdown")
-            _stage(version, number, "launcher, services and WebView exited cleanly")
-            return {"version": version, "trial": number, "visibleWindowMs": round(visible_ms, 2),
-                    "desktopReadyMs": round(ready_ms, 2), "windowPid": window_pid,
-                    "lummixWorkingSetBytes": sum(row["workingSetBytes"] for row in product),
-                    "webViewWorkingSetBytes": sum(row["workingSetBytes"] for row in webview),
-                    "lummixProcesses": product, "webViewProcesses": webview, "shutdownClean": True}
-    finally:
-        # The worker's Windows Job is the fallback owner on failure. Closing
-        # an already disconnected browser here can wait on the CDP transport.
-        if process:
-            process.Close()
-        if thread:
-            thread.Close()
-        u.CloseDesktop(desktop)
+        def child_class(child, _):
+            children.append(win32gui.GetClassName(child))
+            return True
+
+        win32gui.EnumChildWindows(hwnd, child_class, None)
+        assert any("Chrome" in item for item in children), children
+        product, webview, ids = _snapshot(exe, window_pid, renderer_profile)
+        tracked = {item: psutil.Process(item) for item in ids if psutil.pid_exists(item)}
+        assert product and webview
+        _stage(version, number, "requesting normal exit")
+        win32gui.PostMessage(hwnd, win32con.WM_COMMAND, EXIT_COMMAND, 0)
+        assert process.wait(timeout=15) == 0, process.returncode
+        _wait_until(lambda: not _listeners() and not _started_processes(exe)
+                    and not any(item.is_running() for item in tracked.values()), 12,
+                    "Lummix or WebView processes survived the normal shutdown")
+        _stage(version, number, "launcher, services and WebView exited cleanly")
+        return {"version": version, "trial": number, "visibleWindowMs": round(visible_ms, 2),
+                "desktopReadyMs": round(ready_ms, 2), "windowPid": window_pid,
+                "lummixWorkingSetBytes": sum(row["workingSetBytes"] for row in product),
+                "webViewWorkingSetBytes": sum(row["workingSetBytes"] for row in webview),
+                "lummixProcesses": product, "webViewProcesses": webview, "shutdownClean": True}
 
 
 def _stage(version, number, message):
@@ -386,7 +349,7 @@ def compare_desktop(before_exe: Path, after_exe: Path, work_dir: Path, evidence_
                for key in fields},
         }
     return {"trials": trials, "summary": summaries, "pairCount": 4,
-            "environment": "fresh per-user and Evergreen WebView2 profiles on a private Win32 desktop",
+            "environment": "fresh per-user and Evergreen WebView2 profiles on the hosted runner desktop",
             "workingSet": "Summed per-process RSS bytes at mixer readiness, shared pages may count more than once"}
 
 
