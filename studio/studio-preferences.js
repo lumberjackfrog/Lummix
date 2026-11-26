@@ -30,6 +30,23 @@
   })();
   if(native && typeof native.postMessage==='function' && new URL(top.location.href).searchParams.get('view')!=='wrist'){
     const toolbar=el('window-controls'), drag=el('window-drag');
+    const startup=el('start-with-windows'), startupStatus=el('startup-status'), settings=el('settings-dialog');
+    el('startup-row').hidden=false;
+    native.addEventListener('message',({data})=>{
+      if(data?.type!=='lummix-startup-state') return;
+      startup.indeterminate=typeof data.enabled!=='boolean';
+      startup.checked=data.enabled===true;
+      startup.disabled=data.editable!==true;
+      startupStatus.textContent=data.message || '';
+      startupStatus.hidden=!data.message;
+    });
+    const readStartup=()=>{if(settings.open) native.postMessage('startup-state');};
+    new MutationObserver(readStartup).observe(settings,{attributes:true,attributeFilter:['open']});
+    top.addEventListener('focus',readStartup);
+    startup.addEventListener('change',()=>{
+      startup.disabled=true;
+      native.postMessage(startup.checked?'startup-on':'startup-off');
+    });
     document.documentElement.classList.add('native-window');
     toolbar.hidden=false;
     drag.hidden=false;

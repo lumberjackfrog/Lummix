@@ -184,6 +184,7 @@ class StudioTests(unittest.TestCase):
             music=frame.locator("#music")
             expect(setup).to_have_accessible_name("Set up Lummix")
             expect(frame.locator("#window-controls")).to_be_hidden()
+            expect(frame.locator("#startup-row")).to_be_hidden()
             mixer=frame.locator(".mixer")
             expect(mixer).to_have_css("border-top-width","1px")
             self.assertGreater(mixer.bounding_box()["x"],0)
@@ -272,9 +273,14 @@ class StudioTests(unittest.TestCase):
             context.add_init_script("""
               window.WebSocket=class extends EventTarget {close(){} send(){}};
               const bridge=new EventTarget(); window.chrome ||= {}; window.chrome.webview=bridge;
-              window.commands=[]; let maximized=false, fullscreen=false;
+              window.commands=[]; let maximized=false, fullscreen=false, startup=false;
               bridge.postMessage=command=>{
                 window.commands.push(command);
+                if(command.startsWith('startup-')){
+                  if(command!=='startup-state')startup=command==='startup-on';
+                  bridge.dispatchEvent(new MessageEvent('message',{data:{type:'lummix-startup-state',enabled:startup,editable:true,message:''}}));
+                  return;
+                }
                 if(command==='maximize')maximized=!maximized;
                 if(command==='fullscreen')fullscreen=!fullscreen;
                 bridge.dispatchEvent(new MessageEvent('message',{data:{type:'lummix-window-state',maximized,fullscreen}}));
@@ -324,6 +330,18 @@ class StudioTests(unittest.TestCase):
             page.mouse.move(x,y);page.mouse.down();page.mouse.move(x+7,y);page.mouse.up()
             self.assertEqual(page.evaluate("window.commands"),
                              ["window-state","minimize","maximize","maximize","fullscreen","fullscreen","close","maximize","drag"])
+            settings.click()
+            startup=frame.get_by_role("switch",name="Start with Windows")
+            expect(startup).to_be_enabled()
+            expect(startup).not_to_be_checked()
+            startup.check()
+            expect(startup).to_be_checked()
+            frame.get_by_role("button",name="Close settings").click()
+            settings.click()
+            expect(startup).to_be_checked()
+            startup.uncheck()
+            expect(startup).not_to_be_checked()
+            self.assertIn("startup-off",page.evaluate("window.commands"))
             with page.expect_response(lambda r:r.url.endswith("/mix/preferences") and r.request.method=="GET"):
                 page.goto(ORIGIN+"/?view=wrist&app=1")
             expect(frame.locator("#close-to-tray")).to_be_enabled()

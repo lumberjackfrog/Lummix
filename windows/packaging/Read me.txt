@@ -8,6 +8,8 @@ Next time, open Lummix and start the mix. The two tall faders control how much v
 
 Close the window to keep mixing in the system tray. Open it again from Start or the tray icon. Choose Exit Lummix to stop and quit. F11 enters full screen. Escape goes back.
 
+To open Lummix when you sign in, turn on Settings > Application > Start with Windows. It defaults to off. You still choose when to start your mix.
+
 If you need to pick a different headset, open Settings > Audio. If Spotify is already playing straight to VB-CABLE, set just Spotify's output device to Default in Windows Settings > System > Sound > Volume mixer. Then check the music input in Lummix.
 
 If you hear your own voice twice in your headphones, check the Lummix recording device's Properties > Listen in Windows Sound. Turn off Listen to this device if you do not want Windows to play a second copy locally.

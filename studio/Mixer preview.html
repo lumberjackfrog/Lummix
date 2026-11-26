@@ -59,7 +59,7 @@ button:active:not(:disabled){outline-offset:2px}
 <script src="spotify-ducking.js?v=mix-bus3" defer></script>
 <script src="idle-art.js" defer></script>
 <script src="live-theme.js" defer></script>
-<script src="studio-preferences.js?v=xs-addon1" defer></script>
+<script src="studio-preferences.js?v=startup1" defer></script>
 </head>
 <body><main class="frame">
 <div class="layout" id="layout">
@@ -148,6 +148,8 @@ button:active:not(:disabled){outline-offset:2px}
 <section class="settings-group" id="app-settings"><h3>Application</h3>
 <div class="setting-line" id="fullscreen-row" hidden><span>Display</span><button type="button" id="app-fullscreen">Toggle fullscreen</button></div>
 <label class="setting-line" id="tray-row" hidden><span>Close to system tray</span><input type="checkbox" id="close-to-tray" role="switch" checked></label>
+<label class="setting-line" id="startup-row" hidden><span>Start with Windows</span><input type="checkbox" id="start-with-windows" role="switch" aria-describedby="startup-status" disabled></label>
+<small id="startup-status" role="status" hidden></small>
 <div class="setting-line" id="exit-row" hidden><span>Quit Lummix completely</span><button type="button" id="app-exit">Exit app</button></div>
 <small id="preferences-status" role="status" hidden></small>
 </section>

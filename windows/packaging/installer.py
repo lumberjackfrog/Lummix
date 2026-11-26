@@ -9,7 +9,7 @@ import zipfile
 import msilib
 from msilib import schema, sequence
 
-VERSION = "1.0.6"
+VERSION = "1.0.7"
 FAMILY = uuid.UUID("10e85f80-e023-4eb2-9170-71537d744202")
 def guid(text):
     return "{"+str(uuid.uuid5(FAMILY,text)).upper()+"}"
@@ -79,6 +79,7 @@ def main(archive, target):
                       ("RemoveCachedMSI","ShortcutComponent","Lummix.msi","ProductCache",2),
                       ("RemoveEmptyCache","ShortcutComponent",None,"ProductCache",2)])
     add("CustomAction",[("LaunchStudio",210,exe_id,None),
+                        ("RefreshStartup",18,exe_id,"refresh-startup"),
                         ("RemoveWristAddon",82,exe_id,"remove-addon")])
     actions = {"AppSearch","FindRelatedProducts","LaunchConditions","CostInitialize","FileCost","CostFinalize",
                "InstallValidate","InstallInitialize","ProcessComponents","UnpublishFeatures","RemoveShortcuts",
@@ -88,6 +89,7 @@ def main(archive, target):
     add("InstallExecuteSequence", [(name,cond,n) for name,cond,n in sequence.InstallExecuteSequence if name in actions]+
         [("RemoveExistingProducts","LUMMIX_OLD",1501),
          ("RemoveWristAddon",'REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE',3100),
+         ("RefreshStartup","LUMMIX_OLD AND NOT REMOVE",5850),
          ("LaunchStudio",'NOT Installed AND NOT REMOVE AND UILevel >= 3 AND NOT LUMMIX_NO_LAUNCH',6700)])
     add("InstallUISequence",[(name,cond,n) for name,cond,n in sequence.InstallUISequence if name in
                             {"AppSearch","FindRelatedProducts","LaunchConditions","CostInitialize","FileCost","CostFinalize","ExecuteAction"}])

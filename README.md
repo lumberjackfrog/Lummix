@@ -6,7 +6,7 @@ Lummix gives VRChat one microphone for your voice and music. It mixes your Windo
 | --- | --- |
 | [![Lummix desktop mixer with album artwork and separate microphone and Spotify faders](docs/mixer.png)](docs/mixer.png) | [![XSOverlay music drawer with mic mute, music mute, and the music gain slider beside the clock](docs/xsoverlay-wrist.png)](docs/xsoverlay-wrist.png) |
 
-**[Download Lummix 1.0.6 for Windows x64](https://github.com/lumberjackfrog/Lummix/releases/download/v1.0.6/Lummix.Setup.exe)** · [Prerelease notes and SHA-256](https://github.com/lumberjackfrog/Lummix/releases/tag/v1.0.6)
+**[Download Lummix 1.0.7 for Windows x64](https://github.com/lumberjackfrog/Lummix/releases/download/v1.0.7/Lummix.Setup.exe)** · [Prerelease notes and SHA-256](https://github.com/lumberjackfrog/Lummix/releases/tag/v1.0.7)
 
 ## Start a mix
 
@@ -16,7 +16,7 @@ The Windows installer is unsigned. Windows may show a publisher warning, and a P
 2. Open Spotify and click **Set up Lummix**. If VB-CABLE is already ready, go straight to step 3. On a first install, approve the Windows administrator prompt for VB-Audio, restart Windows when convenient, then reopen **Lummix → Set up Lummix**.
 3. In **VRChat → Settings → Audio & Voice → Microphone**, choose **Lummix (VB-Audio Virtual Cable)**, or the exact name shown by setup. Speak and watch the input meter. VRChat remembers the selection separately for desktop and VR mode.
 
-Next session, open Lummix and start the mix. **Stop mix** releases the microphone and music capture.
+Next session, open Lummix and start the mix. To open the app automatically when you sign in, enable **Settings → Application → Start with Windows**. It defaults to off. Starting the mix is always manual. **Stop mix** releases the microphone and music capture.
 
 ## At the controls
 

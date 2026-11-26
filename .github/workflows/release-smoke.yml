@@ -191,6 +191,12 @@ jobs:
               if ($LASTEXITCODE -ne 0) { throw 'Previous release could not save the test profile.' }
             } finally { $env:PYTHONPATH = $targetImports }
             $phases[0] = 'preserved'
+            if ([version]$version -ge [version]'1.0.7') {
+              # A pre-1.0.7 user could already have registered the old executable by hand.
+              $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+              New-Item -Path $runKey -ErrorAction SilentlyContinue | Out-Null
+              New-ItemProperty -Path $runKey -Name Lummix -Value ('"{0}"' -f $priorExe) -PropertyType String -Force | Out-Null
+            }
           }
           for ($cycle = 1; $cycle -le $cycles; $cycle++) {
             $result = Start-Process -FilePath $setup -ArgumentList '/S' -WindowStyle Hidden -Wait -PassThru
@@ -218,6 +224,12 @@ jobs:
                   foreach ($path in $shortcuts) { Assert-Shortcut $path }
                 }
                 Test-InstalledRuntime
+                if ([version]$version -ge [version]'1.0.7') {
+                  $startupArgs = @()
+                  if ($env:UPGRADE_FROM) { $startupArgs += '--upgraded' }
+                  python -B windows/tests/verify_sign_in.py $exe @startupArgs
+                  if ($LASTEXITCODE -ne 0) { throw 'Installed sign-in switch or launcher failed.' }
+                }
               } elseif ($exeHash -ne $firstExeHash -or $product -ne $firstProduct) {
                 throw 'Reinstall changed the launcher hash or MSI product.'
               }
@@ -241,6 +253,10 @@ jobs:
                 }
               }
             } finally {
+              if ($cycle -eq $cycles -and [version]$version -ge [version]'1.0.7') {
+                $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+                New-ItemProperty -Path $runKey -Name Lummix -Value ('"{0}" --startup' -f $exe) -PropertyType String -Force | Out-Null
+              }
               $arguments = "/x $product /qn /norestart"
               if ($cycles -gt 1) {
                 $arguments += ' /l*v "{0}"' -f (Join-Path $qa "msi-uninstall-$cycle.log")
@@ -249,6 +265,10 @@ jobs:
               if ($removed.ExitCode -ne 0) { throw "Uninstall cycle $cycle exited $($removed.ExitCode)." }
             }
             if (Test-Path -LiteralPath (@($exe, $cache[0].FullName) + $shortcuts) | Where-Object { $_ }) { throw 'Uninstall left a release file behind.' }
+            if ([version]$version -ge [version]'1.0.7' -and
+                (Get-ItemPropertyValue -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name Lummix -ErrorAction SilentlyContinue)) {
+              throw 'Uninstall left an automatic Lummix launch behind.'
+            }
             if ($cycles -gt 1) {
               foreach ($name in $saved.settingsHashes.Keys) {
                 $hash = (Get-FileHash -LiteralPath (Join-Path $profile $name)).Hash

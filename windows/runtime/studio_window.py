@@ -212,6 +212,14 @@ class StudioWindow:
         elif command in RESIZE_COMMANDS:gui.PostMessage(self.hwnd,wc.WM_COMMAND,RESIZE,RESIZE_COMMANDS[command])
         elif command=="close":gui.PostMessage(self.hwnd,wc.WM_CLOSE,0,0)
         elif command=="window-state":self.send_window_state(force=True)
+        elif command in ("startup-state","startup-on","startup-off") and args.Source==NATIVE:
+            from sign_in import SignIn
+            startup = SignIn()
+            try:
+                state = startup.state() if command=="startup-state" else startup.change(command=="startup-on")
+            except OSError:
+                state = dict(enabled=None, editable=False, message="Lummix could not read or change Windows Startup apps.")
+            self.web.PostWebMessageAsJson(json.dumps(dict(type="lummix-startup-state", **state)))
         return 0
 
     def accelerator(self,sender,args):

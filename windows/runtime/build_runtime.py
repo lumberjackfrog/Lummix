@@ -82,7 +82,7 @@ def main():
         archive.write_bytes(cable_setup.download())
     with cable_setup.package(archive.read_bytes):
         pass
-    args = [sys.executable,"-m","PyInstaller","--noconfirm","--onedir","--console","--noupx",
+    args = [sys.executable,"-m","PyInstaller","--noconfirm","--onedir","--windowed","--noupx",
             "--additional-hooks-dir",str(HERE/"hooks"),"--name","Lummix Helper","--icon",str(SRC/"packaging/Lummix.ico"),"--paths",str(SRC),"--distpath",str(DIST),
             "--workpath",str(BUILD/"analysis"),"--specpath",str(BUILD)]
     # Package the system UIA typelib wrappers so portable installs can run read-only.

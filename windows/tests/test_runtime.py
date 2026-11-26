@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -132,6 +133,12 @@ def main(installed_exe=None):
                 shutil.copy2(UI/unquote(name),root/"studio"/unquote(name))
         else:
             exe = str(installed_exe.resolve(strict=True))
+        image = Path(exe).read_bytes()
+        pe_offset, = struct.unpack_from("<I", image, 0x3c)
+        assert image[pe_offset:pe_offset+4] == b"PE\0\0"
+        subsystem, = struct.unpack_from("<H", image, pe_offset + 24 + 68)
+        assert subsystem == 2, "Explorer would allocate a console before the mixer opens"
+        report["windowsGuiSubsystem"] = True
         cwd = Path(folder)/"Unrelated working directory"
         cwd.mkdir()
         log = EVIDENCE/"private-runtime-test.log"

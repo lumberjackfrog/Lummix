@@ -77,9 +77,6 @@ def ensure(name,port,helper,owned):
     raise RuntimeError(f"The {name} service did not start on port {port}. Extract the complete download and try again.")
 
 def launch():
-    if getattr(sys,"frozen",False):
-        # Only the local service modes need a console pipe.
-        kernel.FreeConsole()
     user.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
     import win32gui
     from studio_window import CAN_REOPEN, CLASS, OPEN, run

@@ -107,6 +107,25 @@ def start_wrist(bind, linked):
     serve(ThreadingHTTPServer((bind,41836),LocalWrist), linked)
 
 
+def helper_streams():
+    """Windowed builds have no terminal. Keep the pipes passed by the parent or diagnostics."""
+    import _winapi
+    import msvcrt
+
+    for name, number, mode in (("stdin", -10, "r"), ("stdout", -11, "w"), ("stderr", -12, "w")):
+        if getattr(sys, name) is not None:
+            continue
+        handle = _winapi.GetStdHandle(number)
+        if handle and handle != -1:
+            process = _winapi.GetCurrentProcess()
+            copy = _winapi.DuplicateHandle(process, handle, process, 0, False, _winapi.DUPLICATE_SAME_ACCESS)
+            fd = msvcrt.open_osfhandle(copy, os.O_BINARY | (os.O_RDONLY if mode == "r" else os.O_WRONLY))
+            stream = open(fd, mode, encoding="utf-8", errors="replace")
+        else:
+            stream = open(os.devnull, mode, encoding="utf-8")
+        setattr(sys, name, stream)
+
+
 def main():
     # The second loopback address is exclusively for release QA alongside the running studio.
     bind = "127.0.0.2" if os.getenv("LUMMIX_QA_LOOPBACK") == "2" else "127.0.0.1"
@@ -114,9 +133,20 @@ def main():
     linked = "--parent-stdin" in mode
     if linked:
         mode.remove("--parent-stdin")
+    if mode == ["--startup"]:
+        from sign_in import SignIn
+        if not SignIn().state()["enabled"]:
+            return
+        mode = ["launch"]
     if mode == ["launch"] or (not mode and EXECUTABLE.stem.lower() == "lummix"):
         from lummix_window import launch
         launch()
+        return
+    if getattr(sys, "frozen", False):
+        helper_streams()
+    if mode == ["refresh-startup"]:
+        from sign_in import SignIn
+        SignIn().refresh_after_upgrade()
     elif mode == ["name-cable"]:
         from cable_alias import ensure
         result=ensure()
@@ -133,6 +163,8 @@ def main():
         from xsoverlay_service import make_server
         serve(make_server(wrist_sources, DATA, bind), linked)
     elif mode == ["remove-addon"]:
+        from sign_in import SignIn
+        SignIn().change(False)
         from xsoverlay_install import AddonInstall
         addon = AddonInstall(wrist_sources, DATA)
         if addon.status().get("canRemove"):
