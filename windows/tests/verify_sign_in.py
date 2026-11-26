@@ -1,6 +1,7 @@
 """Exercise the installed Settings switch and the exact command Windows runs at sign-in."""
 import argparse
 from contextlib import contextmanager
+import json
 import os
 from pathlib import Path
 import socket
@@ -38,14 +39,17 @@ def settings(command, profile, chromium):
         while time.monotonic() < until:
             assert proc.poll() is None, "The mixer exited before the sign-in test could open Settings"
             try:
-                with urlopen(endpoint + "/json/version", timeout=1):
-                    break
+                with urlopen(endpoint + "/json/list", timeout=1) as response:
+                    if any(t.get("type")=="page" and t.get("url", "").startswith("http://127.0.0.1:41835/")
+                           for t in json.load(response)):
+                        break
             except (URLError, OSError):
-                time.sleep(.2)
+                pass
+            time.sleep(.2)
         else:
             raise RuntimeError("The native WebView did not open")
         browser = chromium.connect_over_cdp(endpoint)
-        page = browser.contexts[0].pages[0]
+        page = next(p for context in browser.contexts for p in context.pages if p.url.startswith("http://127.0.0.1:41835/"))
         frame = page.frame_locator("#canvas")
         frame.get_by_role("button", name="Settings", exact=True).click(timeout=30000)
         switch = frame.get_by_role("switch", name="Start with Windows")

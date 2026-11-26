@@ -182,7 +182,13 @@ def main(installed_exe=None):
                 assert fetch(41835,"/private-runtime-test.log").status_code == 404
                 report["studioAssetsExact"] = len(STUDIO_FILES)
                 report["wrist"] = fetch(41836,"/lummix-health").json()
-                assert fetch(41836,"/setup-status",timeout=35).json()["state"] in ("ready","missing","partial")
+                cable_state = fetch(41836,"/setup-status",timeout=35).json()["state"]
+                if cable_state == "unavailable":
+                    # A cold Windows CIM provider can time out on its first enumeration.
+                    # Wait for the same eight-second cache expiry that the app uses.
+                    time.sleep(8.2)
+                    cable_state = fetch(41836,"/setup-status",timeout=35).json()["state"]
+                assert cable_state in ("ready","missing","partial"), cable_state
                 assert fetch(41836,"/preview").status_code in (200,302)
                 mix = fetch(41838,"/mix/gains").json()
                 assert mix["engineAvailable"] and not mix["routeActive"]

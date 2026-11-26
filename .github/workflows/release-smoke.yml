@@ -125,6 +125,10 @@ jobs:
           FIRST_DRIVER: ${{ inputs.first_driver }}
         run: |
           $version = $env:RELEASE_TAG.Substring(1)
+          if ([version]$version -ge [version]'1.0.7') {
+            Start-Service AudioEndpointBuilder
+            Start-Service Audiosrv
+          }
           $setup = Join-Path $env:RUNNER_TEMP 'lummix-release/Lummix.Setup.exe'
           $exe = Join-Path $env:LOCALAPPDATA "Programs/Lummix/$version/Lummix.exe"
           $shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'Lummix/Lummix.lnk'
