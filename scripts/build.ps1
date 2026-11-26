@@ -34,15 +34,11 @@ if (-not $Python) {
 }
 & $Python -c "import sys, struct; assert sys.version_info[:2] == (3,12) and sys.prefix != sys.base_prefix and struct.calcsize('P') == 8, 'Use a CPython 3.12 x64 virtual environment.'"
 if ($LASTEXITCODE -ne 0) { throw 'Unsupported Python environment.' }
-& $Python -m pip --disable-pip-version-check install --only-binary=:all: -r (Join-Path $windows 'requirements-build.txt')
-if ($LASTEXITCODE -ne 0) { throw 'Pinned package restore failed.' }
+& $Python -m pip --disable-pip-version-check install --only-binary=:all: --no-deps 'sounddevice==0.5.6'
+if ($LASTEXITCODE -ne 0) { throw 'Pinned PortAudio wheel restore failed.' }
 & $Python (Join-Path $windows 'runtime\build_runtime.py')
 if ($LASTEXITCODE -ne 0) { throw 'Runtime build failed.' }
-Sign-ReleaseFile (Join-Path $root '.build\frozen\runtime\Lummix Helper.exe')
-Sign-ReleaseFile (Join-Path $root '.build\frozen\runtime\_internal\lummix_dsp.dll')
-Sign-ReleaseFile (Join-Path $root '.build\frozen\runtime\_internal\lummix_media.dll')
-Sign-ReleaseFile (Join-Path $root '.build\frozen\runtime\_internal\lummix_host.dll')
-Sign-ReleaseFile (Join-Path $root '.build\frozen\runtime\Lummix Host.exe')
+Sign-ReleaseFile (Join-Path $root '.build\frozen\runtime\Lummix.exe')
 & $Python (Join-Path $windows 'packaging\package.py')
 if ($LASTEXITCODE -ne 0) { throw 'Runtime archive packaging failed.' }
 $dist = Join-Path $root 'dist'

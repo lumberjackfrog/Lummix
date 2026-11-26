@@ -34,6 +34,64 @@ impl State {
     }
 }
 
+pub(crate) fn enabled(exe: &Path) -> io::Result<bool> {
+    with_startup(exe, |startup| {
+        startup.state().map(|state| state == State::Enabled)
+    })
+}
+
+pub(crate) fn change(exe: &Path, enable: bool) -> io::Result<()> {
+    with_startup(exe, |startup| startup.change(enable).map(|_| ()))
+}
+
+pub(crate) fn refresh(exe: &Path) -> io::Result<()> {
+    with_startup(exe, |startup| startup.refresh())
+}
+
+pub(crate) fn response(exe: &Path, enable: Option<bool>) -> serde_json::Value {
+    let state = with_startup(exe, |startup| match enable {
+        Some(enable) => startup.change(enable),
+        None => startup.state(),
+    });
+    let (enabled, editable, message) = match state {
+        Ok(State::Enabled) => (Some(true), true, ""),
+        Ok(State::Disabled) => (Some(false), true, ""),
+        Ok(State::Unavailable) => (Some(false), false, "Available in the Windows app."),
+        Ok(State::Occupied) => (
+            Some(false),
+            false,
+            "Another startup entry already uses the name Lummix.",
+        ),
+        Ok(State::Blocked) => (
+            Some(false),
+            false,
+            "Windows has disabled Lummix. You can enable it in Settings → Apps → Startup.",
+        ),
+        Err(_) => (
+            None,
+            false,
+            "Lummix could not read or change Windows Startup apps.",
+        ),
+    };
+    serde_json::json!({"type":"lummix-startup-state","enabled":enabled,"editable":editable,"message":message})
+}
+
+fn with_startup<T>(
+    exe: &Path,
+    callback: impl FnOnce(Startup<'_>) -> io::Result<T>,
+) -> io::Result<T> {
+    let profile = env::var_os("LOCALAPPDATA")
+        .ok_or_else(|| io::Error::new(ErrorKind::NotFound, "Missing LOCALAPPDATA"))?;
+    let hive = RegKey::predef(HKEY_CURRENT_USER);
+    callback(Startup {
+        hive: &hive,
+        run: RUN,
+        approval: APPROVAL,
+        executable: exe.to_owned(),
+        install_root: PathBuf::from(profile).join("Programs").join(NAME),
+    })
+}
+
 struct Startup<'a> {
     hive: &'a RegKey,
     run: &'a str,
@@ -174,29 +232,20 @@ pub fn run(args: &[OsString]) -> io::Result<()> {
             "Missing sign-in arguments",
         ));
     };
-    let profile = env::var_os("LOCALAPPDATA")
-        .ok_or_else(|| io::Error::new(ErrorKind::NotFound, "Missing LOCALAPPDATA"))?;
-    let hive = RegKey::predef(HKEY_CURRENT_USER);
-    let startup = Startup {
-        hive: &hive,
-        run: RUN,
-        approval: APPROVAL,
-        executable: PathBuf::from(exe),
-        install_root: PathBuf::from(profile).join("Programs").join(NAME),
-    };
-    let state = match mode.to_str() {
-        Some("state") => startup.state()?,
-        Some("enable") => startup.change(true)?,
-        Some("disable") => startup.change(false)?,
-        Some("refresh") => return startup.refresh(),
-        _ => {
-            return Err(io::Error::new(
-                ErrorKind::InvalidInput,
-                "Unknown sign-in command",
-            ))
-        }
-    };
-    writeln!(io::stdout().lock(), "{}", state.token())
+    let state = with_startup(Path::new(exe), |startup| match mode.to_str() {
+        Some("state") => startup.state().map(Some),
+        Some("enable") => startup.change(true).map(Some),
+        Some("disable") => startup.change(false).map(Some),
+        Some("refresh") => startup.refresh().map(|()| None),
+        _ => Err(io::Error::new(
+            ErrorKind::InvalidInput,
+            "Unknown sign-in command",
+        )),
+    })?;
+    if let Some(state) = state {
+        writeln!(io::stdout().lock(), "{}", state.token())?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

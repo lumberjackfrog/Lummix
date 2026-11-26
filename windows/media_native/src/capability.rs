@@ -13,6 +13,12 @@ use windows::{
 const LIFETIME: Duration = Duration::from_secs(600);
 const TOKEN_LIMIT: usize = 64;
 
+pub(super) fn random_token() -> Result<String> {
+    let mut bytes = [0u8; 32];
+    unsafe { BCryptGenRandom(None, &mut bytes, BCRYPT_USE_SYSTEM_PREFERRED_RNG).ok()? };
+    Ok(URL_SAFE_NO_PAD.encode(bytes))
+}
+
 struct Capability {
     key: String,
     origin: String,
@@ -80,9 +86,7 @@ pub(super) fn apply(operation: u32, store: u64, request: &Value) -> Result<Value
     let now = Instant::now();
     match operation {
         1 => {
-            let mut bytes = [0u8; 32];
-            unsafe { BCryptGenRandom(None, &mut bytes, BCRYPT_USE_SYSTEM_PREFERRED_RNG).ok()? };
-            let key = URL_SAFE_NO_PAD.encode(bytes);
+            let key = random_token()?;
             let evicted = entries.issue(key.clone(), origin, now);
             Ok(json!({"token": key, "evicted": evicted}))
         }

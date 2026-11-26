@@ -26,10 +26,16 @@ type Dispatch = extern "C" fn(
     status: *mut u16,
 ) -> usize;
 
+pub(crate) type NativeDispatch = dyn Fn(&str, &str, &str, &str, &[(String, String)], &[u8]) -> (u16, Vec<u8>) + Send + Sync;
+enum Backend {
+    Legacy(Dispatch),
+    Rust(Box<NativeDispatch>),
+}
+
 struct Media {
     host: String,
     routes: HashMap<String, Methods>,
-    dispatch: Dispatch,
+    dispatch: Backend,
     poll_count: AtomicUsize,
 }
 
@@ -188,36 +194,43 @@ impl Media {
         } else {
             None
         };
-        let meta = json!({
-            "path": path, "query": query, "method":request.method.as_str(),
-            "headers": request.headers(), "oversized": oversized,
-        })
-        .to_string();
-        let mut response = Vec::with_capacity(RESPONSE_LIMIT);
-        let mut status = 0;
-        let size = (self.dispatch)(
-            meta.as_ptr(),
-            meta.len(),
-            body.as_ptr(),
-            body.len(),
-            response.as_mut_ptr(),
-            response.capacity(),
-            &mut status,
-        );
-        if size > RESPONSE_LIMIT || !(100..=599).contains(&status) {
-            return send(
-                request,
-                503,
-                Vec::new(),
-                "application/octet-stream",
-                Some(origin),
-                &[],
-            );
-        }
-        // The callback initializes exactly the returned prefix, with the capacity above.
-        unsafe {
-            response.set_len(size);
-        }
+        let (status,response) = match &self.dispatch {
+            Backend::Rust(dispatch) => {
+                use std::io::Read;
+                let decode = |reader: &mut dyn Read| {
+                    let mut inflated = Vec::new();
+                    reader.take(limit as u64 + 1).read_to_end(&mut inflated)
+                        .map(|_| inflated).unwrap_or_default()
+                };
+                let encoding = single_header(&request,"Content-Encoding").unwrap_or("");
+                let body = if encoding.eq_ignore_ascii_case("gzip") {
+                    decode(&mut flate2::read::GzDecoder::new(&body[..]))
+                } else if encoding.eq_ignore_ascii_case("deflate") {
+                    decode(&mut flate2::read::ZlibDecoder::new(&body[..]))
+                } else { body };
+                if oversized || body.len()>limit {
+                    (413, b"Request body too large".to_vec())
+                } else {
+                    dispatch(request.method.as_str(), &path, origin, &query, request.headers(), &body)
+                }
+            },
+            Backend::Legacy(dispatch) => {
+                let meta = json!({"path":path,"query":query,"method":request.method.as_str(),
+                                 "headers":request.headers(),"oversized":oversized}).to_string();
+                let mut response = Vec::with_capacity(RESPONSE_LIMIT);
+                let mut status = 0;
+                let size = dispatch(meta.as_ptr(),meta.len(),body.as_ptr(),body.len(),
+                                    response.as_mut_ptr(),response.capacity(),&mut status);
+                if size > RESPONSE_LIMIT || !(100..=599).contains(&status) {
+                    (503, Vec::new())
+                } else {
+                    // This compatibility callback initializes exactly the reported prefix.
+                    unsafe {response.set_len(size);}
+                    (status,response)
+                }
+            }
+        };
+        let size=response.len();
         let mime = if status == 413 {
             "text/plain; charset=utf-8"
         } else if size == 0 {
@@ -236,7 +249,7 @@ impl Media {
     }
 }
 
-fn open(config: Value, port: u16, qa: bool, dispatch: Dispatch) -> Option<(Listener, u16)> {
+fn open(config: Value, port: u16, qa: bool, dispatch: Backend) -> Option<(Listener, u16)> {
     let host = config["host"].as_str()?.to_owned();
     let mut routes: HashMap<String, Methods> = HashMap::new();
     for row in config["routes"].as_array()? {
@@ -262,6 +275,12 @@ fn open(config: Value, port: u16, qa: bool, dispatch: Dispatch) -> Option<(Liste
     )
 }
 
+pub(crate) fn listen_native(routes: &[(&str,&str)], qa: bool, dispatch: Box<NativeDispatch>) -> Option<Listener> {
+    let methods: Vec<_> = routes.iter().map(|(method,path)| [*path,*method]).collect();
+    let config = json!({"host":"127.0.0.1:41838","routes":methods});
+    open(config,41838,qa,Backend::Rust(dispatch)).map(|(listener,_)|listener)
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn lummix_media_start(
     config: *const u8,
@@ -280,7 +299,7 @@ pub unsafe extern "C" fn lummix_media_start(
     let Ok(config) = serde_json::from_slice(slice::from_raw_parts(config, length)) else {
         return null_mut();
     };
-    let Some((listener, port)) = open(config, port, qa, dispatch) else {
+    let Some((listener, port)) = open(config, port, qa, Backend::Legacy(dispatch)) else {
         return null_mut();
     };
     bound.write(port);

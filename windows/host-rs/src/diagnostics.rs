@@ -3,6 +3,7 @@ use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::io::{self, ErrorKind, Write};
 use std::path::Path;
+use std::sync::Mutex;
 
 const LIMIT: u64 = 64 * 1024;
 const LOG: &str = "lummix.log";
@@ -41,8 +42,7 @@ extern "system" {
     fn RtlGetVersion(version: *mut OsVersion) -> i32;
 }
 
-fn log_line(version: &str, event: &str) -> io::Result<String> {
-    let mut time = SystemTime::default();
+fn operating_system() -> io::Result<u32> {
     let mut windows = OsVersion {
         size: std::mem::size_of::<OsVersion>() as u32,
         major: 0,
@@ -51,14 +51,23 @@ fn log_line(version: &str, event: &str) -> io::Result<String> {
         platform: 0,
         service_pack: [0; 128],
     };
-    // Both ABI buffers are writable and sized for the structures Win32 expects.
-    unsafe { GetSystemTime(&mut time) };
     if unsafe { RtlGetVersion(&mut windows) } != 0 {
         return Err(io::Error::other("Could not read Windows build"));
     }
+    Ok(windows.build)
+}
+
+pub(crate) fn windows_build() -> u32 {
+    operating_system().unwrap_or(0)
+}
+
+fn log_line(version: &str, event: &str) -> io::Result<String> {
+    let mut time = SystemTime::default();
+    unsafe { GetSystemTime(&mut time) };
+    let build = operating_system()?;
     Ok(format!(
         "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z Lummix={version} WinBuild={} {event}\n",
-        time.year, time.month, time.day, time.hour, time.minute, time.second, windows.build
+        time.year, time.month, time.day, time.hour, time.minute, time.second, build
     ))
 }
 
@@ -140,6 +149,81 @@ fn clear(root: &Path) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+static STATE: Mutex<(u64, bool)> = Mutex::new((0, false));
+
+pub(crate) fn record(root: &Path, version: &str, event: &str) {
+    if valid_event(event) {
+        if let (Ok(_guard), Ok(line)) = (STATE.lock(), log_line(version, event)) {
+            let _ = append(&root.join("Diagnostics"), &line);
+        }
+    }
+}
+
+pub(crate) fn delete_logs(root: &Path) -> io::Result<()> {
+    let mut state = STATE
+        .lock()
+        .map_err(|_| io::Error::other("Diagnostic state unavailable"))?;
+    state.0 = state.0.wrapping_add(1);
+    clear(&root.join("Diagnostics"))
+}
+
+pub(crate) fn snapshot(root: &Path, version: &'static str) {
+    let generation = {
+        let Ok(mut state) = STATE.lock() else {
+            return;
+        };
+        if state.1 {
+            return;
+        }
+        state.1 = true;
+        state.0
+    };
+    let root = root.join("Diagnostics");
+    let spawned = std::thread::Builder::new()
+        .name("Lummix diagnostic snapshot".into())
+        .spawn(move || {
+            let value = crate::local_http::LoopbackClient::new()
+                .ok()
+                .and_then(|http| http.get(41838, "/mix/mic", true, 32769).ok())
+                .filter(|reply| reply.status == 200 && reply.body.len() <= 32768)
+                .and_then(|reply| serde_json::from_slice::<serde_json::Value>(&reply.body).ok())
+                .filter(|value| value.is_object());
+            let summary = value.as_ref().map_or_else(
+                || "audio_status_unavailable".to_owned(),
+                |value| {
+                    let flag = |field| match value[field].as_bool() {
+                        Some(true) => "yes",
+                        Some(false) => "no",
+                        None => "unknown",
+                    };
+                    let capture = value["spotifyCapture"]
+                        .as_str()
+                        .filter(|capture| valid_snapshot("unknown", "unknown", capture))
+                        .unwrap_or("unknown");
+                    format!(
+                        "audio_snapshot mix={} cable={} spotify={}",
+                        flag("routeActive"),
+                        flag("cableReady"),
+                        capture
+                    )
+                },
+            );
+            if let Ok(mut state) = STATE.lock() {
+                if generation == state.0 {
+                    if let Ok(line) = log_line(version, &summary) {
+                        let _ = append(&root, &line);
+                    }
+                }
+                state.1 = false;
+            }
+        });
+    if spawned.is_err() {
+        if let Ok(mut state) = STATE.lock() {
+            state.1 = false;
+        }
+    }
 }
 
 pub fn run(args: &[OsString]) -> io::Result<()> {

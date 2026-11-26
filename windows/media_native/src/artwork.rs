@@ -403,3 +403,197 @@ mod tests {
         assert_eq!(cache.lookup("track", 50.0), json!({"cached":false}));
     }
 }
+
+mod download {
+    use super::{item_url, thumbnail_url, MAX_BYTES};
+    use serde_json::Value;
+    use std::{
+        ffi::c_void,
+        io,
+        ptr::{null, null_mut},
+        time::{Duration, Instant},
+    };
+    use windows::{
+        core::{w, PCWSTR},
+        Win32::Networking::WinHttp::*,
+    };
+
+    struct Internet(*mut c_void);
+
+    impl Internet {
+        fn open(handle: *mut c_void) -> io::Result<Self> {
+            if handle.is_null() {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(Self(handle))
+            }
+        }
+    }
+
+    impl Drop for Internet {
+        fn drop(&mut self) {
+            let _ = unsafe { WinHttpCloseHandle(self.0) };
+        }
+    }
+
+    fn wide(string: &str) -> Vec<u16> {
+        string.encode_utf16().chain([0]).collect()
+    }
+
+    fn remaining(deadline: Instant) -> io::Result<i32> {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "Spotify artwork timed out",
+            ))
+        } else {
+            Ok(remaining.as_millis().clamp(1, i32::MAX as u128) as i32)
+        }
+    }
+
+    fn get(host: &str, path: &str, limit: usize, deadline: Instant) -> io::Result<Vec<u8>> {
+        unsafe {
+            let session = Internet::open(WinHttpOpen(
+                w!("Lummix"),
+                WINHTTP_ACCESS_TYPE_NO_PROXY,
+                PCWSTR::null(),
+                PCWSTR::null(),
+                0,
+            ))?;
+            let timeout = remaining(deadline)?;
+            WinHttpSetTimeouts(session.0, timeout, timeout, timeout, timeout)
+                .map_err(io::Error::other)?;
+            let host = wide(host);
+            let path = wide(path);
+            let connection =
+                Internet::open(WinHttpConnect(session.0, PCWSTR(host.as_ptr()), 443, 0))?;
+            let request = Internet::open(WinHttpOpenRequest(
+                connection.0,
+                w!("GET"),
+                PCWSTR(path.as_ptr()),
+                PCWSTR::null(),
+                PCWSTR::null(),
+                null(),
+                WINHTTP_FLAG_SECURE,
+            ))?;
+            let disabled = WINHTTP_DISABLE_REDIRECTS
+                | WINHTTP_DISABLE_COOKIES
+                | WINHTTP_DISABLE_AUTHENTICATION;
+            WinHttpSetOption(
+                Some(request.0),
+                WINHTTP_OPTION_DISABLE_FEATURE,
+                Some(&disabled.to_ne_bytes()),
+            )
+            .map_err(io::Error::other)?;
+            WinHttpSendRequest(request.0, None, None, 0, 0, 0).map_err(io::Error::other)?;
+            let timeout = remaining(deadline)?;
+            WinHttpSetOption(
+                Some(request.0),
+                WINHTTP_OPTION_RECEIVE_TIMEOUT,
+                Some(&timeout.to_ne_bytes()),
+            )
+            .map_err(io::Error::other)?;
+            WinHttpReceiveResponse(request.0, null_mut()).map_err(io::Error::other)?;
+            let mut status = 0u32;
+            let mut size = 4;
+            WinHttpQueryHeaders(
+                request.0,
+                WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                PCWSTR::null(),
+                Some((&mut status as *mut u32).cast()),
+                &mut size,
+                null_mut(),
+            )
+            .map_err(io::Error::other)?;
+            if status != 200 {
+                return Err(io::Error::other("Unexpected Spotify artwork response"));
+            }
+            let mut length = 0u64;
+            let mut size = 8;
+            match WinHttpQueryHeaders(
+                request.0,
+                WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER64,
+                PCWSTR::null(),
+                Some((&mut length as *mut u64).cast()),
+                &mut size,
+                null_mut(),
+            ) {
+                Ok(()) if length > limit as u64 => {
+                    return Err(io::Error::other("Spotify artwork response too large"))
+                }
+                Ok(()) => {}
+                Err(error)
+                    if error.code().0 as u32 == (0x8007_0000 | ERROR_WINHTTP_HEADER_NOT_FOUND) => {}
+                Err(error) => return Err(io::Error::other(error)),
+            }
+            let mut bytes = Vec::new();
+            let mut buffer = [0; 32768];
+            loop {
+                let timeout = remaining(deadline)?;
+                WinHttpSetOption(
+                    Some(request.0),
+                    WINHTTP_OPTION_RECEIVE_TIMEOUT,
+                    Some(&timeout.to_ne_bytes()),
+                )
+                .map_err(io::Error::other)?;
+                let mut received = 0;
+                WinHttpReadData(
+                    request.0,
+                    buffer.as_mut_ptr().cast(),
+                    buffer.len() as u32,
+                    &mut received,
+                )
+                .map_err(io::Error::other)?;
+                if received == 0 {
+                    break;
+                }
+                if bytes.len() + received as usize > limit {
+                    return Err(io::Error::other("Spotify artwork response too large"));
+                }
+                bytes.extend_from_slice(&buffer[..received as usize]);
+            }
+            remaining(deadline)?;
+            Ok(bytes)
+        }
+    }
+
+    pub(super) fn fetch(item: &str) -> Option<Vec<u8>> {
+        let item = item_url(item)?;
+        let began = Instant::now();
+        let path = format!(
+            "/oembed?url={}",
+            item.replace(':', "%3A").replace('/', "%2F")
+        );
+        let response = get(
+            "open.spotify.com",
+            &path,
+            64 * 1024,
+            began + Duration::from_secs(3),
+        )
+        .ok()?;
+        let meta: Value = serde_json::from_slice(&response).ok()?;
+        let url = thumbnail_url(meta["thumbnail_url"].as_str()?)?;
+        let (host, path) = url.strip_prefix("https://")?.split_once('/')?;
+        get(
+            host,
+            &format!("/{path}"),
+            MAX_BYTES,
+            began + Duration::from_secs(4),
+        )
+        .ok()
+    }
+}
+
+pub(super) fn fetch_cover(item: &str) -> Option<Vec<u8>> {
+    use std::{sync::mpsc, thread, time::Duration};
+    let (send, read) = mpsc::sync_channel(1);
+    let item = item_url(item)?;
+    thread::Builder::new()
+        .name("Lummix artwork HTTP".into())
+        .spawn(move || {
+            let _ = send.send(download::fetch(&item));
+        })
+        .ok()?;
+    read.recv_timeout(Duration::from_secs(4)).ok().flatten()
+}

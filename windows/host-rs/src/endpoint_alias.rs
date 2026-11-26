@@ -65,7 +65,7 @@ const HW: PROPERTYKEY = PROPERTYKEY {
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum AliasError {
+pub enum AliasError {
     Unavailable = 1,
     Collision = 2,
     NotApplied = 3,
@@ -590,7 +590,7 @@ fn apply(input: &Value) -> Result<()> {
 
 type Output = extern "C" fn(*const u8, usize);
 
-fn run(operation: u32, data: &[u8]) -> Result<Value> {
+pub fn run(operation: u32, data: &[u8]) -> Result<Value> {
     if operation == 2 && !private_name() {
         return Err(AliasError::Unavailable);
     }

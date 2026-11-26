@@ -86,7 +86,7 @@ fn valid_duck(patch: &Value) -> bool {
     })
 }
 
-fn valid_profile(kind: &str, data: &Value) -> bool {
+pub fn valid_profile(kind: &str, data: &Value) -> bool {
     match kind {
         "gain" => data["revision"].as_u64().is_some() && valid_gain(&data["gains"]),
         "mic" => {
@@ -201,7 +201,7 @@ struct Mic {
     usable: bool,
 }
 
-struct ControlState {
+pub struct ControlState {
     revision: u64,
     gains: Value,
     read_error: bool,
@@ -497,7 +497,7 @@ impl ControlState {
         Value::Object(result)
     }
 
-    fn call(&mut self, input: &Value) -> Result<Value, &'static str> {
+    pub fn call(&mut self, input: &Value) -> Result<Value, &'static str> {
         match input["op"].as_str().unwrap_or_default() {
             "validate_profile" => Ok(json!(valid_profile(
                 input["kind"].as_str().unwrap_or_default(),

@@ -96,7 +96,7 @@ fn kind(name: &str, hardware: &str, instance: &str, form: &str) -> Option<&'stat
         None
     }
 }
-fn inventory() -> Result<Vec<Value>> {
+pub(crate) fn inventory() -> Result<Vec<Value>> {
     let _com = Com::enter()?;
     unsafe {
         let en: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
@@ -148,8 +148,8 @@ type Count = unsafe extern "C" fn() -> c_int;
 type Endpoint = unsafe extern "C" fn(c_int, *mut *mut c_void) -> c_int;
 #[repr(C)]
 pub struct Pair {
-    mic: c_int,
-    sink: c_int,
+    pub(crate) mic: c_int,
+    pub(crate) sink: c_int,
 }
 const NO_PAIR: Pair = Pair { mic: -1, sink: -1 };
 const RENDERS: [&str; 3] = [

@@ -2,11 +2,11 @@ use super::{
     discard_manager, encode_response, manager, spotify_source, Apartment, Manager, MediaEvent,
     Session,
 };
-use serde_json::json;
+use serde_json::{json, Value};
 use std::{
     ffi::{c_char, CStr},
     ptr,
-    sync::{mpsc, Arc, Mutex},
+    sync::{mpsc, Arc, Condvar, Mutex},
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
@@ -103,24 +103,37 @@ fn connect(tx: &mpsc::Sender<Event>) -> Result<Binding> {
 struct Status {
     sequence: u64,
     events: bool,
+    closed: bool,
 }
 
-fn publish(state: &Mutex<Status>, notify: MediaEvent, events: bool) {
+#[derive(Default)]
+struct Signal {
+    status: Mutex<Status>,
+    changed: Condvar,
+}
+
+fn publish(state: &Signal, notify: Option<MediaEvent>, events: bool) {
     let sequence = {
-        let mut state = state.lock().unwrap();
+        let mut state = state.status.lock().unwrap();
+        if state.closed {
+            return;
+        }
         state.events = events;
         state.sequence += 1;
         state.sequence
     };
-    notify(sequence);
+    state.changed.notify_all();
+    if let Some(notify) = notify {
+        notify(sequence);
+    }
 }
 
 fn listen(
     binding: &mut Binding,
     tx: &mpsc::Sender<Event>,
     rx: &mpsc::Receiver<Event>,
-    state: &Mutex<Status>,
-    notify: MediaEvent,
+    state: &Signal,
+    notify: Option<MediaEvent>,
 ) -> bool {
     loop {
         let mut update = match rx.recv() {
@@ -158,8 +171,8 @@ fn listen(
 fn run(
     tx: mpsc::Sender<Event>,
     rx: mpsc::Receiver<Event>,
-    state: Arc<Mutex<Status>>,
-    notify: MediaEvent,
+    state: Arc<Signal>,
+    notify: Option<MediaEvent>,
     ready: mpsc::Sender<()>,
 ) {
     let Ok(_apartment) = Apartment::enter() else {
@@ -189,19 +202,72 @@ fn run(
     }
 }
 
-struct Feed {
+pub(super) struct Feed {
     tx: mpsc::Sender<Event>,
-    thread: Option<JoinHandle<()>>,
+    thread: Mutex<Option<JoinHandle<()>>>,
     prefix: String,
-    state: Arc<Mutex<Status>>,
+    state: Arc<Signal>,
+}
+
+impl Feed {
+    pub(super) fn new(prefix: String, notify: Option<MediaEvent>) -> std::io::Result<Self> {
+        let (host, rx) = mpsc::channel();
+        let tx = host.clone();
+        let (ready, waited) = mpsc::channel();
+        let state = Arc::new(Signal::default());
+        let worker = state.clone();
+        let thread = thread::Builder::new()
+            .name("Lummix media events".into())
+            .spawn(move || run(tx, rx, worker, notify, ready))?;
+        let _ = waited.recv_timeout(Duration::from_secs(3));
+        Ok(Self {
+            tx: host,
+            thread: Mutex::new(Some(thread)),
+            prefix,
+            state,
+        })
+    }
+
+    fn revision(&self, sequence: u64) -> String {
+        format!("{}.{}", self.prefix, sequence)
+    }
+
+    pub(super) fn read(&self, since: Option<&str>) -> Value {
+        let mut status = self.state.status.lock().unwrap();
+        if status.events && !status.closed && since == Some(self.revision(status.sequence).as_str())
+        {
+            let previous = status.sequence;
+            (status, _) = self
+                .state
+                .changed
+                .wait_timeout_while(status, Duration::from_secs(22), |status| {
+                    status.sequence == previous && !status.closed
+                })
+                .unwrap();
+        }
+        json!({"revision":self.revision(status.sequence),"events":status.events})
+    }
+
+    pub(super) fn shutdown(&self) {
+        {
+            let mut status = self.state.status.lock().unwrap();
+            if !status.closed {
+                status.closed = true;
+                status.events = false;
+                status.sequence += 1;
+            }
+        }
+        self.state.changed.notify_all();
+        let _ = self.tx.send(Event::Stop);
+        if let Some(thread) = self.thread.lock().unwrap().take() {
+            let _ = thread.join();
+        }
+    }
 }
 
 impl Drop for Feed {
     fn drop(&mut self) {
-        let _ = self.tx.send(Event::Stop);
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
+        self.shutdown();
     }
 }
 
@@ -210,33 +276,14 @@ unsafe extern "C" fn lummix_feed_start(
     prefix: *const c_char,
     notify: Option<MediaEvent>,
 ) -> *mut Feed {
-    let Some(notify) = notify else {
-        return ptr::null_mut();
-    };
-    if prefix.is_null() {
+    if prefix.is_null() || notify.is_none() {
         return ptr::null_mut();
     }
     let Ok(prefix) = (unsafe { CStr::from_ptr(prefix) }).to_str() else {
         return ptr::null_mut();
     };
-    let (host, rx) = mpsc::channel();
-    let tx = host.clone();
-    let (ready, waited) = mpsc::channel();
-    let status = Arc::new(Mutex::new(Status::default()));
-    let state = status.clone();
-    let Ok(thread) = thread::Builder::new()
-        .name("Lummix media events".into())
-        .spawn(move || run(tx, rx, state, notify, ready))
-    else {
-        return ptr::null_mut();
-    };
-    let _ = waited.recv_timeout(Duration::from_secs(3));
-    Box::into_raw(Box::new(Feed {
-        tx: host,
-        thread: Some(thread),
-        prefix: prefix.to_owned(),
-        state: status,
-    }))
+    Feed::new(prefix.to_owned(), notify)
+        .map_or(ptr::null_mut(), |feed| Box::into_raw(Box::new(feed)))
 }
 
 #[no_mangle]
@@ -244,15 +291,48 @@ unsafe extern "C" fn lummix_feed_read(feed: *const Feed) -> *mut c_char {
     let Some(feed) = (unsafe { feed.as_ref() }) else {
         return ptr::null_mut();
     };
-    let state = feed.state.lock().unwrap();
-    encode_response(Ok(
-        json!({"revision":format!("{}.{}",feed.prefix,state.sequence),"events":state.events}),
-    ))
+    encode_response(Ok(feed.read(None)))
 }
 
 #[no_mangle]
 unsafe extern "C" fn lummix_feed_close(feed: *mut Feed) {
     if !feed.is_null() {
         drop(unsafe { Box::from_raw(feed) });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shutdown_wakes_all_long_poll_waiters() {
+        let (tx, _rx) = mpsc::channel();
+        let feed = Feed {
+            tx,
+            thread: Mutex::new(None),
+            prefix: "fixture".into(),
+            state: Arc::new(Signal::default()),
+        };
+        publish(&feed.state, None, true);
+        assert_eq!(
+            feed.read(None),
+            json!({"events":true,"revision":"fixture.1"})
+        );
+        thread::scope(|scope| {
+            let waits = (0..4)
+                .map(|_| scope.spawn(|| feed.read(Some("fixture.1"))))
+                .collect::<Vec<_>>();
+            thread::sleep(Duration::from_millis(20));
+            let before = Instant::now();
+            feed.shutdown();
+            for waiter in waits {
+                assert_eq!(
+                    waiter.join().unwrap(),
+                    json!({"events":false,"revision":"fixture.2"})
+                );
+            }
+            assert!(before.elapsed() < Duration::from_secs(1));
+        });
     }
 }

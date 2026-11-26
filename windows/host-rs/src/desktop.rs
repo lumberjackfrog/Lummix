@@ -39,21 +39,21 @@ const UPDATE_CHANGED: u32 = WM_APP + 294;
 const SPOTIFY_CHANGED: u32 = WM_APP + 295;
 const EXIT_TIMER: usize = 17;
 
-const CLOSE_TO_TRAY: u32 = 0;
-const REMEMBER: u32 = 1;
-const BEGIN_EXIT: u32 = 2;
-const FINISH_EXIT: u32 = 3;
-const UPDATE: u32 = 4;
-const SPOTIFY: u32 = 5;
-const WINDOW_FAILED: u32 = 6;
+pub(crate) const CLOSE_TO_TRAY: u32 = 0;
+pub(crate) const REMEMBER: u32 = 1;
+pub(crate) const BEGIN_EXIT: u32 = 2;
+pub(crate) const FINISH_EXIT: u32 = 3;
+pub(crate) const UPDATE: u32 = 4;
+pub(crate) const SPOTIFY: u32 = 5;
+pub(crate) const WINDOW_FAILED: u32 = 6;
 
 type Event = extern "C" fn(u32, *const u8, usize) -> i32;
 
 #[repr(C)]
-struct SavedPlacement {
-    geometry: [f64; 4],
-    screen: [u16; 32],
-    maximized: i32,
+pub(crate) struct SavedPlacement {
+    pub geometry: [f64; 4],
+    pub screen: [u16; 32],
+    pub maximized: i32,
 }
 
 struct Desktop {

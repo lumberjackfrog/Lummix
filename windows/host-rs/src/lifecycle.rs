@@ -167,19 +167,20 @@ impl Drop for Instance {
     }
 }
 
-struct Runtime {
+pub(crate) struct Runtime {
     children: Vec<Child>,
     studio: Option<Listener>,
+    address: Ipv4Addr,
     instance: Instance,
 }
 
 impl Drop for Runtime {
     fn drop(&mut self) {
+        let deadline = Instant::now() + Duration::from_secs(6);
         for child in &mut self.children {
             drop(child.stdin.take());
         }
         drop(self.studio.take());
-        let deadline = Instant::now() + Duration::from_secs(6);
         while Instant::now() < deadline {
             self.children
                 .retain_mut(|child| matches!(child.try_wait(), Ok(None)));
@@ -187,6 +188,13 @@ impl Drop for Runtime {
                 break;
             }
             thread::sleep(Duration::from_millis(20));
+        }
+        for child in &mut self.children {
+            // These are our own CLI workers. A failed graceful drain must not
+            // keep an obsolete media listener alive after releasing the mutex.
+            if child.kill().is_ok() {
+                let _ = child.wait();
+            }
         }
         // Release the window's instance mutex after signaling the owned helpers.
     }
@@ -196,7 +204,7 @@ impl Runtime {
     fn ensure_studio(&mut self, root: PathBuf, http: &LoopbackClient) -> Result<(), u32> {
         let service = Service::Studio;
         let port = service.port();
-        let address = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+        let address = SocketAddr::from((self.address, port));
         if TcpStream::connect_timeout(&address, Duration::from_millis(400)).is_ok() {
             return if service.matches(http, false) {
                 Ok(())
@@ -204,7 +212,7 @@ impl Runtime {
                 Err(PORT_CONFLICT + service as u32)
             };
         }
-        let (listener, _) = embedded_studio::listen(root, Ipv4Addr::LOCALHOST, port)
+        let (listener, _) = embedded_studio::listen(root, self.address, port)
             .ok_or(SERVICE_FAILED + service as u32)?;
         self.studio = Some(listener);
         if !service.matches(http, false) {
@@ -221,7 +229,7 @@ impl Runtime {
         modern: bool,
     ) -> Result<(), u32> {
         let port = service.port();
-        let address = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+        let address = SocketAddr::from((self.address, port));
         if TcpStream::connect_timeout(&address, Duration::from_millis(400)).is_ok() {
             return if service.matches(http, modern) {
                 Ok(())
@@ -234,6 +242,14 @@ impl Runtime {
         }
         let child = Command::new(helper)
             .args([service.name(), "--parent-stdin"])
+            .env(
+                "LUMMIX_QA_LOOPBACK",
+                if self.address == Ipv4Addr::LOCALHOST {
+                    "1"
+                } else {
+                    "2"
+                },
+            )
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -256,14 +272,32 @@ impl Runtime {
     }
 }
 
-fn prepare(helper: PathBuf, studio_root: PathBuf, modern: bool) -> Result<Runtime, u32> {
+pub(crate) fn prepare(helper: PathBuf, studio_root: PathBuf, modern: bool) -> Result<Runtime, u32> {
+    prepare_on(helper, studio_root, modern, false)
+}
+
+pub(crate) fn prepare_on(
+    helper: PathBuf,
+    studio_root: PathBuf,
+    modern: bool,
+    qa: bool,
+) -> Result<Runtime, u32> {
+    let name = if qa {
+        w!("Local\\LummixNativeStudioQa")
+    } else {
+        w!("Local\\LummixNativeStudio")
+    };
     let mut runtime = Runtime {
         children: Vec::new(),
         studio: None,
-        instance: Instance::acquire(w!("Local\\LummixNativeStudio")).map_err(|_| WINDOWS_ERROR)?,
+        address: Ipv4Addr::new(127, 0, 0, if qa { 2 } else { 1 }),
+        instance: Instance::acquire(name).map_err(|_| WINDOWS_ERROR)?,
     };
-    let http = LoopbackClient::new().map_err(|_| WINDOWS_ERROR)?;
+    let http = LoopbackClient::at_qa_address(qa).map_err(|_| WINDOWS_ERROR)?;
     if !runtime.instance.owned {
+        if qa {
+            return Err(ALREADY_RUNNING);
+        }
         for _ in 0..60 {
             let window = unsafe { FindWindowW(CLASS, null()) };
             let mut can_reopen = 0;

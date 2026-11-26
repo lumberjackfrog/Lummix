@@ -150,7 +150,7 @@ fn registry_endpoints() -> io::Result<Value> {
     Ok(flows)
 }
 
-fn qualified_live(mut input: Value) -> Option<Value> {
+pub fn qualified_live(mut input: Value) -> Option<Value> {
     input
         .as_object_mut()?
         .insert("endpoints".into(), registry_endpoints().ok()?);
@@ -198,14 +198,14 @@ fn valid_archive_layout(data: &Value) -> bool {
     seen.contains("vbcable_setup_x64.exe") && seen.contains("vbaudio_cable64_win10.cat")
 }
 
-fn trusted_signatures(input: &Value) -> bool {
+pub fn trusted_signatures(input: &Value) -> bool {
     input["installerStatus"] == "Valid"
         && eq(&input["installerThumbprint"], SETUP_THUMBPRINT)
         && input["catalogStatus"] == "Valid"
         && eq(&input["catalogSigner"], PUBLISHER)
 }
 
-fn restart_pending(input: &Value) -> Option<bool> {
+pub fn restart_pending(input: &Value) -> Option<bool> {
     let pending = &input["pending"];
     let boot = &input["boot"];
     let old_event = pending["event"].as_str().filter(|value| !value.is_empty());
@@ -323,7 +323,7 @@ impl Drop for InstallerProcess {
     }
 }
 
-fn start_installer(folder: PathBuf, proof: &Value) -> u32 {
+pub fn start_installer(folder: PathBuf, proof: &Value) -> u32 {
     if !folder.is_absolute() || !trusted_signatures(proof) {
         return LAUNCH_FAILED;
     }

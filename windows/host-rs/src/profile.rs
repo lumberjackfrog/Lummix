@@ -180,7 +180,7 @@ fn strict_value(raw: &RawValue, depth: usize) -> Result<Value, u32> {
     }
 }
 
-fn decode(data: &[u8]) -> Result<Map<String, Value>, u32> {
+pub(crate) fn decode(data: &[u8]) -> Result<Map<String, Value>, u32> {
     let data = data.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(data);
     let raw: &RawValue = serde_json::from_slice(data).map_err(|_| BAD_JSON)?;
     match strict_value(raw, 0)? {
@@ -257,11 +257,11 @@ fn load(
     path: &Path,
     backup: &Path,
     key: &str,
-    check: Validate,
+    check: &impl Fn(&Map<String, Value>) -> Result<(), u32>,
     warnings: &mut u32,
 ) -> Result<Map<String, Value>, u32> {
     let primary = read(path).and_then(|data| {
-        validate(&data, check)?;
+        check(&data)?;
         Ok(data)
     });
     match primary {
@@ -276,7 +276,7 @@ fn load(
             let Value::Object(data) = section else {
                 return Err(BAD_JSON);
             };
-            validate(&data, check)?;
+            check(&data)?;
             if write(path, &data).is_err() {
                 *warnings |= RESTORE_FAILED;
             }
@@ -307,33 +307,157 @@ fn transaction(
             mirror(&backup, key, &data, warnings);
         }
         1 => {
-            load(
-                path,
-                &backup,
-                key,
-                check.ok_or(ERROR_INVALID_PARAMETER)?,
-                warnings,
-            )?;
+            let check = check.ok_or(ERROR_INVALID_PARAMETER)?;
+            load(path, &backup, key, &|data| validate(data, check), warnings)?;
         }
         2 => {
             let check = check.ok_or(ERROR_INVALID_PARAMETER)?;
-            let changes = decode(data)?;
-            let previous = match load(path, &backup, key, check, warnings) {
-                Ok(data) => data,
-                Err(status) if recoverable(status) => Map::new(),
-                Err(status) => return Err(status),
-            };
-            let mut merged = previous.clone();
-            merged.extend(changes);
-            validate(&merged, check)?;
-            if merged != previous {
-                write(path, &merged)?;
-                mirror(&backup, key, &merged, warnings);
-            }
+            merge(
+                path,
+                &backup,
+                key,
+                decode(data)?,
+                &|data| validate(data, check),
+                warnings,
+            )?;
         }
         _ => return Err(ERROR_INVALID_PARAMETER),
     }
     Ok(())
+}
+
+pub(crate) fn load_profile(
+    path: &Path,
+    valid: impl Fn(&Map<String, Value>) -> bool,
+) -> Result<Map<String, Value>, u32> {
+    let folder = path.parent().ok_or(ERROR_INVALID_PARAMETER)?;
+    let key = path
+        .file_name()
+        .and_then(|key| key.to_str())
+        .ok_or(ERROR_INVALID_PARAMETER)?;
+    let _lock = ProfileLock::acquire(folder).map_err(error_number)?;
+    load(
+        path,
+        &folder.join(BACKUP),
+        key,
+        &|data| {
+            if valid(data) {
+                Ok(())
+            } else {
+                Err(BAD_SCHEMA)
+            }
+        },
+        &mut 0,
+    )
+}
+
+pub(crate) fn save_profile(path: &Path, data: &Map<String, Value>) -> Result<(), u32> {
+    let encoded = serde_json::to_vec(data).map_err(|_| BAD_JSON)?;
+    transaction(path, 0, &encoded, None, &mut 0)
+}
+
+pub(crate) fn valid_studio_settings(settings: &Map<String, Value>) -> bool {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    settings.iter().all(|(key, value)| match key.as_str() {
+        "sounds" | "followTheme" | "dark" | "companion" | "globalPulse" | "closeToTray" => {
+            value.is_boolean()
+        }
+        "snap" => matches!(value.as_u64(), Some(0 | 5 | 10 | 20)),
+        "background" => matches!(value.as_str(), Some("album" | "custom")),
+        "image" => value
+            .as_str()
+            .filter(|text| text.len() < 400_000)
+            .and_then(|text| text.strip_prefix("data:image/jpeg;base64,"))
+            .and_then(|encoded| STANDARD.decode(encoded).ok())
+            .is_some_and(|bytes| {
+                bytes.starts_with(b"\xff\xd8\xff") && bytes.ends_with(b"\xff\xd9")
+            }),
+        _ => false,
+    })
+}
+
+pub(crate) fn update_profile(
+    path: &Path,
+    changes: Map<String, Value>,
+    valid: impl Fn(&Map<String, Value>) -> bool,
+) -> Result<(), u32> {
+    let folder = path.parent().ok_or(ERROR_INVALID_PARAMETER)?;
+    let key = path
+        .file_name()
+        .and_then(|key| key.to_str())
+        .ok_or(ERROR_INVALID_PARAMETER)?;
+    let backup = folder.join(BACKUP);
+    let _lock = ProfileLock::acquire(folder).map_err(error_number)?;
+    let check = |data: &Map<String, Value>| if valid(data) { Ok(()) } else { Err(BAD_SCHEMA) };
+    merge(path, &backup, key, changes, &check, &mut 0)
+}
+
+fn merge(
+    path: &Path,
+    backup: &Path,
+    key: &str,
+    changes: Map<String, Value>,
+    check: &impl Fn(&Map<String, Value>) -> Result<(), u32>,
+    warnings: &mut u32,
+) -> Result<(), u32> {
+    let previous = match load(path, backup, key, check, warnings) {
+        Ok(data) => data,
+        Err(error) if recoverable(error) => Map::new(),
+        Err(error) => return Err(error),
+    };
+    let mut merged = previous.clone();
+    merged.extend(changes);
+    check(&merged)?;
+    if merged != previous {
+        write(path, &merged)?;
+        mirror(backup, key, &merged, warnings);
+    }
+    Ok(())
+}
+
+/// Read/merge the nested Studio preferences under the same cross-process lock as
+/// launcher preferences and backup recovery. Migration only fills absent keys.
+pub(crate) fn studio_preferences(
+    path: &Path,
+    patch: Option<&Map<String, Value>>,
+    migrate: bool,
+) -> Result<Map<String, Value>, u32> {
+    let folder = path.parent().ok_or(ERROR_INVALID_PARAMETER)?;
+    let key = path
+        .file_name()
+        .and_then(|v| v.to_str())
+        .ok_or(ERROR_INVALID_PARAMETER)?;
+    let backup = folder.join(BACKUP);
+    let _lock = ProfileLock::acquire(folder).map_err(error_number)?;
+    let check =
+        |profile: &Map<String, Value>| match profile.get("settings").and_then(Value::as_object) {
+            Some(settings) if valid_studio_settings(settings) => Ok(()),
+            _ => Err(BAD_SCHEMA),
+        };
+    let mut existing = match load(path, &backup, key, &check, &mut 0) {
+        Ok(mut doc) => doc
+            .remove("settings")
+            .and_then(|s| s.as_object().cloned())
+            .ok_or(BAD_SCHEMA)?,
+        Err(2 | 3) => Map::new(),
+        Err(e) => return Err(e),
+    };
+    if let Some(patch) = patch {
+        let mut changed = false;
+        for (k, v) in patch {
+            if (!migrate || !existing.contains_key(k)) && existing.get(k) != Some(v) {
+                existing.insert(k.clone(), v.clone());
+                changed = true;
+            }
+        }
+        if changed {
+            let doc = Map::from_iter([("settings".to_owned(), Value::Object(existing.clone()))]);
+            check(&doc)?;
+            write(path, &doc)?;
+            mirror(&backup, key, &doc, &mut 0);
+        }
+    }
+    Ok(existing)
 }
 
 /// The path span, supplied data span, and writable warnings pointer must live through the call.
