@@ -9,24 +9,36 @@ import time
 import traceback
 
 from playwright.sync_api import expect, sync_playwright
-from win32com.shell import shell, shellcon
+import win32api
+import win32con
+import win32profile
+import win32security
 from verify_sign_in import settings
 
 
 def verify(folder, version):
     assert not ctypes.windll.shell32.IsUserAnAdmin(), "Spotify setup must run as a standard user"
-    local = Path(shell.SHGetFolderPath(0, shellcon.CSIDL_LOCAL_APPDATA, None, 0))
-    roaming = Path(shell.SHGetFolderPath(0, shellcon.CSIDL_APPDATA, None, 0))
-    profile = Path(shell.SHGetFolderPath(0, shellcon.CSIDL_PROFILE, None, 0))
-    os.environ.update(LOCALAPPDATA=str(local), APPDATA=str(roaming), USERPROFILE=str(profile),
-                      TEMP=str(local/"Temp"), TMP=str(local/"Temp"))
-    (local/"Temp").mkdir(exist_ok=True)
+    # Secondary logon can inherit the runner administrator's environment even with a loaded user hive.
+    token = win32security.OpenProcessToken(win32api.GetCurrentProcess(), win32con.TOKEN_QUERY | win32con.TOKEN_DUPLICATE)
+    try:
+        profile = Path(win32profile.GetUserProfileDirectory(token))
+        account_env = win32profile.CreateEnvironmentBlock(token, False)
+    finally:
+        token.Close()
     assert profile.name.startswith("LumSpotifyQA"), "Disposable test account required"
+    os.environ.update(account_env)
+    local = Path(os.environ["LOCALAPPDATA"])
+    roaming = Path(os.environ["APPDATA"])
+    assert Path(os.environ["USERPROFILE"]) == profile and local.is_relative_to(profile) and roaming.is_relative_to(profile)
+    (local/"Temp").mkdir(parents=True, exist_ok=True)
+    os.environ.update(TEMP=str(local/"Temp"), TMP=str(local/"Temp"))
+    print("Using the new standard account's own Windows profile.", flush=True)
     candidates = (roaming/"Spotify/Spotify.exe", local/"Spotify/Spotify.exe", local/"Programs/Spotify/Spotify.exe")
     assert not any(p.is_file() for p in candidates)
     subprocess.run([str(folder/"Lummix.Setup.exe"), "/S"], check=True, timeout=90)
     exe = local/"Programs/Lummix"/version/"Lummix.exe"
     assert exe.is_file()
+    print("Lummix installed for the new account.", flush=True)
     with sync_playwright() as pw:
         with settings([str(exe)], str(local), pw.chromium, return_frame=True) as frame:
             frame.get_by_role("button", name="Close settings").click()
@@ -34,6 +46,7 @@ def verify(folder, version):
             action = frame.locator("#install-player")
             expect(action).to_be_visible(timeout=30000)
             action.click()
+            print("Clicked Install Spotify desktop in the installed mixer.", flush=True)
             # No credentials, playback, VRChat or driver installation are required for this path.
             end = time.monotonic()+185
             while time.monotonic()<end and not any(p.is_file() for p in candidates):
