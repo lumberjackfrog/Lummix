@@ -68,7 +68,8 @@ def route(pid):
     from spotify_process_feed import SpotifyProcessFeed
     target=(pid,psutil.Process(pid).create_time(),"generated")
     def feed(ids, **kwargs):
-        return SpotifyProcessFeed(ids,discover=lambda:target,guard=lambda *_:False,**kwargs)
+        from source_fixture import synthetic_probe
+        return SpotifyProcessFeed(ids,probe=synthetic_probe(lambda:target,lambda:False),**kwargs)
     mixer=CableMixer(process_feed_factory=feed)
     _,mic,sink=indices()
     mixer.start_mic_route(mic,sink,signed_render_ids={"isolated test"})

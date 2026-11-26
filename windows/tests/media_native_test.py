@@ -1,5 +1,6 @@
 """Smoke-test the actual Rust media DLL against Windows and the HTTP entry point."""
 import importlib
+import ctypes
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -27,8 +28,28 @@ class NativeMediaTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(native.peak([]))
         self.assertTrue(all(handle and pid for handle, pid in native.call(13)))
         self.assertEqual(native.call(14, 0, 0), "")
+        source = native.dll.lummix_audio_source
+        source.argtypes = (ctypes.c_char_p, ctypes.POINTER(ctypes.c_uint32),
+                           ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_uint32))
+        source.restype = ctypes.c_int
+        pid, created, edition = ctypes.c_uint32(99), ctypes.c_double(99), ctypes.c_uint32(99)
+        result = native.worker.submit(source, b'["lummix-impossible-endpoint"]',
+                                      ctypes.byref(pid), ctypes.byref(created), ctypes.byref(edition)).result()
+        self.assertIn(result, {0, 2, 4})
+        self.assertEqual((pid.value, created.value, edition.value), (0, 0.0, 0))
+        origin = "http://127.0.0.1:41835"
+        store = native.capability(0)
+        try:
+            token = native.capability(1, store, origin=origin)["token"]
+            self.assertRegex(token, r"^[A-Za-z0-9_-]{43}$")
+            self.assertTrue(native.capability(2, store, token=token, origin=origin))
+            self.assertFalse(native.capability(2, store, token=token, origin="http://localhost:41835"))
+            native.capability(3, store, token=token)
+            self.assertFalse(native.capability(2, store, token=token, origin=origin))
+        finally:
+            native.capability(4, store)
         service = importlib.import_module("spotify-helper")
-        headers = {"Host": "media-test", "Origin": "http://127.0.0.1:41835"}
+        headers = {"Host": "media-test", "Origin": origin}
         profile = TemporaryDirectory()
         self.addCleanup(profile.cleanup)
         mix = MixOutput(path=Path(profile.name) / "gains.json", mixer=Mock())

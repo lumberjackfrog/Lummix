@@ -70,7 +70,7 @@ with TemporaryDirectory() as folder, patch.dict(os.environ, {"LOCALAPPDATA":fold
     def inventory():
         data = dict(boot=boot[0], drivers=[driver],
                     endpoints={"Render":[endpoint | {"key":render}], "Capture":[endpoint | {"key":capture}]})
-        return s.check(0,data)
+        return s.check(s.Check.FIXTURE_PAIR,data)
     reopened=s.Controller(probe,reject,marker=marker)
     assert reopened.status()["state"]=="restart-needed"
     assert reopened.begin()["state"]=="restart-needed" and reopened.thread is None
@@ -96,8 +96,20 @@ with TemporaryDirectory() as folder:
     assert s.Controller(lambda:s.shape("ready") | {"boot":restarted},reject,marker=marker).status()["state"]=="ready"
     assert not marker.exists()
 
-try:
-    with s.package(lambda:b"wrong-content"):raise AssertionError("A changed package was accepted")
-except ValueError as e:
-    assert "reviewed package" in str(e)
+for raw in (b"wrong-content", b"\0" * s.SIZE):
+    try:
+        with s.package(lambda:raw):
+            raise AssertionError("A changed package was accepted")
+    except ValueError as e:
+        assert "reviewed package" in str(e)
+
+with TemporaryDirectory() as folder:
+    path = Path(folder)
+    (path/"VBCABLE_Setup_x64.exe").write_bytes(b"tampered installer")
+    evidence = dict(installerStatus="Valid", installerThumbprint="A77952D93229D0EC36E2543081EEA7D125732B9C",
+                    catalogStatus="Valid", catalogSigner="Microsoft Windows Hardware Compatibility Publisher")
+    text = str(path)
+    length = len(text.encode("utf-16-le"))//2
+    proof = json.dumps(evidence).encode("ascii")
+    assert s.native().lummix_cable_launch(text,length,proof,len(proof))==0xFFFFFFFF
 print("Existing, partial, missing, duplicate, consent denied, signature failure, installer failure, same-boot reopen, and restart cases passed with no installer execution.")

@@ -162,58 +162,58 @@ fn capture(
 
 pub struct Capture {
     stop: Arc<OwnedHandle>,
-    worker: JoinHandle<()>,
+    worker: Option<JoinHandle<()>>,
     state: Arc<AtomicI32>,
     engine: Engine,
 }
+pub fn open(engine: &Engine, pid: u32, created: f64) -> Result<Capture> {
+    if pid == 0 || !created.is_finite() {
+        return Err(Error::from_hresult(E_FAIL));
+    }
+    let process = owned(unsafe {
+        OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+            false,
+            pid,
+        )?
+    });
+    let (mut t, mut end, mut kernel, mut user) = (
+        FILETIME::default(),
+        FILETIME::default(),
+        FILETIME::default(),
+        FILETIME::default(),
+    );
+    unsafe {
+        GetProcessTimes(raw(&process), &mut t, &mut end, &mut kernel, &mut user)?;
+    }
+    let ticks = ((t.dwHighDateTime as u64) << 32) | t.dwLowDateTime as u64;
+    if ((ticks as f64 / 10_000_000.0 - 11_644_473_600.0) - created).abs() > 0.001 {
+        return Err(Error::from_hresult(E_FAIL));
+    }
+    let signal = Arc::new(event(true)?);
+    let state = Arc::new(AtomicI32::new(0));
+    let (stop, output, status) = (signal.clone(), engine.clone(), state.clone());
+    let epoch = engine.bus.reset();
+    let worker = thread::Builder::new()
+        .name("Lummix process audio".into())
+        .spawn(move || {
+            let result = capture(pid, process, stop, output, epoch, &status);
+            status.store(
+                result.map(|()| 3).unwrap_or_else(|e| e.code().0),
+                Ordering::Release,
+            );
+        })
+        .map_err(|_| Error::from_hresult(E_FAIL))?;
+    Ok(Capture {
+        stop: signal,
+        worker: Some(worker),
+        state,
+        engine: engine.clone(),
+    })
+}
 #[no_mangle]
 pub extern "C" fn lummix_capture_open(engine: &Engine, pid: u32, created: f64) -> *mut Capture {
-    if pid == 0 || !created.is_finite() {
-        return ptr::null_mut();
-    }
-    let open = || -> Result<Capture> {
-        let process = owned(unsafe {
-            OpenProcess(
-                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
-                false,
-                pid,
-            )?
-        });
-        let (mut t, mut end, mut kernel, mut user) = (
-            FILETIME::default(),
-            FILETIME::default(),
-            FILETIME::default(),
-            FILETIME::default(),
-        );
-        unsafe {
-            GetProcessTimes(raw(&process), &mut t, &mut end, &mut kernel, &mut user)?;
-        }
-        let ticks = ((t.dwHighDateTime as u64) << 32) | t.dwLowDateTime as u64;
-        if ((ticks as f64 / 10_000_000.0 - 11_644_473_600.0) - created).abs() > 0.001 {
-            return Err(Error::from_hresult(E_FAIL));
-        }
-        let signal = Arc::new(event(true)?);
-        let state = Arc::new(AtomicI32::new(0));
-        let (stop, output, status) = (signal.clone(), engine.clone(), state.clone());
-        let epoch = engine.bus.reset();
-        let worker = thread::Builder::new()
-            .name("Lummix process audio".into())
-            .spawn(move || {
-                let result = capture(pid, process, stop, output, epoch, &status);
-                status.store(
-                    result.map(|()| 3).unwrap_or_else(|e| e.code().0),
-                    Ordering::Release,
-                );
-            })
-            .map_err(|_| Error::from_hresult(E_FAIL))?;
-        Ok(Capture {
-            stop: signal,
-            worker,
-            state,
-            engine: engine.clone(),
-        })
-    };
-    open().map_or(ptr::null_mut(), |c| Box::into_raw(Box::new(c)))
+    open(engine, pid, created).map_or(ptr::null_mut(), |c| Box::into_raw(Box::new(c)))
 }
 #[no_mangle]
 pub extern "C" fn lummix_capture_state(cap: &Capture) -> i32 {
@@ -227,8 +227,14 @@ pub unsafe extern "C" fn lummix_capture_close(handle: *mut Capture) {
     if handle.is_null() {
         return;
     }
-    let cap = unsafe { Box::from_raw(handle) };
-    let _ = unsafe { SetEvent(raw(&cap.stop)) };
-    let _ = cap.worker.join();
-    cap.engine.bus.reset();
+    drop(unsafe { Box::from_raw(handle) });
+}
+impl Drop for Capture {
+    fn drop(&mut self) {
+        let _ = unsafe { SetEvent(raw(&self.stop)) };
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+        self.engine.bus.reset();
+    }
 }

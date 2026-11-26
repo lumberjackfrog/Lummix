@@ -46,6 +46,7 @@ class NativeMedia:
             "volume": (ctypes.c_char_p,),
             "cable": (ctypes.c_uint32, ctypes.c_char_p),
             "peak": (ctypes.c_char_p,),
+            "capability": (ctypes.c_uint32, ctypes.c_uint64, ctypes.c_char_p),
         }.items():
             operation = getattr(dll, "lummix_media_" + name)
             operation.argtypes = types
@@ -88,6 +89,10 @@ class NativeMedia:
     def peak(self, processes):
         request = json.dumps(processes).encode("ascii")
         return self.worker.submit(self.decode, self.dll.lummix_media_peak, request).result()
+
+    def capability(self, operation, store=0, **fields):
+        request = json.dumps(fields).encode("ascii")
+        return self.decode(self.dll.lummix_media_capability, operation, store, request)
 
     def release(self, identity):
         try:

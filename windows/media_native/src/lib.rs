@@ -23,8 +23,10 @@ use windows::{
 };
 
 mod audio_sessions;
+mod capability;
 mod processes;
 mod registry;
+mod source;
 mod volume;
 mod window_player;
 
@@ -312,7 +314,7 @@ fn control(session: &Session, action: u32, position: i64) -> Result<Value> {
     Ok(json!(wait_for!(operation, 2600)?))
 }
 
-fn store_paths() -> Result<Value> {
+fn store_paths() -> Result<Vec<Option<String>>> {
     let packages = PackageManager::new()?
         .FindPackagesByUserSecurityIdPackageFamilyNameWithPackageTypes(
             &HSTRING::new(),
@@ -323,11 +325,17 @@ fn store_paths() -> Result<Value> {
     for package in packages {
         let path = package
             .InstalledPath()
-            .or_else(|_| package.InstalledLocation()?.Path())
-            .ok();
+            .ok()
+            .filter(|path| !path.is_empty())
+            .or_else(|| {
+                package
+                    .InstalledLocation()
+                    .and_then(|folder| folder.Path())
+                    .ok()
+            });
         paths.push(path.map(|path| path.to_string()));
     }
-    Ok(json!(paths))
+    Ok(paths)
 }
 
 type MediaEvent = extern "C" fn(u64);
@@ -385,7 +393,11 @@ fn remove_event(id: u64, kind: u32, token: i64) -> Result<Value> {
 }
 
 fn response(read: impl FnOnce() -> Result<Value>) -> *mut c_char {
-    let value = match Apartment::enter().and_then(|_apartment| read()) {
+    encode_response(Apartment::enter().and_then(|_apartment| read()))
+}
+
+fn encode_response(result: Result<Value>) -> *mut c_char {
+    let value = match result {
         Ok(value) => json!({ "value": value }),
         Err(error) => json!({ "error": format!("{error}") }),
     };
@@ -405,12 +417,24 @@ pub extern "C" fn lummix_media_call(op: u32, id: u64, action: u32, arg: i64) -> 
         2 => timeline(&session(id)?),
         3 => now_playing(&session(id)?),
         4 => control(&session(id)?, action, arg),
-        5 => store_paths(),
+        5 => store_paths().map(|paths| json!(paths)),
         6 => manager().map(|_| Value::Null),
         7 => remove_event(id, action, arg),
-        8 => registry::desktop_registrations(),
+        8 => registry::desktop_registrations().map(|values| json!(values)),
         9 => window_player::transport(id, arg as u32, action),
-        10 => processes::spotify_processes(),
+        10 => source::verified_processes().map(|rows| {
+            json!(rows
+                .into_iter()
+                .map(|(row, edition)| {
+                    (
+                        row.pid,
+                        row.parent,
+                        row.created,
+                        if edition == 1 { "desktop" } else { "store" },
+                    )
+                })
+                .collect::<Vec<_>>())
+        }),
         11 => Ok(json!(session(id)? == session(arg as u64)?)),
         12 => selected_session(),
         13 => window_player::visible_windows(),
@@ -455,7 +479,7 @@ pub unsafe extern "C" fn lummix_media_cable(
             if let Ok(ids) = serde_json::from_slice::<Vec<String>>(unsafe {
                 CStr::from_ptr(signed_ids).to_bytes()
             }) {
-                return audio_sessions::direct_to_cable(root_pid, &ids);
+                return audio_sessions::direct_to_cable(root_pid, &ids).map(|state| json!(state));
             }
         }
         Ok(Value::Null)
@@ -474,6 +498,57 @@ pub unsafe extern "C" fn lummix_media_peak(processes: *const c_char) -> *mut c_c
         }
         Ok(Value::Null)
     })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn lummix_media_capability(
+    op: u32,
+    store: u64,
+    request: *const c_char,
+) -> *mut c_char {
+    let request = if request.is_null() {
+        Value::Null
+    } else {
+        serde_json::from_slice(unsafe { CStr::from_ptr(request).to_bytes() }).unwrap_or(Value::Null)
+    };
+    encode_response(capability::apply(op, store, &request))
+}
+
+/// Verify a single Spotify source and its render route without opening capture.
+#[no_mangle]
+pub unsafe extern "C" fn lummix_audio_source(
+    signed_render_ids_json: *const c_char,
+    pid: *mut u32,
+    created: *mut f64,
+    edition: *mut u32,
+) -> i32 {
+    if signed_render_ids_json.is_null() || pid.is_null() || created.is_null() || edition.is_null() {
+        return 4;
+    }
+    unsafe {
+        *pid = 0;
+        *created = 0.0;
+        *edition = 0;
+    }
+    let Ok(ids) = serde_json::from_slice::<Vec<String>>(unsafe {
+        CStr::from_ptr(signed_render_ids_json).to_bytes()
+    }) else {
+        return 4;
+    };
+    let Ok(_apartment) = Apartment::enter() else {
+        return 4;
+    };
+    let Ok((state, target)) = source::probe(&ids) else {
+        return 4;
+    };
+    if let Some((target_pid, target_created, target_edition)) = target {
+        unsafe {
+            *pid = target_pid;
+            *created = target_created;
+            *edition = target_edition;
+        }
+    }
+    state
 }
 
 #[no_mangle]

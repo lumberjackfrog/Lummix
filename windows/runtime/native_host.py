@@ -13,7 +13,7 @@ def library():
     elif os.environ.get("LUMMIX_HOST_DLL"):
         path = Path(os.environ["LUMMIX_HOST_DLL"]).resolve(strict=True)
     else:
-        path = Path(__file__).resolve().parents[2] / ".build/frozen/runtime/_internal/lummix_host.dll"
+        path = Path(__file__).resolve().parents[2] / ".build/host/release/lummix_host.dll"
     return ctypes.CDLL(str(path))
 
 

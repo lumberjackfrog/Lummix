@@ -78,37 +78,6 @@ def serve(server, linked):
         server.serve_forever()
 
 
-def start_wrist(bind, linked):
-    import cable_setup
-    wrist = importlib.import_module("wrist-server")
-    wrist.here = DATA
-    installed = wrist_sources()
-    wrist.installed = installed
-    if getattr(sys,"frozen",False):
-        cable_setup._controller.prepare = lambda: cable_setup.package((DATA/"VBCABLE_Driver_Pack46.zip").read_bytes)
-    class LocalWrist(wrist.Renderer):
-        def log_message(self,*args):
-            pass
-
-        def do_GET(self):
-            if self.headers.get_all("Host") != ["127.0.0.1:41836"]:
-                self.send_error(403)
-                return
-            route = urlsplit(self.path).path
-            if route == "/lummix-health":
-                self.send_bytes(json.dumps({"service":"lummix-wrist","ready":True,
-                                           "vendorAvailable":bool(installed),"cableRestartSupport":True}).encode(), "application/json")
-                return
-            if route == "/preview" and not installed:
-                self.send_bytes(b'<!doctype html><meta charset="utf-8"><style>html{color-scheme:dark;font:16px system-ui}body{padding:1em}</style><p>Wrist preview requires XSOverlay on this PC.</p>', "text/html")
-                return
-            if route == "/wrist-fixture.js" and not wrist.config.is_file():
-                self.send_bytes(b"const savedSettings = {};\n" + (DATA/"wrist-fixture.js").read_bytes(), "text/javascript")
-                return
-            super().do_GET()
-    serve(ThreadingHTTPServer((bind,41836),LocalWrist), linked)
-
-
 def helper_streams():
     """Windowed builds have no terminal. Keep the pipes passed by the parent or diagnostics."""
     import _winapi
@@ -191,10 +160,17 @@ def main():
             raise SystemExit(result.returncode)
         serve(ThreadingHTTPServer((bind,41835),Studio), linked)
     elif mode == ["wrist"]:
-        start_wrist(bind, linked)
+        from wrist_preview import run
+        run(DATA, wrist_sources(), bind, linked)
     elif mode == ["addon"]:
-        from xsoverlay_service import make_server
-        serve(make_server(wrist_sources, DATA, bind), linked)
+        from xsoverlay_service import serve_with_window
+        with serve_with_window(wrist_sources, DATA, qa=bind == "127.0.0.2") as port:
+            if port is None:
+                raise OSError("The native XSOverlay listener could not start.")
+            if linked:
+                sys.stdin.buffer.read()
+            else:
+                threading.Event().wait()
     elif mode == ["spotify"]:
         helper = importlib.import_module("spotify-helper")
         if linked:

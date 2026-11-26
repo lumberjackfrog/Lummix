@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
@@ -119,7 +119,7 @@ fn error_number(error: io::Error) -> u32 {
     error.raw_os_error().unwrap_or(ERROR_GEN_FAILURE as i32) as u32
 }
 
-struct UniqueObject<'a>(Vec<&'a RawValue>);
+struct UniqueObject<'a>(BTreeMap<String, &'a RawValue>);
 
 impl<'de> Deserialize<'de> for UniqueObject<'de> {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -138,13 +138,11 @@ impl<'de> Deserialize<'de> for UniqueObject<'de> {
             where
                 A: MapAccess<'de>,
             {
-                let mut names = HashSet::new();
-                let mut values = Vec::new();
+                let mut values = BTreeMap::new();
                 while let Some((name, value)) = map.next_entry::<String, &'de RawValue>()? {
-                    if !names.insert(name) {
+                    if values.insert(name, value).is_some() {
                         return Err(A::Error::custom("Duplicate settings field"));
                     }
-                    values.push(value);
                 }
                 Ok(UniqueObject(values))
             }
@@ -153,33 +151,42 @@ impl<'de> Deserialize<'de> for UniqueObject<'de> {
     }
 }
 
-fn check_values(raw: &RawValue, depth: usize) -> Result<(), u32> {
+fn strict_value(raw: &RawValue, depth: usize) -> Result<Value, u32> {
     if depth > 128 {
         return Err(BAD_JSON);
     }
     let text = raw.get();
-    let children = match text.as_bytes().first() {
-        Some(b'{') => serde_json::from_str::<UniqueObject<'_>>(text).map(|object| object.0),
-        Some(b'[') => serde_json::from_str::<Vec<&RawValue>>(text),
+    match text.as_bytes().first() {
+        Some(b'{') => serde_json::from_str::<UniqueObject<'_>>(text)
+            .map_err(|_| BAD_JSON)?
+            .0
+            .into_iter()
+            .map(|(name, value)| Ok((name, strict_value(value, depth + 1)?)))
+            .collect::<Result<Map<_, _>, _>>()
+            .map(Value::Object),
+        Some(b'[') => serde_json::from_str::<Vec<&RawValue>>(text)
+            .map_err(|_| BAD_JSON)?
+            .into_iter()
+            .map(|value| strict_value(value, depth + 1))
+            .collect::<Result<Vec<_>, _>>()
+            .map(Value::Array),
         Some(b'-' | b'0'..=b'9') if text.contains(['.', 'e', 'E']) => {
             if !text.parse::<f64>().is_ok_and(f64::is_finite) {
                 return Err(BAD_JSON);
             }
-            return Ok(());
+            serde_json::from_str(text).map_err(|_| BAD_JSON)
         }
-        _ => return Ok(()),
-    };
-    for child in children.map_err(|_| BAD_JSON)? {
-        check_values(child, depth + 1)?;
+        _ => serde_json::from_str(text).map_err(|_| BAD_JSON),
     }
-    Ok(())
 }
 
 fn decode(data: &[u8]) -> Result<Map<String, Value>, u32> {
     let data = data.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(data);
     let raw: &RawValue = serde_json::from_slice(data).map_err(|_| BAD_JSON)?;
-    check_values(raw, 0)?;
-    serde_json::from_str::<Map<String, Value>>(raw.get()).map_err(|_| BAD_JSON)
+    match strict_value(raw, 0)? {
+        Value::Object(value) => Ok(value),
+        _ => Err(BAD_JSON),
+    }
 }
 
 fn read(path: &Path) -> Result<Map<String, Value>, u32> {
@@ -356,5 +363,147 @@ pub unsafe extern "C" fn lummix_profile_transaction(
     match transaction(&path, operation, data, check, &mut *warnings) {
         Ok(()) => 0,
         Err(status) => status,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+
+    struct Fixture(PathBuf);
+
+    impl Fixture {
+        fn new(label: &str) -> Self {
+            let path = std::env::temp_dir()
+                .join(format!("LummixHostProfile-{}-{label}", std::process::id(),));
+            fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+
+        fn settings(&self) -> PathBuf {
+            self.0.join("output-gains.json")
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    extern "C" fn validate_gain(data: *const u8, len: usize) -> u32 {
+        let input = unsafe { std::slice::from_raw_parts(data, len) };
+        let parsed = serde_json::from_slice::<Value>(input).unwrap_or(Value::Null);
+        match parsed["revision"].as_u64() {
+            Some(_) => 0,
+            None => 1,
+        }
+    }
+
+    fn call(
+        path: &Path,
+        operation: u32,
+        data: &[u8],
+        check: Option<Validate>,
+        warnings: &mut u32,
+    ) -> u32 {
+        use std::os::windows::ffi::OsStrExt;
+        let wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+        unsafe {
+            lummix_profile_transaction(
+                wide.as_ptr(),
+                wide.len(),
+                operation,
+                data.as_ptr(),
+                data.len(),
+                check,
+                warnings,
+            )
+        }
+    }
+
+    #[test]
+    fn rejects_bad_fields_and_keeps_legacy_bom_unicode_and_large_integers() {
+        for invalid in [
+            br#"{"nested":[{"duplicate":1,"duplicate":2}]}"#.as_slice(),
+            br#"{"data": [1e999]}"#.as_slice(),
+            br#"{"data": NaN}"#.as_slice(),
+            br#"null"#.as_slice(),
+        ] {
+            assert_eq!(decode(invalid), Err(BAD_JSON));
+        }
+        let input = "\u{feff}{\"wide\":184467440737095516160,\"text\":\"Mix \u{1f3a7}\"}";
+        let decoded = decode(input.as_bytes()).unwrap();
+        assert_eq!(decoded["wide"].to_string(), "184467440737095516160");
+        assert_eq!(decoded["text"], "Mix \u{1f3a7}");
+    }
+
+    #[test]
+    fn native_abi_imports_a_legacy_file_and_merges_updates_under_the_lock() {
+        let fixture = Fixture::new("updating");
+        let profile = fixture.settings();
+        fs::write(&profile, br#"{"revision":7,"gains":{"micGain":104}}"#).unwrap();
+        let mut warnings = u32::MAX;
+        assert_eq!(
+            call(&profile, 1, &[], Some(validate_gain), &mut warnings),
+            0
+        );
+        assert_eq!(warnings, 0);
+        let backup = fixture.0.join(BACKUP);
+        assert_eq!(
+            backup_sections(&backup).unwrap()["output-gains.json"]["revision"],
+            7
+        );
+        fs::write(&profile, br#"{"revision":-1}"#).unwrap();
+        assert_eq!(
+            call(
+                &profile,
+                2,
+                br#"{"revision":8}"#,
+                Some(validate_gain),
+                &mut warnings
+            ),
+            0
+        );
+        let saved = read(&profile).unwrap();
+        assert_eq!(saved["revision"], 8);
+        assert_eq!(saved["gains"]["micGain"], 104);
+        assert_eq!(
+            backup_sections(&backup).unwrap()["output-gains.json"],
+            Value::Object(saved)
+        );
+    }
+
+    #[test]
+    fn native_abi_returns_valid_backup_even_when_legacy_primary_is_locked() {
+        let fixture = Fixture::new("locked");
+        let profile = fixture.settings();
+        let mut warnings = 0;
+        assert_eq!(
+            call(&profile, 0, br#"{"revision":5}"#, None, &mut warnings),
+            0
+        );
+        fs::write(&profile, b"null").unwrap();
+        let locked = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(&profile)
+            .unwrap();
+        assert_eq!(
+            call(&profile, 1, &[], Some(validate_gain), &mut warnings),
+            0
+        );
+        assert_eq!(warnings, RESTORE_FAILED);
+        assert_eq!(fs::read(&profile).unwrap(), b"null");
+        drop(locked);
+        assert_eq!(
+            call(&profile, 1, &[], Some(validate_gain), &mut warnings),
+            0
+        );
+        assert_eq!(warnings, 0);
+        assert_eq!(read(&profile).unwrap()["revision"], 5);
+        assert_eq!(fixture.0.read_dir().unwrap().count(), 3);
     }
 }

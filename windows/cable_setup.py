@@ -2,14 +2,15 @@
 import argparse
 from contextlib import contextmanager, ExitStack
 import ctypes
+from enum import IntEnum
 from functools import cache
 import io
 import json
 import os
 from pathlib import Path
 import platform
-import sys
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -69,9 +70,18 @@ def native():
     return dll
 
 
+class Check(IntEnum):
+    FIXTURE_PAIR = 0
+    PACKAGE_LAYOUT = 1
+    SIGNATURES = 2
+    RESTART = 3
+    LIVE_PAIR = 4
+
+
 def check(operation, value):
     data = json.dumps(value, separators=(",", ":"), allow_nan=False).encode("ascii")
-    result = ctypes.create_string_buffer(len(data) + 512)
+    capacity = 64 * 1024 if operation == Check.LIVE_PAIR else len(data) + 512
+    result = ctypes.create_string_buffer(capacity)
     size = native().lummix_cable_check(operation, data, len(data), result, len(result))
     if not size:
         raise ValueError("Could not validate VB-CABLE evidence")
@@ -82,7 +92,7 @@ def qualified_pair():
     try:
         result = powershell("cable_setup_status.ps1")
         if not result.returncode:
-            return check(4, json.loads(result.stdout))
+            return check(Check.LIVE_PAIR, json.loads(result.stdout))
     except (OSError, ValueError, AttributeError, subprocess.SubprocessError):
         pass
     return {}
@@ -95,10 +105,10 @@ def restart_file():
 def restart_pending(boot, path=None, *, clear_expired=False):
     marker = path or restart_file()
     try:
-        pending_boot = json.loads(marker.read_text(encoding="ascii"))
+        pending_boot = json.loads(marker.read_text(encoding="ascii"), parse_constant=lambda _: None)
     except (OSError, ValueError):
         return False
-    same_boot = check(3, {"pending": pending_boot, "boot": boot})
+    same_boot = check(Check.RESTART, {"pending": pending_boot, "boot": boot})
     if same_boot is True:
         return True
     if same_boot is False and clear_expired:
@@ -159,7 +169,7 @@ def package(fetch=download):
     with tempfile.TemporaryDirectory(prefix="LumMix-VBCABLE-") as temp, ExitStack() as guard, zipfile.ZipFile(io.BytesIO(raw)) as archive:
         folder=Path(temp)
         entries=archive.infolist()
-        if not check(1, [{"name":entry.filename,"size":entry.file_size} for entry in entries]):
+        if not check(Check.PACKAGE_LAYOUT, [{"name":entry.filename,"size":entry.file_size} for entry in entries]):
             raise ValueError("Unexpected package layout")
         names={entry.filename.lower() for entry in entries}
         for entry in entries:
@@ -184,7 +194,7 @@ def verify_signatures(folder):
     if result.returncode:
         raise ValueError("Vendor or driver catalog signature did not validate")
     proof=json.loads(result.stdout)
-    if not check(2,proof):
+    if not check(Check.SIGNATURES,proof):
         raise ValueError("Vendor or driver catalog signature did not validate")
     return proof
 

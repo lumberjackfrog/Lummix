@@ -38,6 +38,7 @@ def verify_studio_assets(fetch, installed):
         )
         original = (UI / filename).read_bytes()
         if packaged != original:
+            assert not filename.endswith(".wasm"), "Installed WebAssembly differs from the pinned source build"
             assert packaged.replace(b"\r\n", b"\n") == original.replace(b"\r\n", b"\n"), (
                 f"Installed studio asset differs from checkout content for {filename}"
             )

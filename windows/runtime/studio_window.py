@@ -8,15 +8,13 @@ from pathlib import Path
 import secrets
 import sys
 from urllib.parse import urlsplit
-from studio_assets import attach_installed_assets
 from native_host import library
+from native_webview import WebView, READY as WEBVIEW_READY, ERROR as WEBVIEW_ERROR, MESSAGE, NEW_PAGE, KEY
 import profile_save
 import diagnostics
 from client_update import Updates
 from spotify_setup import SpotifySetup
 
-import comtypes
-from comtypes.gen import WebView2 as wv
 import win32api
 import win32con as wc
 import win32gui as gui
@@ -110,9 +108,9 @@ class StudioWindow:
         self.native = _native_shell()
         self.hwnd=0;self.tray=False;self.full=False;self.exiting=False
         self.exit_nonce=None
-        self.controller=self.web=None
+        self.web=None
         self.last_window_state=None
-        self.callbacks=[];self.native_error=None
+        self.native_error=None
         self.shell_restart=gui.RegisterWindowMessage("TaskbarCreated")
         self.icon=gui.LoadImage(0,str(data_file("Lummix.ico")),wc.IMAGE_ICON,32,32,wc.LR_LOADFROMFILE)
         self.small_icon=gui.LoadImage(0,str(data_file("Lummix.ico")),wc.IMAGE_ICON,16,16,wc.LR_LOADFROMFILE)
@@ -143,53 +141,27 @@ class StudioWindow:
         gui.ShowWindow(self.hwnd,wc.SW_SHOWMAXIMIZED if maxed else wc.SW_SHOWNORMAL)
         gui.UpdateWindow(self.hwnd)
 
-    def bind(self,interface,fn):
-        host=self
-        class Event(comtypes.COMObject):
-            _com_interfaces_=[interface]
-            def Invoke(self,*args):
-                try:return fn(*args)
-                except Exception as exc:
-                    host.native_error=str(exc)
-                    gui.PostMessage(host.hwnd,READY,1,0)
-                    return 0
-        obj=Event();self.callbacks.append(obj)
-        return obj.QueryInterface(interface)
-
     def start(self):
-        self.loader=ctypes.WinDLL(str(data_file("WebView2Loader.dll")))
-        create=self.loader.CreateCoreWebView2EnvironmentWithOptions
-        iface=wv.ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler
-        create.argtypes=[wt.LPCWSTR,wt.LPCWSTR,ctypes.c_void_p,ctypes.POINTER(iface)]
-        create.restype=ctypes.c_long
         # WebView2 uses an app-owned profile. No personal browser profile is accessed.
-        path=local_dir()/"Studio WebView"
-        result=create(None,str(path),None,self.bind(iface,self.environment_ready))
-        if result<0: raise RuntimeError("Microsoft Edge WebView2 Runtime could not start. Install the Evergreen x64 runtime from Microsoft and reopen Lummix.")
-
-    def environment_ready(self,code,env):
-        if code<0 or not env:raise RuntimeError("Microsoft Edge WebView2 Runtime could not initialize.")
-        self.environment=env.QueryInterface(wv.ICoreWebView2Environment)
-        self.environment.CreateCoreWebView2Controller(self.hwnd,self.bind(
-            wv.ICoreWebView2CreateCoreWebView2ControllerCompletedHandler,self.controller_ready))
-        return 0
-
-    def controller_ready(self,code,controller):
-        if code<0 or not controller:raise RuntimeError("Microsoft Edge WebView2 could not open the studio.")
-        self.controller=controller.QueryInterface(wv.ICoreWebView2Controller)
-        self.web=self.controller.CoreWebView2
-        self.web.Settings.AreHostObjectsAllowed=False
-        try:self.web.Settings.QueryInterface(wv.ICoreWebView2Settings9).IsNonClientRegionSupportEnabled=True
-        except comtypes.COMError:pass  # Older runtimes use the header's pointer and double-click bridge.
-        self.web.add_WebMessageReceived(self.bind(wv.ICoreWebView2WebMessageReceivedEventHandler,self.web_message))
-        self.web.add_NewWindowRequested(self.bind(wv.ICoreWebView2NewWindowRequestedEventHandler,self.new_page))
-        self.web.add_NavigationStarting(self.bind(wv.ICoreWebView2NavigationStartingEventHandler,self.navigation))
-        self.controller.add_AcceleratorKeyPressed(self.bind(wv.ICoreWebView2AcceleratorKeyPressedEventHandler,self.accelerator))
         studio_root = Path(sys.executable).parent if getattr(sys, "frozen", False) else PROJECT.parent
-        attach_installed_assets(self, studio_root / "studio")
-        self.resize();self.web.Navigate(NATIVE)
-        self.updates.command("auto")
-        return 0
+        self.web = WebView(self.hwnd, data_file("WebView2Loader.dll"), local_dir() / "Studio WebView",
+                           studio_root / "studio", self.web_event)
+
+    def web_event(self, kind, source, data, detail):
+        if kind == WEBVIEW_READY:
+            self.updates.command("auto")
+        elif kind == WEBVIEW_ERROR:
+            self.native_error = data
+            gui.PostMessage(self.hwnd, READY, 1, 0)
+        elif kind == MESSAGE:
+            self.web_message(source, data)
+        elif kind == NEW_PAGE:
+            self.new_page(data)
+        elif kind == KEY and ((detail & 0xffff) == wc.VK_F11 or self.full):
+            if not detail >> 16:
+                gui.PostMessage(self.hwnd, wc.WM_COMMAND, FULL, 0)
+            return True
+        return False
 
     def update_changed(self):
         if self.hwnd and not self.exiting:
@@ -201,39 +173,29 @@ class StudioWindow:
             try: gui.PostMessage(self.hwnd,SPOTIFY_SETUP_CHANGED,0,0)
             except OSError: pass
 
-    def navigation(self,sender,args):
-        if urlsplit(args.Uri).netloc!="127.0.0.1:41835" or not args.Uri.startswith("http://127.0.0.1:41835/"):
-            args.Cancel=True
-        return 0
-
-    def new_page(self,sender,args):
-        args.Handled=True
-        uri=args.Uri
-        if args.IsUserInitiated and (uri=="spotify:" or (urlsplit(uri).scheme=="https" and
-            urlsplit(uri).hostname in {"vb-audio.com","www.vb-audio.com","www.spotify.com","open.spotify.com"})):
+    def new_page(self, uri):
+        target = urlsplit(uri)
+        if uri=="spotify:" or (target.scheme=="https" and
+            target.hostname in {"vb-audio.com","www.vb-audio.com","www.spotify.com","open.spotify.com"}):
             try:os.startfile(uri)
             except OSError:pass
-        return 0
 
-    def web_message(self,sender,args):
-        if not args.Source.startswith("http://127.0.0.1:41835/"):return 0
-        try:command=args.TryGetWebMessageAsString()
-        except comtypes.COMError:return 0
+    def web_message(self, source, command):
         if self.exit_nonce and command=="released:"+self.exit_nonce:
             gui.PostMessage(self.hwnd,FINISH_EXIT,0,0)
         elif command in WINDOW_COMMANDS:gui.PostMessage(self.hwnd,wc.WM_COMMAND,WINDOW_COMMANDS[command],0)
         elif command in RESIZE_COMMANDS:gui.PostMessage(self.hwnd,wc.WM_COMMAND,RESIZE,RESIZE_COMMANDS[command])
         elif command=="close":gui.PostMessage(self.hwnd,wc.WM_CLOSE,0,0)
         elif command=="window-state":self.send_window_state(force=True)
-        elif command in ("spotify-setup","spotify-setup-state") and args.Source==NATIVE and not self.exiting:
+        elif command in ("spotify-setup","spotify-setup-state") and source==NATIVE and not self.exiting:
             if command=="spotify-setup":
                 self.spotify_setup.begin()
-            self.web.PostWebMessageAsJson(json.dumps(self.spotify_setup.status()))
-        elif command in ("update-state","update-check","update-download","update-install") and args.Source==NATIVE and not self.exiting:
+            self.web.post_json(json.dumps(self.spotify_setup.status()))
+        elif command in ("update-state","update-check","update-download","update-install") and source==NATIVE and not self.exiting:
             if command!="update-state":
                 self.updates.command(command.removeprefix("update-"))
-            self.web.PostWebMessageAsJson(json.dumps(self.updates.status()))
-        elif command in ("logs-open","logs-clear") and args.Source==NATIVE:
+            self.web.post_json(json.dumps(self.updates.status()))
+        elif command in ("logs-open","logs-clear") and source==NATIVE:
             try:
                 if command=="logs-open":
                     folder=diagnostics.folder()
@@ -246,38 +208,30 @@ class StudioWindow:
                     result="Local logs cleared."
             except OSError:
                 result="Windows couldn’t access the diagnostics folder."
-            self.web.PostWebMessageAsJson(json.dumps({"type":"lummix-diagnostics","message":result}))
-        elif command in ("startup-state","startup-on","startup-off") and args.Source==NATIVE:
+            self.web.post_json(json.dumps({"type":"lummix-diagnostics","message":result}))
+        elif command in ("startup-state","startup-on","startup-off") and source==NATIVE:
             from sign_in import SignIn
             startup = SignIn()
             try:
                 state = startup.state() if command=="startup-state" else startup.change(command=="startup-on")
             except OSError:
                 state = dict(enabled=None, editable=False, message="Lummix could not read or change Windows Startup apps.")
-            self.web.PostWebMessageAsJson(json.dumps(dict(type="lummix-startup-state", **state)))
-        return 0
-
-    def accelerator(self,sender,args):
-        if args.KeyEventKind in (0,2) and args.VirtualKey in (wc.VK_F11,wc.VK_ESCAPE):
-            if args.VirtualKey==wc.VK_F11 or self.full:
-                args.Handled=True
-                if not args.PhysicalKeyStatus.WasKeyDown:gui.PostMessage(self.hwnd,wc.WM_COMMAND,FULL,0)
-        return 0
+            self.web.post_json(json.dumps(dict(type="lummix-startup-state", **state)))
 
     def edge_size(self, hwnd):
         return self.native.lummix_frame_edge(hwnd, self.full)
 
     def resize(self):
-        if self.controller:
+        if self.web:
             _,_,width,height=gui.GetClientRect(self.hwnd)
-            self.controller.Bounds=wt.RECT(0,0,width,height)
+            self.web.resize(width, height)
 
     def send_window_state(self, force=False):
         state=(bool(USER.IsZoomed(self.hwnd)),self.full)
         if self.web and (force or state!=self.last_window_state):
             try:
-                self.web.PostWebMessageAsJson(json.dumps(dict(type="lummix-window-state",maximized=state[0],fullscreen=state[1])))
-            except comtypes.COMError:return
+                self.web.post_json(json.dumps(dict(type="lummix-window-state",maximized=state[0],fullscreen=state[1])))
+            except OSError:return
             self.last_window_state=state
 
     def remember(self):
@@ -316,7 +270,7 @@ class StudioWindow:
     def show(self):
         hidden=not gui.IsWindowVisible(self.hwnd)
         gui.ShowWindow(self.hwnd,wc.SW_RESTORE if gui.IsIconic(self.hwnd) else wc.SW_SHOW)
-        if self.controller:self.controller.IsVisible=True
+        if self.web:self.web.visible(True)
         try:gui.SetForegroundWindow(self.hwnd)
         except Exception:pass
         if hidden:self.resize()
@@ -329,7 +283,7 @@ class StudioWindow:
         self.updates.cancelled.set()
         self.spotify_setup.cancelled.set()
         self.exiting=True;self.remember()
-        if self.web and self.web.Source.startswith("http://127.0.0.1:41835/"):
+        if self.web and self.web.source().startswith("http://127.0.0.1:41835/"):
             self.exit_nonce=secrets.token_hex(12)
             script="""(async () => {
                 try { await document.getElementById('canvas')?.contentWindow?.releaseLummixAudio?.(); }
@@ -337,9 +291,9 @@ class StudioWindow:
             })()""" % json.dumps("released:"+self.exit_nonce)
             try:
                 if USER.SetTimer(self.hwnd, EXIT_TIMER, 3500, None):
-                    self.web.ExecuteScript(script,None)
+                    self.web.execute(script)
                     return
-            except (OSError,comtypes.COMError):pass
+            except OSError:pass
         self.finish_exit()
 
     def finish_exit(self):
@@ -347,7 +301,7 @@ class StudioWindow:
         self.exit_nonce=None
         if self.tray:
             self.native.lummix_tray_hide(self.hwnd, self.icon, TRAY)
-        if self.controller:self.controller.Close()
+        if self.web is not None:self.web.close()
         gui.DestroyWindow(self.hwnd)
 
     def message(self,hwnd,msg,wp,lp):
@@ -380,15 +334,15 @@ class StudioWindow:
                 gui.PostMessage(hwnd, wc.WM_NCLBUTTONDOWN, lp, USER.GetMessagePos())
             return 0
         if msg==SPOTIFY_SETUP_CHANGED:
-            if not self.exiting and self.web and self.web.Source==NATIVE:
-                self.web.PostWebMessageAsJson(json.dumps(self.spotify_setup.status()))
+            if not self.exiting and self.web and self.web.source()==NATIVE:
+                self.web.post_json(json.dumps(self.spotify_setup.status()))
             return 0
         if msg==UPDATE_CHANGED:
             if self.exiting: return 0
             state=self.updates.status()
             if state["phase"]=="launched": self.quit()
-            elif self.web and self.web.Source==NATIVE:
-                self.web.PostWebMessageAsJson(json.dumps(state))
+            elif self.web and self.web.source()==NATIVE:
+                self.web.post_json(json.dumps(state))
             return 0
         if msg==CAN_REOPEN:return int(not self.exiting)
         if msg==FINISH_EXIT or (msg==wc.WM_TIMER and wp==EXIT_TIMER):
@@ -403,18 +357,18 @@ class StudioWindow:
         if msg==wc.WM_CLOSE:
             if close_to_tray() and self.add_tray():
                 self.remember()
-                if self.controller:self.controller.IsVisible=False
+                if self.web:self.web.visible(False)
                 gui.ShowWindow(hwnd,wc.SW_HIDE)
             else:self.quit()
             return 0
         if msg==wc.WM_SIZE:
-            if self.controller:
-                self.controller.IsVisible=wp!=wc.SIZE_MINIMIZED and bool(gui.IsWindowVisible(hwnd))
+            if self.web:
+                self.web.visible(wp!=wc.SIZE_MINIMIZED and bool(gui.IsWindowVisible(hwnd)))
                 if wp!=wc.SIZE_MINIMIZED:self.resize()
                 self.send_window_state()
             return 0
-        if msg==wc.WM_MOVE and self.controller:
-            self.controller.NotifyParentWindowPositionChanged();return 0
+        if msg==wc.WM_MOVE and self.web:
+            self.web.moved();return 0
         if msg==wc.WM_EXITSIZEMOVE:self.remember();return 0
         if msg==0x02e0 and self.hwnd: # WM_DPICHANGED recommended physical rectangle
             r=ctypes.cast(lp,ctypes.POINTER(wt.RECT)).contents

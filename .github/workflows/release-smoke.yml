@@ -137,6 +137,10 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw 'Public update signature or downloaded installer did not verify.' }
           }
 
+      - name: Rebuild the matching controls module for the installed-asset comparison
+        if: steps.package.outputs.runtime == 'true' && hashFiles('windows/controls-rs/Cargo.toml') != ''
+        run: python windows/controls-rs/build_controls.py
+
       - name: Install, verify, repair and uninstall
         env:
           VERIFY_RUNTIME: ${{ steps.package.outputs.runtime }}

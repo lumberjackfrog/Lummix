@@ -107,13 +107,7 @@ def spotify_processes():
     native = media_provider()
     if native is None:
         return None
-    matches = {}
-    for pid, parent, created, path in native.call(10):
-        if known_process_path(path, os.environ):
-            parts = PureWindowsPath(path).parts
-            edition = "store" if any(part.casefold() == "windowsapps" for part in parts) else "desktop"
-            matches[pid] = parent, created, edition
-    return matches
+    return {pid: (parent, created, edition) for pid, parent, created, edition in native.call(10)}
 
 
 def spotify_process_roots():

@@ -10,6 +10,7 @@ mod diagnostics;
 #[cfg(windows)]
 mod sign_in;
 mod studio;
+mod studio_files;
 #[cfg(windows)]
 mod update;
 

@@ -343,6 +343,7 @@ class Player:
     def __init__(self, sessions, inventory=read_installations):
         self.sessions = sessions
         self.tokens = OrderedDict()
+        self.capabilities = None
         self.lock = asyncio.Lock()
         self.inventory_lock = asyncio.Lock()
         self.inventory = inventory
@@ -354,6 +355,11 @@ class Player:
         self.media_worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="LumSpotifyMedia")
 
     async def close(self, app):
+        if self.capabilities is not None:
+            native, store = self.capabilities
+            native.capability(4, store)
+            self.capabilities = None
+        self.tokens.clear()
         await asyncio.to_thread(self.media_worker.shutdown, wait=True, cancel_futures=True)
 
     async def artwork(self, labels, data, edition):
@@ -400,12 +406,43 @@ class Player:
         return (playing[0], "ready") if len(playing) == 1 else (None, "ambiguous")
 
     def issue(self, session, origin):
+        if isinstance(session, (NativeSession, WindowPlayer)) and isinstance(self.sessions, WindowsSessions):
+            if self.capabilities is None:
+                native = media_provider()
+                self.capabilities = native, native.capability(0)
+            native, store = self.capabilities
+            issued = native.capability(1, store, origin=origin)
+            for token in issued["evicted"]:
+                self.tokens.pop(token, None)
+            token = issued["token"]
+            self.tokens[token] = Selection(session, origin, 0)
+            return token
         now = time.monotonic()
         while self.tokens and (next(iter(self.tokens.values())).expires <= now or len(self.tokens) >= 64):
             self.tokens.popitem(last=False)
         token = secrets.token_urlsafe(32)
         self.tokens[token] = Selection(session, origin, now + TOKEN_LIFETIME)
         return token
+
+    def valid_selection(self, token, origin):
+        selected = self.tokens.get(token)
+        if selected is None:
+            return None
+        if self.capabilities is not None:
+            native, store = self.capabilities
+            try:
+                return selected if native.capability(2, store, token=token, origin=origin) else None
+            except (OSError, RuntimeError):
+                return None
+        if selected.expires > time.monotonic() and hmac.compare_digest(selected.origin, origin):
+            return selected
+        return None
+
+    def revoke(self, token):
+        self.tokens.pop(token, None)
+        if self.capabilities is not None:
+            native, store = self.capabilities
+            native.capability(3, store, token=token)
 
     async def snapshot(self, origin, previous_artwork_id=None):
         (session, state), installed = await asyncio.gather(self.selected(), self.installation_status())
@@ -468,8 +505,8 @@ class Player:
         return result
 
     async def validate_duck_start(self, origin, token):
-        selection = self.tokens.get(token)
-        if not selection or selection.expires <= time.monotonic() or not hmac.compare_digest(selection.origin, origin):
+        selection = self.valid_selection(token, origin)
+        if not selection:
             return 403, "refresh_selection"
         if isinstance(selection.session, WindowPlayer):
             return 409, "windows_media_unavailable"
@@ -480,8 +517,8 @@ class Player:
 
     async def control(self, origin, token, action):
         async with self.lock:
-            selected = self.tokens.get(token)
-            if not selected or selected.expires <= time.monotonic() or not hmac.compare_digest(selected.origin, origin):
+            selected = self.valid_selection(token, origin)
+            if not selected:
                 return 403, status("unavailable", error="refresh_selection")
             if isinstance(selected.session, WindowPlayer):
                 try:
@@ -491,17 +528,17 @@ class Player:
                 return 200, await self.snapshot(origin)
             current, state = await self.selected()
             if current is None:
-                self.tokens.pop(token, None)
+                self.revoke(token)
                 return 409, status(state, error="selection_changed")
             # Dispatch to the exact originally selected native session, never the current system player.
             if not await matches_selection(current, selected.session):
-                self.tokens.pop(token, None)
+                self.revoke(token)
                 return 409, status("unavailable", error="selection_changed")
             session = selected.session
             try:
                 info = session.get_playback_info()
                 if current.get_playback_info().playback_status != info.playback_status:
-                    self.tokens.pop(token, None)
+                    self.revoke(token)
                     return 409, status("unavailable", error="selection_changed")
                 playing = info.playback_status.name == "PLAYING"
                 if (action == "play" and playing) or (action == "pause" and info.playback_status.name == "PAUSED"):
@@ -593,7 +630,7 @@ def create_app(sessions=None, *, expected_host=f"{HOST}:{PORT}", inventory=read_
         token = request.headers.get("X-Lum-Spotify-Token", "")
         selection = player.tokens.get(token)
         if selection and isinstance(selection.session, WindowPlayer):
-            if selection.expires <= time.monotonic() or not hmac.compare_digest(selection.origin, origin):
+            if not player.valid_selection(token, origin):
                 return web.json_response({"state": "unavailable", "error": "refresh_selection"}, status=403)
             try:
                 from spotify_volume_http import spotify_windows

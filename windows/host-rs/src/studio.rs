@@ -5,22 +5,10 @@ use std::thread;
 
 use tiny_http::{Header, Method, Request, Response, Server};
 
-pub const HOST: &str = "127.0.0.1:41835";
-const ASSETS: &str = include_str!("../../runtime/studio-assets.txt");
-const HEALTH: &[u8] = br#"{"service":"lummix-studio","ready":true}"#;
+use crate::studio_files;
 
-fn asset(route: &str) -> Option<String> {
-    let path = route.split(['?', '#']).next()?;
-    let name = if path == "/" {
-        "index.html"
-    } else {
-        path.strip_prefix('/')?
-    };
-    ASSETS
-        .split_whitespace()
-        .find(|allowed| *allowed == name)
-        .map(|allowed| allowed.replace("%20", " "))
-}
+pub const HOST: &str = "127.0.0.1:41835";
+const HEALTH: &[u8] = br#"{"service":"lummix-studio","ready":true}"#;
 
 fn valid_host(headers: &[Header]) -> bool {
     let mut hosts = headers.iter().filter(|header| header.field.equiv("Host"));
@@ -55,18 +43,11 @@ fn response(request: &Request, root: &Path) -> Response<Cursor<Vec<u8>>> {
     if !valid_host(request.headers()) {
         return reply(403, "text/plain", b"Forbidden".to_vec());
     }
-    if request.url().split(['?', '#']).next() == Some("/lummix-health") {
+    if studio_files::route(request.url()) == "/lummix-health" {
         return reply(200, "application/json", HEALTH.to_vec());
     }
-    if let Some(name) = asset(request.url()) {
-        if let Ok(data) = fs::read(root.join(&name)) {
-            let mime = match Path::new(&name).extension().and_then(|ext| ext.to_str()) {
-                Some("html") => "text/html",
-                Some("css") => "text/css",
-                Some("js") => "text/javascript",
-                Some("wasm") => "application/wasm",
-                _ => "text/plain",
-            };
+    if let Some((name, mime)) = studio_files::asset(request.url()) {
+        if let Ok(data) = fs::read(root.join(name)) {
             return reply(200, mime, data);
         }
     }
@@ -95,13 +76,14 @@ fn serve_requests(server: &Server, root: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use studio_files::asset;
 
     #[test]
     fn studio_routes_cover_encoded_space_and_only_allowed_entries() {
-        assert_eq!(asset("/").as_deref(), Some("index.html"));
+        assert_eq!(asset("/").unwrap().0, "index.html");
         assert_eq!(
-            asset("/Mixer%20preview.html?v=1").as_deref(),
-            Some("Mixer preview.html")
+            asset("/Mixer%20preview.html?v=1").unwrap().0,
+            "Mixer preview.html"
         );
         for path in [
             "../index.html",

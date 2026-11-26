@@ -1,4 +1,3 @@
-use serde_json::{json, Value};
 use windows::{
     core::{w, Error, Result},
     Win32::{
@@ -13,7 +12,7 @@ use windows::{
     },
 };
 
-pub fn desktop_registrations() -> Result<Value> {
+pub fn desktop_registrations() -> Result<Vec<(&'static str, String)>> {
     // Windows path length bound. A longer registry entry cannot be a usable executable path.
     let mut buffer = vec![0u16; 32768];
     let app_paths = w!(r"Software\Microsoft\Windows\CurrentVersion\App Paths\Spotify.exe");
@@ -45,7 +44,7 @@ pub fn desktop_registrations() -> Result<Value> {
                         if let Ok(value) =
                             String::from_utf16(text.strip_suffix(&[0]).unwrap_or(text))
                         {
-                            values.push(json!([field, value]));
+                            values.push((field, value));
                         }
                     }
                     ERROR_FILE_NOT_FOUND
@@ -58,5 +57,5 @@ pub fn desktop_registrations() -> Result<Value> {
             }
         }
     }
-    Ok(json!(values))
+    Ok(values)
 }

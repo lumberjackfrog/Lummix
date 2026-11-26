@@ -36,7 +36,7 @@ def webview_sdk():
     folder = BUILD/"webview2"
     folder.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(archive) as package:
-        for name in ("WebView2.tlb", "runtimes/win-x64/native/WebView2Loader.dll", "LICENSE.txt", "NOTICE.txt"):
+        for name in ("runtimes/win-x64/native/WebView2Loader.dll", "LICENSE.txt", "NOTICE.txt"):
             (folder/Path(name).name).write_bytes(package.read(name))
     loader=folder/"WebView2Loader.dll"
     if hashlib.sha256(loader.read_bytes()).hexdigest() != "37996d81f0f3a13e93549f74f722fce25d70b00e93e4a470c34b75d7231bfd1d":
@@ -94,11 +94,10 @@ def main():
     from comtypes.client import GetModule
     uia = GetModule("UIAutomationCore.dll")
     webview = webview_sdk()
-    wv = GetModule(str(webview/"WebView2.tlb"))
     for name in ("dsp", "media", "host_lib"):
         args += ["--add-binary", str(native[name])+";."]
     args += ["--add-binary", str(webview/"WebView2Loader.dll")+";.", "--add-data", str(SRC/"packaging/Lummix.ico")+";."]
-    for module in (wv.__name__, wv.__wrapper_module__.__name__, uia.__name__, uia.__wrapper_module__.__name__, "wrist-server","spotify-helper","detect_openvr"):
+    for module in (uia.__name__, uia.__wrapper_module__.__name__, "spotify-helper","detect_openvr"):
         args += ["--hidden-import",module]
     # Optional third-party integrations of Python packages, unused in this application.
     for module in ("matplotlib","scipy","torch","tensorflow","pandas","IPython","jupyter","pytest",

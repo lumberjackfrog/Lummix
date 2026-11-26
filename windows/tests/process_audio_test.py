@@ -47,7 +47,7 @@ def read(feed,seconds=.55):
         chunk=feed.next()
         if chunk is None:time.sleep(.003)
         else:chunks.append(chunk)
-    assert len(chunks)>=seconds*100,(feed.state,len(chunks),feed.capture.state if feed.capture else None)
+    assert len(chunks)>=seconds*100,(feed.state,len(chunks))
     return np.concatenate(chunks)[:,0]
 
 
@@ -65,7 +65,8 @@ def run():
         return proc.pid,psutil.Process(proc.pid).create_time(),"desktop"
     target=source(525);other=spawn("--tone",1050);children.append(other)
     direct=False
-    feed=SpotifyProcessFeed({"fixture"},discover=lambda:target,guard=lambda pid,ids:direct)
+    from source_fixture import synthetic_probe
+    feed=SpotifyProcessFeed({"fixture"},probe=synthetic_probe(lambda:target,lambda:direct))
     try:
         data=read(feed)
         match,reject=powers(data,525),powers(data,1050)
@@ -74,7 +75,7 @@ def run():
         direct=True
         deadline=time.monotonic()+3
         while feed.state!="direct_to_cable" and time.monotonic()<deadline:time.sleep(.02)
-        assert feed.capture is None and feed.next() is None and feed.state=="direct_to_cable"
+        assert feed.next() is None and feed.state=="direct_to_cable"
         direct=False
         data=read(feed,.3)
         assert powers(data,525)>.02

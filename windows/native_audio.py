@@ -68,6 +68,9 @@ def bind_library(path):
     bind("capture_open", ptr, ptr, ct.c_uint32, ct.c_double)
     bind("capture_state", ct.c_int, ptr)
     bind("capture_close", None, ptr)
+    bind("watch_start", ptr, ptr, ct.c_char_p, ptr)
+    bind("watch_close", None, ptr)
+    bind("watch_status", ct.c_uint32, ptr)
     bind("route_open", OpenResult, ptr, ct.POINTER(PortAudio), ct.c_int, ct.c_int, ptr)
     bind("route_close", ct.c_int, ptr)
     bind("route_active", ct.c_int, ptr)
@@ -135,6 +138,8 @@ class NativeStream:
         self.handle = result.handle
         self.mode = "high" if result.high else "low"
         self.lock = threading.Lock()
+        self._release = finalize(self, _release_owned, engine.dll.lummix_route_close, self.handle,
+                                 engine, self.api, self.options)
 
     @property
     def active(self):
@@ -152,8 +157,8 @@ class NativeStream:
     def close(self):
         with self.lock:
             if self.handle:
-                handle, self.handle = self.handle, None
-                err = self.engine.dll.lummix_route_close(handle)
+                self.handle = None
+                err = self._release()
                 if err:
                     raise sd.PortAudioError("Could not close the Lummix route", err)
 
@@ -166,6 +171,7 @@ class ProcessCapture:
         if not self.handle:
             raise OSError("Spotify capture target unavailable or restarted")
         self.lock = threading.Lock()
+        self._release = finalize(self, _release_owned, engine.dll.lummix_capture_close, self.handle, engine)
 
     @property
     def state(self):
@@ -175,6 +181,11 @@ class ProcessCapture:
     def close(self):
         with self.lock:
             if self.handle:
-                self.engine.dll.lummix_capture_close(self.handle)
+                self._release()
                 self.handle = None
+
+
+def _release_owned(release, handle, *owners):
+    # Device callbacks and function pointers must outlive the native thread's join.
+    return release(handle)
 

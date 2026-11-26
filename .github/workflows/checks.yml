@@ -31,6 +31,11 @@ jobs:
           ./.venv/Scripts/python.exe -m playwright install chromium
       - shell: pwsh
         run: ./scripts/test-windows.ps1
+      - name: Test the native XSOverlay listener in Chromium
+        shell: pwsh
+        env:
+          LUMMIX_HOST_DLL: ${{ github.workspace }}/.build/host/release/lummix_host.dll
+        run: ./.venv/Scripts/python.exe -m unittest discover -s tests/ui -p test_wrist_controls.py -v
       - name: Fetch the pre-Rust mixer for independent verification
         if: github.event_name == 'workflow_dispatch'
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5

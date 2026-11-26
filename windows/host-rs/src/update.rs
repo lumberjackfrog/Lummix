@@ -4,9 +4,10 @@ use std::ptr::{null, null_mut};
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use windows_sys::Win32::Security::Cryptography::{
-    BCryptCloseAlgorithmProvider, BCryptDestroyKey, BCryptHash, BCryptImportKeyPair,
+    BCryptCloseAlgorithmProvider, BCryptCreateHash, BCryptDestroyHash, BCryptDestroyKey,
+    BCryptFinishHash, BCryptHash, BCryptHashData, BCryptImportKeyPair,
     BCryptOpenAlgorithmProvider, BCryptVerifySignature, BCRYPT_ALG_HANDLE, BCRYPT_ECCPUBLIC_BLOB,
-    BCRYPT_ECDSA_P256_ALGORITHM, BCRYPT_KEY_HANDLE, BCRYPT_SHA256_ALGORITHM,
+    BCRYPT_ECDSA_P256_ALGORITHM, BCRYPT_HASH_HANDLE, BCRYPT_KEY_HANDLE, BCRYPT_SHA256_ALGORITHM,
 };
 
 fn status(code: i32, context: &'static str) -> io::Result<()> {
@@ -44,7 +45,7 @@ impl Drop for Key {
     }
 }
 
-fn verify(data: &[u8], signature: &[u8], public_key: &[u8]) -> io::Result<()> {
+pub(crate) fn verify(data: &[u8], signature: &[u8], public_key: &[u8]) -> io::Result<()> {
     if signature.len() != 64 || public_key.len() != 72 || data.len() > 8192 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -96,6 +97,39 @@ fn verify(data: &[u8], signature: &[u8], public_key: &[u8]) -> io::Result<()> {
         )
     };
     status(code, "Update signature mismatch")
+}
+
+pub(crate) struct Sha256 {
+    hash: BCRYPT_HASH_HANDLE,
+    _algorithm: Algorithm,
+}
+
+impl Sha256 {
+    pub(crate) fn open() -> io::Result<Self> {
+        let algorithm = Algorithm::open(BCRYPT_SHA256_ALGORITHM)?;
+        let mut hash = null_mut();
+        let code = unsafe { BCryptCreateHash(algorithm.0, &mut hash, null_mut(), 0, null(), 0, 0) };
+        status(code, "Could not create update hash")?;
+        Ok(Self { hash, _algorithm: algorithm })
+    }
+
+    pub(crate) fn update(&mut self, block: &[u8]) -> io::Result<()> {
+        status(unsafe { BCryptHashData(self.hash, block.as_ptr(), block.len() as u32, 0) },
+               "Could not hash update bytes")
+    }
+
+    pub(crate) fn finish(self) -> io::Result<[u8; 32]> {
+        let mut digest = [0u8; 32];
+        status(unsafe { BCryptFinishHash(self.hash, digest.as_mut_ptr(), digest.len() as u32, 0) },
+               "Could not finish update hash")?;
+        Ok(digest)
+    }
+}
+
+impl Drop for Sha256 {
+    fn drop(&mut self) {
+        unsafe { BCryptDestroyHash(self.hash) };
+    }
 }
 
 pub fn run(args: &[OsString]) -> io::Result<()> {

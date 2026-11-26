@@ -1,6 +1,6 @@
 use super::processes::{matches_creation, process_tree};
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::collections::HashMap;
 use windows::{
     core::{Error, Interface, Result, HRESULT},
     Win32::{
@@ -24,12 +24,12 @@ unsafe fn audio_sessions(device: &IMMDevice) -> Result<IAudioSessionEnumerator> 
     manager.GetSessionEnumerator()
 }
 
-unsafe fn session_state(device: &IMMDevice, tree: &HashSet<u32>) -> Result<(bool, bool)> {
+unsafe fn session_state(device: &IMMDevice, tree: &HashMap<u32, u32>) -> Result<(bool, bool)> {
     let sessions = audio_sessions(device)?;
     let mut inactive = false;
     for index in 0..sessions.GetCount()? {
         let control: IAudioSessionControl2 = sessions.GetSession(index)?.cast()?;
-        if tree.contains(&control.GetProcessId()?) {
+        if tree.contains_key(&control.GetProcessId()?) {
             let state = control.GetState()?;
             if state == AudioSessionStateActive {
                 return Ok((true, inactive));
@@ -69,13 +69,20 @@ fn inspect_routes<T>(
     Ok(Some(false))
 }
 
-pub(super) fn direct_to_cable(root_pid: u32, signed: &[String]) -> Result<Value> {
-    if signed.is_empty() {
-        return Ok(Value::Null);
-    }
+pub(super) fn direct_to_cable(root_pid: u32, signed: &[String]) -> Result<Option<bool>> {
     let Some(tree) = process_tree(root_pid)? else {
-        return Ok(Value::Null);
+        return Ok(None);
     };
+    direct_to_cable_in_tree(&tree, signed)
+}
+
+pub(super) fn direct_to_cable_in_tree(
+    tree: &HashMap<u32, u32>,
+    signed: &[String],
+) -> Result<Option<bool>> {
+    if signed.is_empty() {
+        return Ok(None);
+    }
     unsafe {
         let devices = render_endpoints()?;
         let devices = (0..devices.GetCount()?)
@@ -92,10 +99,50 @@ pub(super) fn direct_to_cable(root_pid: u32, signed: &[String]) -> Result<Value>
                 Ok((is_cable, device))
             })
             .collect::<Result<Vec<_>>>()?;
-        Ok(json!(inspect_routes(&devices, |device| session_state(
-            device, &tree
-        ))?))
+        inspect_routes(&devices, |device| session_state(device, tree))
     }
+}
+
+fn unique_renderer(
+    tree: &HashMap<u32, u32>,
+    sessions: impl IntoIterator<Item = (u32, bool)>,
+) -> Option<u32> {
+    let mut selected = None;
+    for (pid, single_owner) in sessions {
+        if !tree.contains_key(&pid) {
+            continue;
+        }
+        if !single_owner || selected.is_some_and(|previous| previous != pid) {
+            return None;
+        }
+        selected = Some(pid);
+    }
+    selected
+}
+
+pub(super) fn active_renderer(tree: &HashMap<u32, u32>) -> Result<Option<u32>> {
+    let mut active = Vec::new();
+    unsafe {
+        let endpoints = render_endpoints()?;
+        for index in 0..endpoints.GetCount()? {
+            let sessions = audio_sessions(&endpoints.Item(index)?)?;
+            for index in 0..sessions.GetCount()? {
+                let control = sessions
+                    .GetSession(index)?
+                    .cast::<IAudioSessionControl2>()?;
+                if control.GetState()? != AudioSessionStateActive {
+                    continue;
+                }
+                // WASAPI may report the creator PID for a cross-process session.
+                // Such a session does not uniquely identify a renderer.
+                let mut pid = 0;
+                let status = (control.vtable().GetProcessId)(control.as_raw(), &mut pid);
+                status.ok()?;
+                active.push((pid, status.0 == 0));
+            }
+        }
+    }
+    Ok(unique_renderer(tree, active))
 }
 
 pub(super) fn peak(processes: &[(u32, f64)]) -> Result<Value> {
@@ -163,5 +210,17 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn only_one_active_renderer_in_the_verified_tree_narrows_the_capture() {
+        let tree = HashMap::from([(1, 1), (2, 1), (3, 2), (4, 3), (5, 3)]);
+        assert_eq!(
+            unique_renderer(&tree, [(4, true), (4, true), (17, true)]),
+            Some(4)
+        );
+        assert_eq!(unique_renderer(&tree, [(17, true)]), None);
+        assert_eq!(unique_renderer(&tree, [(4, true), (5, true)]), None);
+        assert_eq!(unique_renderer(&tree, [(4, false)]), None);
     }
 }
