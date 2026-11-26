@@ -1,4 +1,4 @@
-use crate::private_http::{self, single_header, Listener, Request};
+use crate::private_http::{self, header_values, single_header, Listener, Request};
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
@@ -26,7 +26,16 @@ type Dispatch = extern "C" fn(
     status: *mut u16,
 ) -> usize;
 
-pub(crate) type NativeDispatch = dyn Fn(&str, &str, &str, &str, &[(String, String)], &[u8]) -> (u16, Vec<u8>) + Send + Sync;
+pub(crate) struct NativeBody<'a> {
+    pub bytes: &'a [u8],
+    pub oversized: bool,
+}
+
+pub(crate) type NativeDispatch = dyn Fn(&str, &str, &str, &str, &[(String, String)], NativeBody<'_>) -> (u16, Vec<u8>) + Send + Sync;
+
+pub(crate) fn payload_limit(path: &str) -> usize {
+    if path == "/mix/preferences" { 401_000 } else { 256 }
+}
 enum Backend {
     Legacy(Dispatch),
     Rust(Box<NativeDispatch>),
@@ -165,11 +174,7 @@ impl Media {
             );
         }
         let query = query.to_owned();
-        let limit = if path == "/mix/preferences" {
-            401_000
-        } else {
-            256
-        };
+        let limit = payload_limit(&path);
         let (body, oversized) = if request.method == Method::Post {
             match private_http::read_payload(&mut request, limit) {
                 Ok(body) => (body, false),
@@ -202,16 +207,18 @@ impl Media {
                     reader.take(limit as u64 + 1).read_to_end(&mut inflated)
                         .map(|_| inflated).unwrap_or_default()
                 };
-                let encoding = single_header(&request,"Content-Encoding").unwrap_or("");
+                let encoding = header_values(&request, "Content-Encoding").next().unwrap_or("");
                 let body = if encoding.eq_ignore_ascii_case("gzip") {
                     decode(&mut flate2::read::GzDecoder::new(&body[..]))
                 } else if encoding.eq_ignore_ascii_case("deflate") {
                     decode(&mut flate2::read::ZlibDecoder::new(&body[..]))
                 } else { body };
-                if oversized || body.len()>limit {
+                let oversized = oversized || body.len() > limit;
+                if oversized && !path.starts_with("/mix/") {
                     (413, b"Request body too large".to_vec())
                 } else {
-                    dispatch(request.method.as_str(), &path, origin, &query, request.headers(), &body)
+                    dispatch(request.method.as_str(), &path, origin, &query, request.headers(),
+                             NativeBody { bytes: &body, oversized })
                 }
             },
             Backend::Legacy(dispatch) => {

@@ -625,8 +625,12 @@ fn install(
 }
 
 fn shell(path: &Path) -> Outcome<()> {
+    use windows_sys::Win32::System::Com::{
+        CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED,
+    };
     let path: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
     let parameters = text_wide(&format!("/LUMMIXWAITPID={}", std::process::id()));
+    let apartment = unsafe { CoInitializeEx(null(), COINIT_APARTMENTTHREADED as u32) };
     let result = unsafe {
         ShellExecuteW(
             null_mut(),
@@ -637,6 +641,9 @@ fn shell(path: &Path) -> Outcome<()> {
             SW_SHOWNORMAL,
         )
     };
+    if apartment >= 0 {
+        unsafe { CoUninitialize() };
+    }
     if result as isize <= 32 {
         return Err(Failure::Storage);
     }

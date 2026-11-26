@@ -464,6 +464,22 @@ mod download {
             let timeout = remaining(deadline)?;
             WinHttpSetTimeouts(session.0, timeout, timeout, timeout, timeout)
                 .map_err(io::Error::other)?;
+            let tls12 = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2;
+            let protocols = tls12 | WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3;
+            if WinHttpSetOption(
+                Some(session.0),
+                WINHTTP_OPTION_SECURE_PROTOCOLS,
+                Some(&protocols.to_ne_bytes()),
+            )
+            .is_err()
+            {
+                WinHttpSetOption(
+                    Some(session.0),
+                    WINHTTP_OPTION_SECURE_PROTOCOLS,
+                    Some(&tls12.to_ne_bytes()),
+                )
+                .map_err(io::Error::other)?;
+            }
             let host = wide(host);
             let path = wide(path);
             let connection =
@@ -509,17 +525,17 @@ mod download {
             if status != 200 {
                 return Err(io::Error::other("Unexpected Spotify artwork response"));
             }
-            let mut length = 0u64;
-            let mut size = 8;
+            let mut length = 0u32;
+            let mut size = 4;
             match WinHttpQueryHeaders(
                 request.0,
-                WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER64,
+                WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER,
                 PCWSTR::null(),
-                Some((&mut length as *mut u64).cast()),
+                Some((&mut length as *mut u32).cast()),
                 &mut size,
                 null_mut(),
             ) {
-                Ok(()) if length > limit as u64 => {
+                Ok(()) if length as usize > limit => {
                     return Err(io::Error::other("Spotify artwork response too large"))
                 }
                 Ok(()) => {}

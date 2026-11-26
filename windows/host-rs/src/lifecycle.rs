@@ -183,7 +183,7 @@ impl Drop for Runtime {
         drop(self.studio.take());
         while Instant::now() < deadline {
             self.children
-                .retain_mut(|child| matches!(child.try_wait(), Ok(None)));
+                .retain_mut(|child| !matches!(child.try_wait(), Ok(Some(_))));
             if self.children.is_empty() {
                 break;
             }

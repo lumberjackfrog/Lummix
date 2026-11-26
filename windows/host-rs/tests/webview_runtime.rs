@@ -122,7 +122,7 @@ fn pump(
                     command(webview::lummix_webview_moved(token), "move")?;
                     command(webview::lummix_webview_visible(token, true as i32), "show")?;
                 }
-                if kind == 2 && source == "http://127.0.0.1:41835/?view=desktop&app=1" {
+                if kind == 2 && source == webview::APP_DOCUMENT {
                     if data == "fixture-requests-host" {
                         command(
                             webview::lummix_webview_post_json(
@@ -155,7 +155,7 @@ fn pump(
                 let mut wide = vec![0; len];
                 webview::lummix_webview_source(token, wide.as_mut_ptr(), len);
                 let source = String::from_utf16_lossy(wide.strip_suffix(&[0]).unwrap_or(&wide));
-                if source != "http://127.0.0.1:41835/?view=desktop&app=1" {
+                if source != webview::APP_DOCUMENT {
                     return Err(fail(format!(
                         "Off-origin navigation changed native WebView source to {source}"
                     )));
