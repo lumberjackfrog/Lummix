@@ -318,7 +318,11 @@ impl Preview {
             }
             "/wrist-fixture.js" => self.fixture(request),
             "/setup-status" => self.setup(request, false),
-            "/detect-devices" if !has_header(&request, "Origin", DESKTOP) => reject(request, 403),
+            "/setup-resume" | "/detect-devices" if !has_header(&request, "Origin", DESKTOP) => reject(request, 403),
+            "/setup-resume" => match self.callback(3) {
+                Some(data) => cors_json(request, 200, data),
+                None => reject(request, 503),
+            },
             "/detect-devices" => match self.callback(2) {
                 Some(data) => cors_json(request, 200, data),
                 None => reject(request, 503),

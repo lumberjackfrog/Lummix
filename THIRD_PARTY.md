@@ -15,6 +15,8 @@ Music and artwork remain the rights holders' content. An installed player or wor
 
 ## Basic VB-CABLE
 
+From 1.0.9, first-time setup downloads the base driver from VB-Audio when needed. Lummix distributes its own setup code and verifies the original vendor package before Windows opens it.
+
 **VB-CABLE is donationware by VB-Audio. Contributions are welcome.** Lummix uses the original Windows base driver. The recording endpoint can have the friendly name **Lummix** in Windows. Its driver and publisher remain VB-Audio. [Product and donations](https://vb-audio.com/Cable/), [licensing and distribution conditions](https://vb-audio.com/Services/licensing.htm).
 
 The distribution permission covers the unmodified basic package included with an application, including installer deployment, while end users can identify VB-Audio and support it. VB-Audio specifies additional licensing for organizations whose users cannot independently identify or contribute to the product. Its separately licensed A+B and C+D packages are outside this permission. The pinned original `VBCABLE_Driver_Pack46.zip` is 1,324,680 bytes, SHA-256 `bc44e8974191a5a2427d6c979e2dab08dbb09925f3f435dfa2f0ba3e45b6eb90`. [Vendor download](https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack46.zip).

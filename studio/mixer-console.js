@@ -169,7 +169,7 @@
     failed:['Setup could not finish','Choose Retry setup to run the verified installer again.'],
     partial:['The cable is only partly available','If you just installed VB-CABLE, restart Windows. Otherwise, check that both VB-CABLE endpoints are enabled in Windows Sound.'],
     unavailable:['Couldn’t check VB-CABLE','Reopen Lummix or check again.'],
-    'restart-needed':['Restart Windows to finish','After restarting, reopen Lummix from Start and choose Set up Lummix.']
+    'restart-needed':['Restart Windows to finish','Lummix will finish checking the virtual microphone when you sign in.']
   };
   const micPanelOpen=()=>el('mic-connect-dialog').open||el('settings-dialog').open;
   const currentScan=version=>actions?.setup.current(version) && micPanelOpen();
@@ -198,11 +198,12 @@
     if(captureStates[detail?.state])quickState(detail.state!=='off',quickBusy);
   });
   let micSnapshot=null,micNotice='',micPoll=0,ownedRoute=null;
-  let quickBusy=false, quickLive=false;
+  let quickBusy=false, quickLive=false, resumeReady=false;
   function quickState(live,working=false){
     quickLive=live;
-    el('quick-mix-label').textContent=working?'Setting up…':live?'Stop mix':'Set up Lummix';
-    el('set-up-lummix').setAttribute('aria-label',working?'Setting up Lummix':live?'Stop mix':'Set up Lummix');
+    const label=working?'Setting up…':live?'Stop mix':resumeReady?'Start mix':'Set up Lummix';
+    el('quick-mix-label').textContent=label;
+    el('set-up-lummix').setAttribute('aria-label',label);
     el('set-up-lummix').setAttribute('aria-describedby','headset-summary');
     el('set-up-lummix').disabled=working;
     el('set-up-lummix').title=live?'Stop sending your mic and music to the virtual microphone':'Set up the virtual microphone and start sending mic and Spotify audio';
@@ -211,7 +212,7 @@
     stop_before_select:'Stop the live mic before changing its recording device.',
     refresh_mix_settings:'Check the mic again before continuing.',
     cable_unavailable:'Finish virtual microphone setup before starting.',
-    cable_restart_needed:'Restart Windows, then reopen Lummix and choose Set up Lummix.',
+    cable_restart_needed:'Restart Windows to finish virtual microphone setup.',
     no_input:'Connect a recording device, then check again.',
     selected_input_unavailable:'Reconnect your saved mic or choose another input.',
     input_disconnected:'The recording device disconnected. Reconnect it and start the mic again.',
@@ -338,7 +339,9 @@
     const knownName=typeof capture==='string' && capture.trim().length>0;
     const [title,note]=ready
       ? ['VB-CABLE is ready',knownName?'':'Windows verified the driver. Check again to read the microphone’s exact name.']
-      : cableStates[info.state]||cableStates.unavailable;
+      : info.state==='restart-needed' && info.resumeAtSignIn!==true
+        ? ['Restart Windows to finish','After you sign in, open Lummix from Start. It will check the virtual microphone.']
+        : cableStates[info.state]||cableStates.unavailable;
     el('mic-status-title').textContent=title;
     el('cable-status').textContent=note || (ready?info.message||'':'');
     el('cable-status').hidden=!note;
@@ -467,6 +470,26 @@
     pollMic();
   }
   el('set-up-lummix').onclick=event=>openSetup(quickLive?'stop':'setup',event.isTrusted);
+  async function readSetupContinuation(){
+    if(!setupBridge)return;
+    const until=Date.now()+75000;
+    let failures=0;
+    while(Date.now()<until){
+      try{
+        const info=await query(setupHost+'/setup-resume');
+        failures=0;
+        if(info.state==='ready'){
+          resumeReady=true;quickState(quickLive,quickBusy);
+          if(!quickLive)el('headset-summary').textContent=info.captureName||'Virtual microphone ready';
+        }else if(info.state==='attention' && !quickLive){
+          el('headset-summary').textContent='Check the virtual microphone';
+        }
+        if(info.state!=='checking')return;
+      }catch{ if(++failures>=3)return; }
+      await new Promise(resolve=>setTimeout(resolve,1500));
+    }
+  }
+  readSetupContinuation();
   function presentMicSettings(){
     el('settings-mic-controls').append(el('mic-input-panel'));
     el('settings-device-panels').append(...diagnostics);

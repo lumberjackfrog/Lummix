@@ -18,6 +18,8 @@ The Windows installer is unsigned. Windows may show a publisher warning, and a P
 
 Next session, open Lummix and start the mix. To open the app automatically when you sign in, enable **Settings → Application → Start with Windows**. It defaults to off. Starting the mix is always manual. **Stop mix** releases the microphone and music capture.
 
+**Testing 1.0.9.** If the cable is missing, **Set up Lummix** downloads the original driver directly from VB-Audio. Approve its Windows prompt and restart when setup asks. Lummix opens once after sign-in, checks the cable and shows **Start mix** when it is ready. If your PC restricts startup entries, open Lummix from Start to finish.
+
 **Updates.** On 1.0.8 or later, open **Settings → Application → Check for updates**, download the offered version, stop your mix and choose **Install and reopen**. On 1.0.7 or earlier, run the installer above once. Lummix checks the publisher’s release signature and the installer’s SHA-256. Windows applies its normal application checks.
 
 **Troubleshooting.** **Settings → Application → Diagnostics → Open logs** saves a snapshot of the mix, cable and Spotify capture status. The local files contain event codes, app version, Windows build and times. Together they use at most 128 KiB. You can clear them there or share one yourself when reporting a problem.
@@ -64,4 +66,6 @@ python -m playwright install chromium
 python -m unittest discover -s tests/ui -v
 ```
 
-Audio libraries, vendor components and their distribution terms are documented in [Third-party notices](THIRD_PARTY.md).
+The original Lummix code is available under the [MIT License](LICENSE). Third-party drivers, libraries, media and trademarks retain their respective rights. [Third-party notices](THIRD_PARTY.md)
+
+[Code signing policy and privacy](docs/code-signing.md)

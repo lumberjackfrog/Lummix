@@ -1,0 +1,59 @@
+name: Sign one Lummix Windows file
+description: Submit one first-party file and accept a trusted, timestamped Foundation signature.
+inputs:
+  path:
+    description: Exact file built in this job
+    required: true
+  configuration:
+    description: Approved SignPath artifact configuration for this file
+    required: true
+  token:
+    description: SignPath submitter token
+    required: true
+  organization:
+    description: SignPath organization ID
+    required: true
+  project:
+    description: SignPath project slug
+    required: true
+  policy:
+    description: SignPath release policy slug
+    required: true
+runs:
+  using: composite
+  steps:
+    - id: input
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: ${{ inputs.configuration }}-request-${{ github.run_attempt }}
+        path: ${{ inputs.path }}
+        if-no-files-found: error
+        include-hidden-files: true
+        retention-days: 2
+    - uses: SignPath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627 # v2
+      with:
+        api-token: ${{ inputs.token }}
+        organization-id: ${{ inputs.organization }}
+        project-slug: ${{ inputs.project }}
+        signing-policy-slug: ${{ inputs.policy }}
+        artifact-configuration-slug: ${{ inputs.configuration }}
+        parameters: >-
+          ${{ inputs.configuration != 'lummix-msi' && format('version: "{0}"', env.LUMMIX_SIGN_VERSION) || '' }}
+        github-artifact-id: ${{ steps.input.outputs.artifact-id }}
+        wait-for-completion: true
+        wait-for-completion-timeout-in-seconds: 1800
+        output-artifact-directory: ${{ runner.temp }}/lummix-signed/${{ inputs.configuration }}
+    - name: Verify the signed file before packaging
+      shell: pwsh
+      env:
+        INPUT_FILE: ${{ inputs.path }}
+        SIGNED_DIR: ${{ runner.temp }}/lummix-signed/${{ inputs.configuration }}
+      run: |
+        $original = Get-Item -LiteralPath $env:INPUT_FILE
+        $files = @(Get-ChildItem -LiteralPath $env:SIGNED_DIR -Recurse -File)
+        if ($files.Count -ne 1 -or $files[0].Name -cne $original.Name) { throw 'Unexpected signing result.' }
+        $signature = Get-AuthenticodeSignature -LiteralPath $files[0].FullName
+        if ($signature.Status -ne 'Valid' -or !$signature.TimeStamperCertificate) { throw 'A trusted timestamped Windows signature is required.' }
+        $publisher = $signature.SignerCertificate.GetNameInfo([Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
+        if ($publisher -cne 'SignPath Foundation') { throw "Unexpected Windows publisher: $publisher" }
+        Copy-Item -LiteralPath $files[0].FullName -Destination $original.FullName -Force

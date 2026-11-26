@@ -25,6 +25,8 @@ class LocalServices:
         self.saved_mic = None
         self.started = False
         self.cable_state = "ready"
+        self.resume_state = "none"
+        self.resume_at_signin = True
         self.cable_installs = 0
         self.addon_state = "installable"
         self.addon_commands = []
@@ -69,11 +71,14 @@ class LocalServices:
                 canInstall=self.addon_state=="installable",canRemove=installed,canUpdate=self.addon_state=="update",
                 token=TOKEN),headers=headers)
         if url.port == 41836 and request.method == "GET":
+            if path == "/setup-resume":
+                return route.fulfill(json=dict(state=self.resume_state, captureName=MIC_NAME), headers=headers)
             if path == "/preview":
                 return route.fulfill(content_type="text/html",body="<title>Wrist fixture</title>")
             if path == "/setup-status":
                 ready = self.cable_state == "ready"
                 return route.fulfill(json=dict(state=self.cable_state, ready=ready,
+                    resumeAtSignIn=self.resume_at_signin,
                     endpoints={"capture":MIC_NAME} if ready else None, token=TOKEN), headers=headers)
             if path == "/detect-devices":
                 return route.fulfill(json=dict(connected=[], saved=[], runtimes=[]), headers=headers)
@@ -83,7 +88,8 @@ class LocalServices:
                 return route.fulfill(status=403, headers=headers)
             self.cable_installs += 1
             self.cable_state = "restart-needed"
-            return route.fulfill(json=dict(state=self.cable_state, ready=False), headers=headers)
+            return route.fulfill(json=dict(state=self.cable_state, ready=False,
+                resumeAtSignIn=self.resume_at_signin), headers=headers)
         if url.port == 41838:
             if request.method == "POST":
                 body = request.post_data_json
@@ -170,13 +176,15 @@ class StudioTests(unittest.TestCase):
             frame = page.frame_locator("#canvas")
             frame.locator("#set-up-lummix").click()
             expect(frame.locator("#mic-status-title")).to_have_text("Restart Windows to finish")
-            expect(frame.locator("#cable-status")).to_contain_text("reopen Lummix from Start")
+            expect(frame.locator("#cable-status")).to_contain_text("when you sign in")
             expect(frame.locator("#mic-live-action")).to_be_disabled()
             self.assertEqual(services.cable_installs, 1)
             self.assertFalse([body for path,body in services.commands if path=="/mix/mic"])
+            services.resume_at_signin = False
             page.reload()
             frame.locator("#set-up-lummix").click()
             expect(frame.locator("#mic-status-title")).to_have_text("Restart Windows to finish")
+            expect(frame.locator("#cable-status")).to_contain_text("open Lummix from Start")
             self.assertEqual(services.cable_installs, 1)
             self.assertFalse([body for path,body in services.commands if path=="/mix/mic"])
 
@@ -188,6 +196,27 @@ class StudioTests(unittest.TestCase):
             self.assertEqual(services.cable_installs, 1)
             self.assertIn(("/mix/mic", {"action":"setup", "id":"desk"}), services.commands)
             self.assertFalse(services.unexpected)
+
+    def test_completed_restart_offers_start_mix_without_capturing(self):
+        services = LocalServices()
+        services.resume_state = "ready"
+        with sync_playwright() as pw, pw.chromium.launch(executable_path=os.environ.get("LUMMIX_TEST_CHROMIUM")) as browser, browser.new_context(service_workers="block") as context:
+            context.route("**/*", services.intercept)
+            context.add_init_script("""
+              window.WebSocket=class extends EventTarget {close(){} send(){}};
+              window.chrome ||= {};
+              window.chrome.webview = Object.assign(new EventTarget(), {postMessage(){}});
+            """)
+            page = context.new_page()
+            page.goto(ORIGIN + "/?view=desktop&app=1")
+            frame = page.frame_locator("#canvas")
+            expect(frame.locator("#set-up-lummix")).to_have_accessible_name("Start mix")
+            self.assertFalse(services.started)
+            self.assertEqual(services.cable_installs, 0)
+            self.assertFalse([body for path, body in services.commands if path == "/mix/mic"])
+            frame.locator("#set-up-lummix").click()
+            expect(frame.locator("#mic-live-action")).to_have_text("Stop mix")
+            self.assertTrue(services.started)
 
     def test_native_quick_setup_handles_both_dependencies_only_after_click(self):
         services = LocalServices()

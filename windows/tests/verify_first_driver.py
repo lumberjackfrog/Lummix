@@ -1,4 +1,4 @@
-"""Exercise the bundled driver's first-install flow on a disposable Windows Actions runner."""
+"""Exercise first-time driver install and sign-in continuation on a disposable Windows runner."""
 from contextlib import contextmanager
 import json
 import os
@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+import winreg
 
 import requests
 
@@ -18,6 +19,20 @@ def verify(exe):
     headers = {"Host": "127.0.0.1:41836", "Origin": "http://127.0.0.1:41835"}
     base = "http://127.0.0.2:41836"
     states = []
+    profile = Path(os.environ["LOCALAPPDATA"]) / "Lummix"
+    resume_file = profile / "setup-resume.json"
+    legacy_marker = profile / "vb-cable-restart"
+
+    def startup_value(name):
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run") as key:
+                return winreg.QueryValueEx(key, name)[0]
+        except FileNotFoundError:
+            return None
+
+    normal_startup = startup_value("Lummix")
+    resume_value = "Lummix Setup Resume"
+    assert startup_value(resume_value) is None and not resume_file.exists()
     with requests.Session() as http, (evidence / "first-driver.log").open("wb") as log:
         http.trust_env = False
 
@@ -65,9 +80,39 @@ def verify(exe):
                     break
                 time.sleep(1)
             assert result["state"] == "restart-needed" and not result["ready"], states
+            assert result["resumeAtSignIn"] and resume_file.is_file()
+            assert startup_value(resume_value) == f'"{exe}" --resume-setup'
+        # An ordinary sign-out or restart of Lummix must preserve the next-boot action.
+        subprocess.run([str(exe), "--resume-setup"], check=True, timeout=25)
+        assert resume_file.exists() and startup_value(resume_value)
         with wrist():
             reopened = status()
             assert reopened["state"] == "restart-needed" and not reopened["ready"], states
+        # Hosted jobs cannot reboot. Present the app with a saved boot ID from the
+        # past, leaving Windows' real driver, event log and endpoints untouched.
+        prior_boot = {"event":"first-driver-qa-previous-boot","ticks":1}
+        for marker in (legacy_marker, resume_file):
+            assert marker.is_file()
+            marker.write_text(json.dumps(prior_boot), encoding="utf-8")
+        with wrist():
+            deadline = time.monotonic() + 85
+            while time.monotonic() < deadline:
+                answer = http.get(base + "/setup-resume", headers=headers, timeout=8)
+                answer.raise_for_status()
+                continuation = answer.json()
+                if continuation["state"] in {"ready", "attention"}:
+                    break
+                time.sleep(.5)
+            else:
+                raise RuntimeError("Setup did not finish rechecking the cable")
+            now = status()
+            if now["state"] == "ready":
+                assert continuation["state"] == "ready" and continuation["captureName"], continuation
+            else:
+                assert continuation["state"] == "attention", continuation
+        assert not resume_file.exists() and startup_value(resume_value) is None
+        assert startup_value("Lummix") == normal_startup
+        subprocess.run([str(exe), "--resume-setup"], check=True, timeout=10)
         driver = subprocess.check_output([
             "powershell.exe", "-NoProfile", "-Command",
             "Get-CimInstance Win32_PnPSignedDriver -Filter \"DeviceName='VB-Audio Virtual Cable'\" | "
@@ -81,6 +126,8 @@ def verify(exe):
                                                errors="replace", timeout=30)
             assert "vbmme" in packages.lower() and "vb-audio" in packages.lower(), "Driver package missing"
         report = {"states": states, "afterAppRestart": reopened["state"],
+                  "sameBootRetained":True, "simulatedNewBoot":continuation,
+                  "temporaryEntryRemoved":True, "normalStartupPreserved":True,
                   "driver": json.loads(driver) if driver.strip() else "staged in Windows driver store"}
         (evidence / "first-driver.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
 

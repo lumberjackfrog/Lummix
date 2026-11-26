@@ -292,7 +292,7 @@ def main(installed_exe=None):
                 report["freshProfileCloseToTray"]=True
                 assert fetch(41838,"/mix/gains",headers={"Origin":"http://untrusted.invalid"}).status_code == 403
                 check = subprocess.run([exe,"verify-vendor"],cwd=cwd,env=env,stdout=out,stderr=out,
-                                       creationflags=subprocess.CREATE_NO_WINDOW,timeout=50)
+                                       creationflags=subprocess.CREATE_NO_WINDOW,timeout=90)
                 assert check.returncode == 0, "vendor verification failed"
                 report["vendorVerifiedNoInstall"] = True
             finally:

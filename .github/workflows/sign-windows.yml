@@ -1,0 +1,86 @@
+name: Sign and verify the Windows installer
+on: workflow_dispatch
+permissions:
+  contents: read
+  actions: read
+jobs:
+  sign:
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-2022
+    environment: windows-signing
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        with:
+          python-version: '3.12'
+      - name: Prepare the approved signing project
+        shell: pwsh
+        env:
+          ORGANIZATION: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          PROJECT: ${{ vars.SIGNPATH_PROJECT }}
+          POLICY: ${{ vars.SIGNPATH_POLICY }}
+          TOKEN_CONFIGURED: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+        run: |
+          if (!$env:ORGANIZATION -or !$env:PROJECT -or !$env:POLICY -or $env:TOKEN_CONFIGURED -ne 'true') {
+            throw 'Configure the approved SignPath project in the windows-signing environment first.'
+          }
+          ./scripts/get-ci-nsis.ps1
+          python -m venv .venv
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          ./scripts/build.ps1 -Python ./.venv/Scripts/python.exe -MsiOnly
+          $version = ./.venv/Scripts/python.exe -c "from windows.release_identity import VERSION; print(VERSION)"
+          if ($LASTEXITCODE -or $version -cnotmatch '^\d+\.\d+\.\d+$') { throw 'Invalid Lummix release version.' }
+          "LUMMIX_SIGN_VERSION=$version" >> $env:GITHUB_ENV
+      - name: Sign the Lummix application
+        uses: ./.github/actions/sign-lummix
+        with:
+          path: .build/frozen/runtime/Lummix.exe
+          configuration: lummix-desktop-exe
+          organization: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project: ${{ vars.SIGNPATH_PROJECT }}
+          policy: ${{ vars.SIGNPATH_POLICY }}
+          token: ${{ secrets.SIGNPATH_API_TOKEN }}
+      - name: Package the signed application in the MSI
+        shell: pwsh
+        run: |
+          ./.venv/Scripts/python.exe windows/packaging/package.py
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          ./.venv/Scripts/python.exe windows/packaging/installer.py 'dist/Lummix for Windows.zip' 'dist/Lummix Setup.msi'
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Sign the MSI
+        uses: ./.github/actions/sign-lummix
+        with:
+          path: dist/Lummix Setup.msi
+          configuration: lummix-msi
+          organization: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project: ${{ vars.SIGNPATH_PROJECT }}
+          policy: ${{ vars.SIGNPATH_POLICY }}
+          token: ${{ secrets.SIGNPATH_API_TOKEN }}
+      - name: Wrap the signed MSI
+        shell: pwsh
+        run: ./scripts/build-setup.ps1 -MakeNsis $env:NSIS_COMPILER
+      - name: Sign the setup executable
+        uses: ./.github/actions/sign-lummix
+        with:
+          path: dist/Lummix Setup.exe
+          configuration: lummix-setup-exe
+          organization: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project: ${{ vars.SIGNPATH_PROJECT }}
+          policy: ${{ vars.SIGNPATH_POLICY }}
+          token: ${{ secrets.SIGNPATH_API_TOKEN }}
+      - name: Install, verify the signed payload, repair and uninstall
+        shell: pwsh
+        run: |
+          ./.venv/Scripts/python.exe -m pip install --only-binary=:all: -r windows/requirements-test.txt
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          ./.venv/Scripts/python.exe windows/tests/verify_setup_exe.py 'dist/Lummix Setup.exe'
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Save the signed installer for testing
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: Lummix-Windows-x64-signed
+          path: dist/Lummix Setup.exe
+          if-no-files-found: error

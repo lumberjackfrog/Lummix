@@ -472,14 +472,26 @@ pub(crate) fn entry(executable: &Path, args: &[OsString]) -> Result<(), String> 
     };
     match (mode, args) {
         ("launch", []) => return launch(executable, &data),
+        ("--resume-setup", []) => {
+            if setup_runtime::resume_login(executable, &data) {
+                launch(executable, &data)?;
+            }
+            return Ok(());
+        }
         ("--startup", []) => {
             if sign_in::enabled(executable).unwrap_or(false) {
                 launch(executable, &data)?;
             }
             return Ok(());
         }
-        ("refresh-startup", []) => return setup_result(sign_in::refresh(executable)),
-        ("remove-addon", []) => setup_result(sign_in::change(executable, false))?,
+        ("refresh-startup", []) => {
+            setup_result(sign_in::refresh_resume(executable))?;
+            return setup_result(sign_in::refresh(executable));
+        }
+        ("remove-addon", []) => {
+            setup_runtime::clear_resume(executable);
+            setup_result(sign_in::change(executable, false))?;
+        }
         ("studio", _) => return standalone_studio(executable, args),
         ("verify-services", [flag])
             if flag == "--parent-stdin" && env::var("LUMMIX_QA_LOOPBACK").as_deref() == Ok("2") =>

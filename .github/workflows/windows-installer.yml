@@ -24,15 +24,7 @@ jobs:
           python-version: '3.12'
       - name: Get the pinned installer compiler
         shell: pwsh
-        run: |
-          $file = Join-Path $env:RUNNER_TEMP 'nsis-tool.exe'
-          $tools = Join-Path $env:RUNNER_TEMP 'nsis-tools'
-          curl.exe -fLsS --retry 2 -o $file 'https://downloads.sourceforge.net/project/nsis/NSIS%203/3.12/nsis-3.12-setup.exe'
-          if ($LASTEXITCODE -ne 0) { throw 'NSIS download failed.' }
-          if ((Get-FileHash $file).Hash -ne '3BC2B06253A7E4957111BE152AC6A536E0C7478A706E19DA814038DB5D706495') { throw 'NSIS hash mismatch.' }
-          7z x -y "-o$tools" $file | Out-Null
-          if ($LASTEXITCODE -ne 0) { throw 'NSIS extraction failed.' }
-          "NSIS_COMPILER=$tools\makensis.exe" >> $env:GITHUB_ENV
+        run: ./scripts/get-ci-nsis.ps1
       - name: Build Lummix Setup.exe
         shell: pwsh
         run: |
@@ -56,6 +48,25 @@ jobs:
           name: Lummix-Windows-x64
           path: dist/Lummix Setup.exe
           if-no-files-found: error
+
+  provenance:
+    needs: installer
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: Lummix-Windows-x64
+          path: candidate
+      - name: Attest the tested Windows installer
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: candidate/Lummix Setup.exe
+          create-storage-record: false
 
   compare:
     needs: installer

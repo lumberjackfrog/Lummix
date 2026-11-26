@@ -174,7 +174,7 @@ def chromium_probe(directory):
         if hwnd and win32gui.IsWindow(hwnd):
             win32gui.PostMessage(hwnd,0x10,0,0)
         try:
-            browser.wait(timeout=2)
+            browser.wait(timeout=5)
         except subprocess.TimeoutExpired:
             # The outer job owns the browser even when its main process has
             # unwound or the UI Automation provider has stopped responding.
@@ -193,50 +193,64 @@ class PrivateChromiumTest(unittest.TestCase):
         user.CreateDesktopW.argtypes=(wintypes.LPCWSTR,wintypes.LPCWSTR,ctypes.c_void_p,wintypes.DWORD,wintypes.DWORD,ctypes.c_void_p)
         user.CreateDesktopW.restype=wintypes.HANDLE
         user.CloseDesktop.argtypes=[wintypes.HANDLE]
+        profile = tempfile.TemporaryDirectory(prefix="LummixChromiumQA-")
+        self.addCleanup(self.remove_profile, profile)
         name="LummixSliderTest"+uuid.uuid4().hex
         desk=user.CreateDesktopW(name,None,None,0,0x000F01FF,None)
         self.assertTrue(desk)
+        self.addCleanup(user.CloseDesktop, desk)
+        tmp = profile.name
+        args=[sys.executable,"-B",str(Path(__file__).resolve()),"--private",tmp]
+        si=win32process.STARTUPINFO();si.lpDesktop="winsta0\\"+name
+        job = win32job.CreateJobObject(None, "")
         try:
-            with tempfile.TemporaryDirectory() as tmp:
-                args=[sys.executable,"-B",str(Path(__file__).resolve()),"--private",tmp]
-                si=win32process.STARTUPINFO();si.lpDesktop="winsta0\\"+name
-                job = win32job.CreateJobObject(None, "")
+            flags = win32job.QueryInformationJobObject(job, win32job.JobObjectExtendedLimitInformation)
+            flags["BasicLimitInformation"]["LimitFlags"] |= win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            win32job.SetInformationJobObject(job, win32job.JobObjectExtendedLimitInformation, flags)
+            proc, thread, _, _ = win32process.CreateProcess(
+                None, subprocess.list2cmdline(args), None, None, False,
+                CREATE_SUSPENDED | subprocess.CREATE_NO_WINDOW, None, tmp, si,
+            )
+            try:
                 try:
-                    flags = win32job.QueryInformationJobObject(job, win32job.JobObjectExtendedLimitInformation)
-                    flags["BasicLimitInformation"]["LimitFlags"] |= win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-                    win32job.SetInformationJobObject(job, win32job.JobObjectExtendedLimitInformation, flags)
-                    proc, thread, _, _ = win32process.CreateProcess(
-                        None, subprocess.list2cmdline(args), None, None, False,
-                        CREATE_SUSPENDED | subprocess.CREATE_NO_WINDOW, None, tmp, si,
-                    )
-                    try:
-                        try:
-                            win32job.AssignProcessToJobObject(job, proc)
-                        except Exception:
-                            win32process.TerminateProcess(proc, 1)
-                            raise
-                        win32process.ResumeThread(thread)
-                        wait = win32event.WaitForSingleObject(proc, 60_000)
-                        progress = Path(tmp)/"progress.log"
-                        detail = progress.read_text(encoding="utf-8") if progress.exists() else "worker did not start"
-                        self.assertEqual(wait, win32event.WAIT_OBJECT_0, detail)
-                        record=Path(tmp)/"result.json"
-                        self.assertTrue(record.exists(), detail)
-                        result = json.loads(record.read_text())
-                        self.assertTrue(result.get("ok"), result.get("error"))
-                    finally:
-                        thread.Close()
-                        proc.Close()
-                        win32job.TerminateJobObject(job, 1)
-                        deadline = time.monotonic() + 10
-                        while win32job.QueryInformationJobObject(job, win32job.JobObjectBasicAccountingInformation)["ActiveProcesses"]:
-                            if time.monotonic() >= deadline:
-                                self.fail("Private test processes did not exit after the Windows job was terminated")
-                            time.sleep(.05)
-                finally:
-                    job.Close()
+                    win32job.AssignProcessToJobObject(job, proc)
+                except Exception:
+                    win32process.TerminateProcess(proc, 1)
+                    raise
+                win32process.ResumeThread(thread)
+                wait = win32event.WaitForSingleObject(proc, 60_000)
+                progress = Path(tmp)/"progress.log"
+                detail = progress.read_text(encoding="utf-8") if progress.exists() else "worker did not start"
+                self.assertEqual(wait, win32event.WAIT_OBJECT_0, detail)
+                record=Path(tmp)/"result.json"
+                self.assertTrue(record.exists(), detail)
+                result = json.loads(record.read_text())
+                self.assertTrue(result.get("ok"), result.get("error"))
+            finally:
+                thread.Close()
+                proc.Close()
+                win32job.TerminateJobObject(job, 1)
+                deadline = time.monotonic() + 10
+                while win32job.QueryInformationJobObject(job, win32job.JobObjectBasicAccountingInformation)["ActiveProcesses"]:
+                    if time.monotonic() >= deadline:
+                        self.fail("Private test processes did not exit after the Windows job was terminated")
+                    time.sleep(.05)
         finally:
-            user.CloseDesktop(desk)
+            job.Close()
+
+    @staticmethod
+    def remove_profile(profile):
+        # Windows can briefly retain Chromium's mapped metrics files after every
+        # process in the private job exits. Keep the failure visible on timeout.
+        deadline = time.monotonic() + 12
+        while True:
+            try:
+                profile.cleanup()
+                return
+            except PermissionError as error:
+                if error.winerror not in (5, 32, 33) or time.monotonic() >= deadline:
+                    raise
+                time.sleep(.15)
 
 
 if __name__ == "__main__":
