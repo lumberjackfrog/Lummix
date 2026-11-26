@@ -108,9 +108,21 @@ class ReleaseTests(unittest.TestCase):
             (updates.directory/"download.part").write_text("partial")
             (updates.directory/feed.ASSET).write_text("old")
             other=client_update.Updates(path,changed.set)
-            other.command("auto")
+            stamp=(updates.directory/"last-check").stat().st_mtime
+            with patch.object(client_update.time,"time",return_value=stamp-.005):
+                other.command("auto")
+            self.assertEqual(other.status()["phase"],"current")
             self.assertEqual(query.call_count,1)
             self.assertEqual([p.name for p in updates.directory.iterdir()],["last-check"])
+            finish.clear()
+            entered.clear()
+            with patch.object(client_update.time,"time",return_value=stamp-3600):
+                other.command("auto")
+            self.assertTrue(entered.wait(5))
+            changed.clear()
+            finish.set()
+            self.assertTrue(changed.wait(5))
+            self.assertEqual(query.call_count,2)
 
     def test_log_disk_cap_privacy_and_native_handle_lifetime(self):
         summary=diagnostics.audio_summary({"routeActive":True,"cableReady":False,"spotifyCapture":"private title","token":"secret","inputs":["My Mic"]})

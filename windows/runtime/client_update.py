@@ -79,7 +79,8 @@ class Updates:
             try:
                 stamp=self.directory/"last-check"
                 meta=stamp.stat()
-                if meta.st_size<=20 and 0 <= time.time()-meta.st_mtime < 21600:
+                # A freshly written NTFS timestamp can lead Python's Windows clock by a tick.
+                if meta.st_size<=20 and -1 <= time.time()-meta.st_mtime < 21600:
                     with stamp.open("rb") as stream:
                         if stream.read(21)==VERSION.encode("ascii"):
                             with self.lock: self.phase="current"
