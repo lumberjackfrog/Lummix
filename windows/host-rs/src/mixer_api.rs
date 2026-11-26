@@ -48,7 +48,11 @@ fn decode_charset<'a>(mime: &str, bytes: &'a [u8]) -> Option<Cow<'a, [u8]>> {
     let text = match encoding.as_str() {
         "utf8" | "utf8sig" => {
             let bom = bytes.strip_prefix(b"\xef\xbb\xbf");
-            let input = if encoding == "utf8" { bytes } else { bom.unwrap_or(bytes) };
+            let input = if encoding == "utf8" {
+                bytes
+            } else {
+                bom.unwrap_or(bytes)
+            };
             return (!input.starts_with(b"\xef\xbb\xbf")).then_some(Cow::Borrowed(input));
         }
         "ascii" | "usascii" if bytes.is_ascii() => return Some(Cow::Borrowed(bytes)),
@@ -177,8 +181,13 @@ impl State {
             .call(&json!({"op":"mic_stopped","error":error}));
     }
     fn apply_stop_command(&mut self, origin: &str, body: &Value) -> Checked<Value> {
-        let plan = op(&mut self.control, json!({"op":"mic_plan","body":body,"origin":origin}))?;
-        if plan["action"] == "stop" { self.stop(Value::Null); }
+        let plan = op(
+            &mut self.control,
+            json!({"op":"mic_plan","body":body,"origin":origin}),
+        )?;
+        if plan["action"] == "stop" {
+            self.stop(Value::Null);
+        }
         Ok(plan["routeError"].clone())
     }
 }
@@ -626,5 +635,419 @@ impl Mixer {
             "latencyMode":latency.map(|(m,_)|m),"latencyMs":latency.map(|(_,l)|json!({"input":ms(l[0]),"output":ms(l[1])}))}),
             ),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        fs,
+        sync::atomic::{AtomicU64, Ordering},
+    };
+
+    const ORIGIN: &str = "http://127.0.0.1:41835";
+    const OTHER: &str = "http://localhost:41835";
+
+    struct Profile(PathBuf);
+
+    impl Profile {
+        fn new() -> Self {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "LummixMixerApi-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+        fn open(&self) -> Mixer {
+            Mixer::new(&self.0, &self.0, false)
+        }
+    }
+
+    impl Drop for Profile {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn headers(values: &[(&str, &str)]) -> Vec<(String, String)> {
+        values
+            .iter()
+            .map(|(key, value)| ((*key).into(), (*value).into()))
+            .collect()
+    }
+
+    fn get(mixer: &Mixer, path: &str, origin: &str) -> Reply {
+        mixer.handle(
+            "GET",
+            path,
+            origin,
+            &[],
+            NativeBody {
+                bytes: &[],
+                oversized: false,
+            },
+        )
+    }
+
+    fn post(
+        mixer: &Mixer,
+        path: &str,
+        origin: &str,
+        fields: &[(&str, &str)],
+        bytes: &[u8],
+    ) -> Reply {
+        mixer.handle(
+            "POST",
+            path,
+            origin,
+            &headers(fields),
+            NativeBody {
+                bytes,
+                oversized: bytes.len() > payload_limit(path),
+            },
+        )
+    }
+
+    fn token(mixer: &Mixer, origin: &str) -> String {
+        let (status, response) = get(mixer, "/mix/gains", origin);
+        assert_eq!(status, 200);
+        response["token"].as_str().unwrap().to_owned()
+    }
+
+    #[test]
+    fn cookie_duplicate_token_cross_origin_and_payload_precedence() {
+        let profile = Profile::new();
+        let mixer = profile.open();
+        let token = token(&mixer, ORIGIN);
+        let change = br#"{"micGain":75.125}"#;
+        let wrong_origin = post(
+            &mixer,
+            "/mix/gains",
+            OTHER,
+            &[
+                ("Content-Type", "application/json"),
+                ("X-Lum-Mix-Token", &token),
+            ],
+            change,
+        );
+        assert_eq!(wrong_origin, failure(403, "refresh_mix_settings"));
+        let duplicate = post(
+            &mixer,
+            "/mix/gains",
+            ORIGIN,
+            &[("X-Lum-Mix-Token", &token), ("x-lum-mix-token", &token)],
+            change,
+        );
+        assert_eq!(duplicate, failure(403, "refresh_mix_settings"));
+        let cookie = post(
+            &mixer,
+            "/mix/gains",
+            ORIGIN,
+            &[("X-Lum-Mix-Token", &token), ("cOoKiE", "")],
+            change,
+        );
+        assert_eq!(cookie, failure(403, "cookie_free_request_required"));
+
+        let long = vec![b'x'; 300];
+        assert_eq!(
+            post(
+                &mixer,
+                "/mix/gains",
+                ORIGIN,
+                &[("Content-Type", "application/json")],
+                &long
+            ),
+            failure(403, "refresh_mix_settings")
+        );
+        assert_eq!(
+            post(
+                &mixer,
+                "/mix/gains",
+                ORIGIN,
+                &[("X-Lum-Mix-Token", &token)],
+                &long
+            ),
+            (415, Value::Null)
+        );
+        assert_eq!(
+            post(
+                &mixer,
+                "/mix/gains",
+                ORIGIN,
+                &[
+                    ("Content-Type", "application/json"),
+                    ("X-Lum-Mix-Token", &token)
+                ],
+                &long
+            )
+            .0,
+            413
+        );
+        assert_eq!(
+            post(
+                &mixer,
+                "/mix/mic",
+                ORIGIN,
+                &[("Content-Type", "application/json")],
+                &long
+            )
+            .0,
+            413
+        );
+        assert_eq!(
+            post(&mixer, "/mix/mic", ORIGIN, &[], &long),
+            failure(415, "expected_json")
+        );
+        assert_eq!(get(&mixer, "/mix/gains", ORIGIN).1["revision"], 0);
+        assert!(!profile.0.join("output-gains.json").is_file());
+    }
+
+    #[test]
+    fn strict_network_json_and_declared_unicode_charset() {
+        let fixture = Profile::new();
+        let mixer = fixture.open();
+        let token = token(&mixer, ORIGIN);
+        let auth = ("X-Lum-Mix-Token", token.as_str());
+        let json = ("Content-Type", "application/json");
+        for input in [
+            br#"{"settings":{"snap":5,"sna\u0070":10}}"#.as_slice(),
+            br#"{"settings":{"closeToTray":null}}"#.as_slice(),
+            br#"{"settings":{"snap":{"extra":1,"extra":2}}}"#.as_slice(),
+        ] {
+            assert_eq!(
+                post(&mixer, "/mix/preferences", ORIGIN, &[auth, json], input),
+                failure(400, "invalid_preferences")
+            );
+        }
+        for input in [
+            br#"{"micGain":50,"micGain":100}"#.as_slice(),
+            br#"{"micGain":1e999}"#.as_slice(),
+            br#"[{"micGain":20}]"#.as_slice(),
+        ] {
+            assert_eq!(
+                post(&mixer, "/mix/gains", ORIGIN, &[auth, json], input),
+                failure(400, "invalid_settings")
+            );
+        }
+        let wide: Vec<u8> = "{\"micGain\":75.125}"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        let result = post(
+            &mixer,
+            "/mix/gains",
+            ORIGIN,
+            &[
+                auth,
+                ("cOnTeNt-TyPe", "Application/JSON; charset=\"UTF-16LE\""),
+            ],
+            &wide,
+        );
+        assert_eq!(result.0, 200);
+        assert_eq!(result.1["micGain"], json!(75.125));
+        assert_eq!(
+            post(&mixer, "/mix/gains", ORIGIN, &[auth, json], &wide),
+            failure(400, "invalid_settings")
+        );
+        let with_bom = b"\xef\xbb\xbf{\"musicMuted\":true}";
+        assert_eq!(
+            post(&mixer, "/mix/gains", ORIGIN, &[auth, json], with_bom),
+            failure(400, "invalid_settings")
+        );
+        assert_eq!(
+            post(
+                &mixer,
+                "/mix/gains",
+                ORIGIN,
+                &[auth, ("Content-Type", "application/json;charset=utf-8-sig")],
+                with_bom
+            )
+            .0,
+            200
+        );
+        assert_eq!(
+            post(
+                &mixer,
+                "/mix/gains",
+                ORIGIN,
+                &[
+                    auth,
+                    ("Content-Type", "application/json;charset=not-a-charset")
+                ],
+                br#"{"micGain":90}"#
+            ),
+            failure(400, "invalid_settings")
+        );
+    }
+
+    #[test]
+    fn persisted_preferences_gains_duck_and_selected_mic_survive_a_restart() {
+        let fixture = Profile::new();
+        let mixer = fixture.open();
+        let original = token(&mixer, ORIGIN);
+        let update = [
+            ("X-Lum-Mix-Token", original.as_str()),
+            ("Content-Type", "application/json"),
+        ];
+        assert_eq!(
+            post(
+                &mixer,
+                "/mix/gains",
+                ORIGIN,
+                &update,
+                br#"{"micGain":83.625,"musicMuted":true}"#
+            )
+            .0,
+            200
+        );
+        assert_eq!(
+            post(
+                &mixer,
+                "/mix/duck",
+                ORIGIN,
+                &update,
+                br#"{"enabled":false,"depthDb":8}"#
+            )
+            .0,
+            200
+        );
+        assert_eq!(
+            post(
+                &mixer,
+                "/mix/preferences",
+                ORIGIN,
+                &update,
+                br#"{"settings":{"snap":10,"closeToTray":false}}"#
+            )
+            .0,
+            200
+        );
+        assert_eq!(
+            post(
+                &mixer,
+                "/mix/preferences",
+                ORIGIN,
+                &update,
+                br#"{"settings":{"snap":20,"globalPulse":true},"migrate":true}"#
+            )
+            .0,
+            200
+        );
+        let saved = json!({"schema":1,"id":"fixture microphone"});
+        profile::save_profile(
+            &fixture.0.join("microphone-input.json"),
+            saved.as_object().unwrap(),
+        )
+        .unwrap();
+        drop(mixer);
+        fs::write(fixture.0.join("output-gains.json"), b"{broken").unwrap();
+        let restored = fixture.open();
+        let (status, gains) = get(&restored, "/mix/gains", ORIGIN);
+        assert_eq!(status, 200);
+        assert_eq!(gains["micGain"], json!(83.625));
+        assert_eq!(gains["musicMuted"], true);
+        assert_eq!(gains["revision"], 1);
+        assert_eq!(gains["routeActive"], false);
+        assert_ne!(gains["token"], original);
+        assert_eq!(get(&restored, "/mix/duck", ORIGIN).1["depthDb"], 8);
+        assert_eq!(get(&restored, "/mix/duck", ORIGIN).1["enabled"], false);
+        assert_eq!(
+            get(&restored, "/mix/preferences", ORIGIN).1["settings"],
+            json!({"snap":10,"globalPulse":true,"closeToTray":false})
+        );
+        let mut state = restored.state.lock().unwrap();
+        let mic = state
+            .control
+            .call(&json!({"op":"mic_state","rows":[{"id":"fixture microphone"}]}))
+            .unwrap();
+        assert_eq!(mic["selectedId"], "fixture microphone");
+        assert!(state.route.is_none());
+    }
+
+    #[test]
+    fn validates_mic_actions_and_releases_only_the_matching_owner() {
+        let fixture = Profile::new();
+        let mixer = fixture.open();
+        let current = token(&mixer, ORIGIN);
+        let headers = [
+            ("X-Lum-Mix-Token", current.as_str()),
+            ("Content-Type", "application/json"),
+        ];
+        for invalid in [
+            br#"{"action":"start","id":null}"#.as_slice(),
+            br#"{"action":"release","ownerToken":123}"#.as_slice(),
+            br#"{"action":"stop","ownerToken":"fake"}"#.as_slice(),
+            br#"{"action":"select","id":"x","id":"y"}"#.as_slice(),
+        ] {
+            assert_eq!(
+                post(&mixer, "/mix/mic", ORIGIN, &headers, invalid),
+                failure(400, "invalid_settings")
+            );
+        }
+        let current_other = token(&mixer, OTHER);
+        let cross = [
+            ("X-Lum-Mix-Token", current_other.as_str()),
+            ("Content-Type", "application/json"),
+        ];
+        {
+            let mut s = mixer.state.lock().unwrap();
+            s.control
+                .call(
+                    &json!({"op":"mic_started","id":"virtual fixture","origin":ORIGIN,
+                "token":"old owner source token","ownerToken":"owned nonce"}),
+                )
+                .unwrap();
+        }
+        let wrong = post(
+            &mixer,
+            "/mix/mic",
+            ORIGIN,
+            &headers,
+            br#"{"action":"release","ownerToken":"wrong nonce"}"#,
+        );
+        assert_eq!(wrong.0, 409);
+        assert_eq!(wrong.1["error"], "route_owner_changed");
+        let wrong_origin = post(
+            &mixer,
+            "/mix/mic",
+            OTHER,
+            &cross,
+            br#"{"action":"release","ownerToken":"owned nonce"}"#,
+        );
+        assert_eq!(wrong_origin.0, 409);
+        assert_eq!(wrong_origin.1["error"], "route_owner_changed");
+        let anonymous = post(
+            &mixer,
+            "/mix/mic",
+            OTHER,
+            &[
+                ("X-Lum-Mix-Token", "old owner source token"),
+                ("Content-Type", "application/json"),
+            ],
+            br#"{"action":"release","ownerToken":"owned nonce"}"#,
+        );
+        assert_eq!(anonymous, failure(403, "refresh_mix_settings"));
+        let mut s = mixer.state.lock().unwrap();
+        assert_eq!(
+            s.control.call(&json!({"op":"mic_active"})).unwrap(),
+            "virtual fixture"
+        );
+        assert!(s.route.is_none(), "fixture must never open personal input");
+        assert_eq!(
+            s.apply_stop_command(
+                ORIGIN,
+                &json!({"action":"release","ownerToken":"owned nonce"})
+            )
+            .unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            s.control.call(&json!({"op":"mic_active"})).unwrap(),
+            Value::Null
+        );
     }
 }

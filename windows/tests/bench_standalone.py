@@ -132,6 +132,45 @@ def measure_media(exe, profile):
     return result
 
 
+def measure_setup(installer, exe):
+    """Time the real silent one-click installer and the signed-payload check separately."""
+    import ctypes
+    # The Installer service may publish the product in another registry hive; use
+    # the package's actual ProductCode and the Windows Installer product database.
+    with tempfile.TemporaryDirectory() as temp:
+        seven = shutil.which("7z") or r"C:\Program Files\7-Zip\7z.exe"
+        subprocess.run([seven,"e","-aoa","-bso0",f"-o{temp}","-ir!Lummix.msi","--",installer],check=True)
+        db=msilib.OpenDatabase(str(Path(temp)/"Lummix.msi"),msilib.MSIDBOPEN_READONLY)
+        view=db.OpenView("SELECT `Value` FROM `Property` WHERE `Property`='ProductCode'")
+        view.Execute(None)
+        product=view.Fetch().GetString(1)
+        view.Close()
+        view=db.OpenView("SELECT `Value` FROM `Property` WHERE `Property`='ProductVersion'")
+        view.Execute(None)
+        version=view.Fetch().GetString(1)
+        view.Close()
+        db.Close()
+    query=ctypes.windll.msi.MsiQueryProductStateW
+    query.argtypes=[ctypes.c_wchar_p]
+    query.restype=ctypes.c_int
+    assert query(product)<1, "Expected an uninstalled product on the disposable runner"
+    try:
+        begin=time.perf_counter()
+        subprocess.run([installer,"/S"],timeout=120,check=True)
+        install_ms=1000*(time.perf_counter()-begin)
+        assert query(product)==5,"Windows Installer did not register the product"
+        installed = Path(os.environ["LOCALAPPDATA"]) / "Programs/Lummix" / version / "Lummix.exe"
+        assert hashlib.sha256(installed.read_bytes()).digest() == hashlib.sha256(exe.read_bytes()).digest()
+        begin=time.perf_counter()
+        result=subprocess.run([installed,"verify-vendor"],timeout=90,check=True,capture_output=True)
+        assert b"verif" in result.stdout.lower(),result.stdout
+        verify_ms=1000*(time.perf_counter()-begin)
+    finally:
+        if query(product)>0:
+            subprocess.run(["msiexec.exe","/x",product,"/qn","/norestart"],timeout=120,check=True)
+        assert query(product)<1
+    return {"install_ms":install_ms,"driver_verification_ms":verify_ms}
+
 def main(args):
     if os.environ.get("GITHUB_ACTIONS") != "true":
         raise RuntimeError("Use the disposable Windows Actions runner for desktop and setup comparisons.")
@@ -152,6 +191,15 @@ def main(args):
         report={"pairs":6,"baseline_sha256":BASELINE,"candidate_sha256":args.after_hash,
                 "installer_bytes":{"before":args.before.stat().st_size,"after":args.after.stat().st_size},
                 "media_trials":measurements,"media_medians":medians}
+        args.output.write_text(json.dumps(report,indent=2),encoding="utf-8")
+        setup={"before":[],"after":[]}
+        pairs=(("before",args.before,old),("after",args.after,new))
+        for i in range(4):
+            for tag,installer,exe in (pairs if i%2==0 else reversed(pairs)):
+                setup[tag].append(measure_setup(installer.resolve(),exe))
+        report["setup_trials"]=setup
+        report["setup_medians"]={tag:{key:statistics.median(row[key] for row in rows)
+                                      for key in rows[0]} for tag,rows in setup.items()}
         args.output.write_text(json.dumps(report,indent=2),encoding="utf-8")
         report["desktop"]=compare_desktop(old,new,work)
         args.output.write_text(json.dumps(report,indent=2),encoding="utf-8")
