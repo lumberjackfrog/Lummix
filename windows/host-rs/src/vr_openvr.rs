@@ -76,7 +76,7 @@ fn tracked_label(class: i32, model: &str, tracking: &str) -> Option<&'static str
     Some(catalog::model(model).unwrap_or(default))
 }
 
-fn read_devices() -> Option<Vec<&'static str>> {
+pub fn read_devices() -> Option<Vec<&'static str>> {
     // Check before even loading Valve's client. Background initialization will
     // refuse startup if the already-running vrserver disappears during lookup.
     if !cfg!(target_pointer_width = "64") || !vr_discovery::processes().ok()?.contains("vrserver") {

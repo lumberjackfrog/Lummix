@@ -1,9 +1,20 @@
 name: Build and verify Windows installer
-on: workflow_dispatch
+on:
+  workflow_dispatch:
+    inputs:
+      compare_hybrid:
+        description: Compare the real desktop and media service with the last hybrid installer
+        type: boolean
+        default: false
+      comparison_build:
+        description: Re-run measurements on the exact installer from an earlier successful build
+        type: string
+        required: false
 permissions:
   contents: read
 jobs:
   installer:
+    if: inputs.comparison_build == ''
     runs-on: windows-2022
     timeout-minutes: 35
     steps:
@@ -45,3 +56,64 @@ jobs:
           name: Lummix-Windows-x64
           path: dist/Lummix Setup.exe
           if-no-files-found: error
+
+  compare:
+    needs: installer
+    if: ${{ !cancelled() && ((inputs.compare_hybrid && needs.installer.result == 'success') || (inputs.comparison_build != '' && needs.installer.result == 'skipped')) }}
+    runs-on: windows-2022
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c
+        with:
+          python-version: '3.12'
+      - name: Retrieve and audit the two installer payloads
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMPARISON_BUILD: ${{ inputs.comparison_build }}
+        run: |
+          $build = $env:GITHUB_RUN_ID
+          $source = $env:GITHUB_SHA
+          if ($env:COMPARISON_BUILD) {
+            if ($env:COMPARISON_BUILD -cnotmatch '\A[0-9]+\z') { throw 'Expected a numeric workflow run ID.' }
+            $raw = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:COMPARISON_BUILD"
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            $run = $raw | ConvertFrom-Json
+            if ($run.path -ne '.github/workflows/windows-installer.yml' -or $run.conclusion -ne 'success' -or
+                $run.head_sha -cnotmatch '\A[0-9a-f]{40}\z') { throw 'Expected a successful installer build.' }
+            $build = $env:COMPARISON_BUILD
+            $source = $run.head_sha
+          }
+          gh run download 45868619780 --name Lummix-Windows-x64 --dir .build/before
+          if ($LASTEXITCODE) {exit $LASTEXITCODE}
+          gh run download $build --name Lummix-Windows-x64 --dir .build/after
+          if ($LASTEXITCODE) {exit $LASTEXITCODE}
+          python -m pip install --only-binary=:all: psutil==7.2.2 pywin32==312 playwright==1.63.0 tree-sitter==0.27.0 tree-sitter-rust==0.24.2
+          if ($LASTEXITCODE) {exit $LASTEXITCODE}
+          $after = '.build/after/Lummix Setup.exe'
+          $hash = (Get-FileHash -LiteralPath $after).Hash.ToLowerInvariant()
+          New-Item .build/results -ItemType Directory -Force | Out-Null
+          python scripts/count-native-source.py --installer $after --sha256 $hash --commit $source --output .build/results/inventory.json
+          if ($LASTEXITCODE) {exit $LASTEXITCODE}
+          "CANDIDATE_HASH=$hash" >> $env:GITHUB_ENV
+          "Comparing installer from run $build, commit $source, SHA-256 $hash" >> $env:GITHUB_STEP_SUMMARY
+      - name: Measure media, setup and desktop startup
+        shell: pwsh
+        run: |
+          Start-Service AudioEndpointBuilder
+          Start-Service Audiosrv
+          python -u windows/tests/bench_standalone.py --before '.build/before/Lummix Setup.exe' --after '.build/after/Lummix Setup.exe' --after-hash $env:CANDIDATE_HASH --output .build/results/comparison.json
+          if ($LASTEXITCODE) {exit $LASTEXITCODE}
+      - name: Save measurements
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: Lummix-native-comparison
+          path: .build/results/
+          if-no-files-found: warn

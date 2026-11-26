@@ -10,6 +10,8 @@ import tempfile
 import winreg
 import zipfile
 
+from native_qa import verify_bundle
+
 from win32com.client import Dispatch
 from win32com.shell import shell, shellcon
 
@@ -50,6 +52,7 @@ def main(msi,archive):
             shortcut=Dispatch("WScript.Shell").CreateShortCut(str(link))
             exe=Path(shortcut.TargetPath)
             assert exe.is_relative_to(target) and exe.name=="Lummix.exe" and exe.is_file()
+            verify_bundle(exe)
             assert desktop_link.is_file() and Path(Dispatch("WScript.Shell").CreateShortcut(str(desktop_link)).TargetPath)==exe
             with zipfile.ZipFile(archive) as z:
                 count=0

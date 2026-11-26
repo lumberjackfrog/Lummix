@@ -17,12 +17,15 @@ from playwright.sync_api import sync_playwright
 import psutil
 import win32api, win32con, win32event, win32gui, win32process, win32security, win32ui
 
+from native_qa import STAGED, verify_bundle, verify_listener, verify_process
+
 HERE = Path(__file__).resolve().parent
 EVIDENCE = HERE.parents[1] / ".build/qa"
 EVIDENCE.mkdir(parents=True, exist_ok=True)
-exe = Path(sys.argv[1]).resolve() if len(sys.argv)>1 else HERE.parents[1]/".build/frozen/runtime/Lummix Helper.exe"
-source_run = "--source" in sys.argv[2:]
-window_only = "--window-only" in sys.argv[2:]
+if len(sys.argv) > 2:
+    raise SystemExit("Usage: verify_window.py [Lummix.exe]")
+exe = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else STAGED
+verify_bundle(exe)
 u = ctypes.WinDLL("user32", use_last_error=True)
 u.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
 u.CreateDesktopW.argtypes = [wintypes.LPCWSTR,wintypes.LPCWSTR,ctypes.c_void_p,wintypes.DWORD,wintypes.DWORD,ctypes.c_void_p]
@@ -87,10 +90,6 @@ try:
         with socket.socket() as reserved:
             reserved.bind(("127.0.0.1",0));debug_port=reserved.getsockname()[1]
         env["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"]="--remote-debugging-port="+str(debug_port)
-        if window_only:
-            # Packaged studio assets are served by the native WebView handler. Keep the
-            # isolated renderer away from audio services belonging to a live VRChat mix.
-            env["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] += " --proxy-server=http://127.0.0.1:9 --proxy-bypass-list=<-loopback>"
         cfg=Path(tmp)/"LumMix/studio-preferences.json";cfg.parent.mkdir()
         env["PATH"]=os.environ["SystemRoot"]+"\\System32;"+os.environ["SystemRoot"]
         si=win32process.STARTUPINFO();si.lpDesktop="winsta0\\"+name
@@ -98,27 +97,17 @@ try:
             check.settimeout(.4)
             studio_reuse = check.connect_ex(("127.0.0.1", 41835)) == 0
         def launch():
-            args = ["-c","import lummix_window; lummix_window.launch()"] if source_run else (["launch"] if "Helper" in exe.name else [])
-            if window_only:args=["-c","import ctypes;ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4));from studio_window import run;run()"]
-            cwd = HERE.parent/"runtime" if source_run or window_only else exe.parent
-            cmdfile = exe.suffix.lower()==".cmd"
-            app = os.environ["ComSpec"] if cmdfile else str(exe)
-            command = subprocess.list2cmdline([app])+' /d /c ""'+str(exe)+'""' if cmdfile else subprocess.list2cmdline([str(exe),*args])
-            return win32process.CreateProcess(app,command,None,None,False,
-                win32con.CREATE_UNICODE_ENVIRONMENT|win32con.CREATE_NO_WINDOW,env,str(cwd),si)
+            return win32process.CreateProcess(str(exe), subprocess.list2cmdline([str(exe)]),
+                None, None, False, win32con.CREATE_UNICODE_ENVIRONMENT|win32con.CREATE_NO_WINDOW,
+                env, str(exe.parent), si)
         proc,thread,pid,_=launch()
         until(handles,38);hwnd=windows[0]
         time.sleep(2)
-        library = exe.parent / "_internal/lummix_host.dll"
-        if (not window_only and not studio_reuse and library.is_file()
-                and b"lummix_host_start_embedded\0" in library.read_bytes()):
-            window_pid = win32process.GetWindowThreadProcessId(hwnd)[1]
-            assert any(connection.status == psutil.CONN_LISTEN and connection.laddr.port == 41835
-                       for connection in psutil.Process(window_pid).net_connections(kind="tcp")), (
-                "Normal startup did not bind Studio HTTP in the desktop process."
-            )
-        host = next((p for p in psutil.process_iter(["name","exe"]) if p.info["name"]=="Lummix Helper.exe"
-            and p.info["exe"] and Path(p.info["exe"])==exe.parent/"runtime/Lummix Helper.exe" and "launch" in p.cmdline()),None)
+        window_pid = win32process.GetWindowThreadProcessId(hwnd)[1]
+        assert window_pid == pid, (window_pid, pid)
+        verify_process(exe, window_pid, modules=("WebView2Loader.dll",))
+        if not studio_reuse:
+            verify_listener(exe, window_pid, "127.0.0.1", 41835)
         board_title=win32gui.GetWindowText(hwnd)
         screenshot(hwnd)
         children=[];win32gui.EnumChildWindows(hwnd,lambda h,_:children.append(win32gui.GetClassName(h)) or True,None)
@@ -214,24 +203,19 @@ try:
             until(lambda:win32gui.IsWindowVisible(hwnd))
             win32gui.PostMessage(hwnd,win32con.WM_CLOSE,0,0)
             until(lambda:not win32gui.IsWindowVisible(hwnd))
-            if window_only:
-                win32gui.PostMessage(hwnd,win32con.WM_COMMAND,0x7120,0)
-            else:
-                p2,t2,_,_=launch();assert win32event.WaitForSingleObject(p2,5000)==0
-                p2.Close();t2.Close()
+            p2,t2,_,_=launch();assert win32event.WaitForSingleObject(p2,5000)==0
+            p2.Close();t2.Close()
             until(lambda:handles()==[hwnd])
             win32gui.PostMessage(hwnd,win32con.WM_COMMAND,0x7140,0)
         assert win32event.WaitForSingleObject(proc,6000)==0
         assert win32process.GetExitCodeProcess(proc)==0
-        if host: host.wait(timeout=8)
         until(lambda:services()==before)
         proc.Close();thread.Close();proc=thread=None;hwnd=None
         cfg.write_text('{"settings":{"closeToTray":false}}')
         proc,thread,pid,_=launch();until(handles,35);hwnd=windows[0]
         until(lambda:win32gui.GetWindowRect(hwnd)==prior)
-        if not window_only:
-            p2,t2,_,_=launch();assert win32event.WaitForSingleObject(p2,5000)==0 and handles()==[hwnd]
-            p2.Close();t2.Close()
+        p2,t2,_,_=launch();assert win32event.WaitForSingleObject(p2,5000)==0 and handles()==[hwnd]
+        p2.Close();t2.Close()
         with sync_playwright() as pw:
             session=pw.chromium.connect_over_cdp("http://127.0.0.1:"+str(debug_port))
             until(lambda:page_for(session))
@@ -257,7 +241,7 @@ try:
             doubleClickMaximizes=True,monitorWorkAreas=True,awaitedExitHookSeconds=round(release_duration,2),
             defaultTrayAvailableOnPrivateDesktop=tray,defaultCloseWithNoShellExits=not tray,
             restoredFromTrayOnSameHandle=tray,explicitExitFromTray=tray,settingOffCloseExits=True,restoredPlacement=prior,
-            singleWindow=not window_only,elevated=elevated,reusedOrStarted=live,preexistingServicePidsPreserved=before,pythonRemovedFromPath=True)
+            singleWindow=True,standaloneWindowPid=window_pid,elevated=elevated,reusedOrStarted=live,preexistingServicePidsPreserved=before,pythonRemovedFromPath=True)
         print(json.dumps(result))
         (EVIDENCE/"native-window.json").write_text(json.dumps(result,indent=2),encoding="utf-8")
 finally:

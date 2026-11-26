@@ -27,7 +27,7 @@ struct Preview {
     root: PathBuf,
     installed: Option<PathBuf>,
     config: PathBuf,
-    setup: Setup,
+    setup: Box<dyn Fn(u32) -> Option<Value> + Send + Sync>,
     token: Mutex<Token>,
 }
 
@@ -143,9 +143,7 @@ fn read_vendor(root: &Path, route: &str) -> Option<(Vec<u8>, &'static str)> {
 
 impl Preview {
     fn callback(&self, action: u32) -> Option<Value> {
-        let mut output = vec![0; 512_000];
-        let size = (self.setup)(action, output.as_mut_ptr(), output.len());
-        serde_json::from_slice(output.get(..size)?).ok()
+        (self.setup)(action)
     }
 
     fn setup(&self, mut request: Request, post: bool) {
@@ -330,6 +328,31 @@ impl Preview {
     }
 }
 
+pub fn open_native(
+    root: PathBuf,
+    installed: Option<PathBuf>,
+    config: PathBuf,
+    bind: u16,
+    qa: bool,
+    setup: impl Fn(u32) -> Option<Value> + Send + Sync + 'static,
+) -> Option<(Listener, u16)> {
+    let installed = installed
+        .and_then(|path| path.canonicalize().ok())
+        .filter(|path| path.join("_UI/Default/Wrist.html").is_file());
+    let state = Preview {
+        root,
+        installed,
+        config,
+        setup: Box::new(setup),
+        token: Mutex::new(Token::new()?),
+    };
+    private_http::listen(
+        Ipv4Addr::new(127, 0, 0, if qa { 2 } else { 1 }),
+        bind,
+        move |request| state.handle(request),
+    )
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn lummix_preview_start(
     paths: *const u8,
@@ -339,34 +362,31 @@ pub unsafe extern "C" fn lummix_preview_start(
     callback: Option<Setup>,
     port: *mut u16,
 ) -> *mut Listener {
-    fn open(paths: Value, bind: u16, qa: bool, callback: Setup) -> Option<(Listener, u16)> {
-        let installed = paths["vendor"]
-            .as_str()
-            .and_then(|path| fs::canonicalize(path).ok())
-            .filter(|path| path.join("_UI/Default/Wrist.html").is_file());
-        let state = Preview {
-            root: PathBuf::from(paths["root"].as_str()?),
-            installed,
-            config: PathBuf::from(paths["config"].as_str()?),
-            setup: callback,
-            token: Mutex::new(Token::new()?),
-        };
-        private_http::listen(
-            Ipv4Addr::new(127, 0, 0, if qa { 2 } else { 1 }),
-            bind,
-            move |request| state.handle(request),
-        )
-    }
     if paths.is_null() || port.is_null() || length == 0 || length > 384_000 {
         return null_mut();
     }
     let Some(callback) = callback else {
         return null_mut();
     };
-    let Ok(paths) = serde_json::from_slice(slice::from_raw_parts(paths, length)) else {
+    let Ok(paths) = serde_json::from_slice::<Value>(slice::from_raw_parts(paths, length)) else {
         return null_mut();
     };
-    let Some((listener, bound)) = open(paths, bind, qa, callback) else {
+    let (Some(root), Some(config)) = (paths["root"].as_str(), paths["config"].as_str()) else {
+        return null_mut();
+    };
+    let vendor = paths["vendor"].as_str().map(PathBuf::from);
+    let Some((listener, bound)) = open_native(
+        PathBuf::from(root),
+        vendor,
+        PathBuf::from(config),
+        bind,
+        qa,
+        move |action| {
+            let mut data = vec![0; 512000];
+            let size = callback(action, data.as_mut_ptr(), data.len());
+            serde_json::from_slice(data.get(..size)?).ok()
+        },
+    ) else {
         return null_mut();
     };
     port.write(bound);

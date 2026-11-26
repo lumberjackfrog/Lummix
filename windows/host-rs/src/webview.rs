@@ -22,13 +22,14 @@ use windows::Win32::UI::{Shell::SHCreateMemStream, WindowsAndMessaging::GetClien
 
 use crate::studio_files;
 
-const ORIGIN: &str = "http://127.0.0.1:41835/";
+pub(crate) const ORIGIN: &str = "http://127.0.0.1:41835/";
+pub(crate) const APP_DOCUMENT: &str = "http://127.0.0.1:41835/?view=desktop&app=1";
 const ENTRY: PCWSTR = w!("http://127.0.0.1:41835/?view=desktop&app=1");
-const READY: u32 = 0;
-const ERROR: u32 = 1;
-const MESSAGE: u32 = 2;
-const NEW_PAGE: u32 = 3;
-const KEY: u32 = 4;
+pub(crate) const READY: u32 = 0;
+pub(crate) const ERROR: u32 = 1;
+pub(crate) const MESSAGE: u32 = 2;
+pub(crate) const NEW_PAGE: u32 = 3;
+pub(crate) const KEY: u32 = 4;
 
 type Event = extern "C" fn(u32, *const u16, *const u16, u32) -> i32;
 type CreateEnvironment =

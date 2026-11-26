@@ -3,10 +3,10 @@ use std::ffi::{c_int, c_ulong, c_void};
 use std::ptr;
 #[cfg(windows)]
 #[path = "devices.rs"]
-mod devices;
+pub(crate) mod devices;
 #[cfg(windows)]
 #[path = "driver.rs"]
-mod driver;
+pub(crate) mod driver;
 
 #[repr(C)]
 pub struct Params {

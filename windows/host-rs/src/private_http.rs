@@ -3,6 +3,7 @@ use serde_json::Value;
 use std::{
     io::{self, Read, Write},
     net::{Shutdown, TcpListener, TcpStream},
+    os::windows::io::AsRawSocket,
     ptr::null_mut,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -167,7 +168,26 @@ pub fn send(mut request: Request, status: u16, body: Vec<u8>, mime: &str, extra:
     }
 }
 
+// Each listener sleeps in Winsock until a connection arrives or Drop signals shutdown.
+// Handles stay alive until the accept thread has joined.
+struct SocketEvent(isize);
+impl SocketEvent {
+    fn new() -> Option<Self> {
+        use windows_sys::Win32::Networking::WinSock::{WSACreateEvent, WSA_INVALID_EVENT};
+        let event = unsafe { WSACreateEvent() };
+        (event != WSA_INVALID_EVENT).then_some(Self(event))
+    }
+}
+impl Drop for SocketEvent {
+    fn drop(&mut self) {
+        unsafe {
+            windows_sys::Win32::Networking::WinSock::WSACloseEvent(self.0);
+        }
+    }
+}
+
 pub struct Listener {
+    stop: Arc<SocketEvent>,
     running: Arc<AtomicBool>,
     accept: Option<JoinHandle<()>>,
     workers: Vec<JoinHandle<()>>,
@@ -176,6 +196,9 @@ pub struct Listener {
 impl Drop for Listener {
     fn drop(&mut self) {
         self.running.store(false, Ordering::Release);
+        unsafe {
+            windows_sys::Win32::Networking::WinSock::WSASetEvent(self.stop.0 as _);
+        }
         if let Some(thread) = self.accept.take() {
             let _ = thread.join();
         }
@@ -200,7 +223,15 @@ pub fn listen_workers(
     handler: impl Fn(Request) + Send + Sync + 'static,
 ) -> Option<(Listener, u16)> {
     let server = TcpListener::bind((address, bind)).ok()?;
-    server.set_nonblocking(true).ok()?;
+    use windows_sys::Win32::Networking::WinSock::{
+        WSAEnumNetworkEvents, WSAEventSelect, WSAWaitForMultipleEvents, FD_ACCEPT, WSA_INFINITE,
+    };
+    let pending = SocketEvent::new()?;
+    let stop = Arc::new(SocketEvent::new()?);
+    let socket = server.as_raw_socket() as usize;
+    if unsafe { WSAEventSelect(socket, pending.0, FD_ACCEPT as i32) } != 0 {
+        return None;
+    }
     let port = server.local_addr().ok()?.port();
     let handler = Arc::new(handler);
     let (send, receive) = mpsc::sync_channel(workers * 2);
@@ -208,25 +239,50 @@ pub fn listen_workers(
     let running = Arc::new(AtomicBool::new(true));
     let accept = {
         let running = running.clone();
+        let stop = stop.clone();
         thread::Builder::new()
             .name(format!("lummix-accept-{port}"))
             .spawn(move || {
+                // Move the RAII owner, not just its Copy handle, into this thread.
+                let pending = pending;
+                let events = [stop.0 as _, pending.0 as _];
                 while running.load(Ordering::Acquire) {
-                    match server.accept() {
-                        Ok((stream, _)) => match send.try_send(stream) {
-                            Ok(()) | Err(TrySendError::Full(_)) => {}
-                            Err(TrySendError::Disconnected(_)) => break,
-                        },
-                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                            thread::sleep(Duration::from_millis(20))
+                    // The stop event is first and wins if a connection arrives during shutdown.
+                    if unsafe { WSAWaitForMultipleEvents(2, events.as_ptr(), 0, WSA_INFINITE, 0) }
+                        != 1
+                    {
+                        break;
+                    }
+                    let mut flags = unsafe { std::mem::zeroed() };
+                    if unsafe { WSAEnumNetworkEvents(socket, pending.0, &mut flags) } != 0 {
+                        break;
+                    }
+                    while running.load(Ordering::Acquire) {
+                        match server.accept() {
+                            Ok((stream, _)) => {
+                                // Accepted sockets inherit event selection. Return them to ordinary
+                                // blocking I/O with the worker's bounded request deadline.
+                                if unsafe { WSAEventSelect(stream.as_raw_socket() as usize, 0, 0) }
+                                    != 0
+                                {
+                                    continue;
+                                }
+                                match send.try_send(stream) {
+                                    Ok(()) | Err(TrySendError::Full(_)) => {}
+                                    Err(TrySendError::Disconnected(_)) => return,
+                                }
+                            }
+                            Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                            Err(_) => return,
                         }
-                        Err(_) => break,
                     }
                 }
             })
             .ok()?
     };
     let mut listener = Listener {
+        stop,
         running,
         accept: Some(accept),
         workers: Vec::new(),

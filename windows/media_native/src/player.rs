@@ -102,6 +102,19 @@ fn fingerprint(raw: &[u8]) -> Option<[u8; 32]> {
     Some(digest)
 }
 
+fn cover_value(raw: &[u8], digest: [u8; 32]) -> Option<Value> {
+    let artwork = artwork::encode(raw)?;
+    let id = digest[..12]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Some(json!({"artwork":artwork,"artworkId":id}))
+}
+
+pub(super) fn encode_cover(raw: &[u8]) -> Option<Value> {
+    cover_value(raw, fingerprint(raw)?)
+}
+
 fn current_cover(
     edition: &str,
     labels: (String, String, String, i32),
@@ -117,13 +130,7 @@ fn current_cover(
     };
     let key = (edition.to_owned(), labels, digest);
     if cache.key.as_ref() != Some(&key) {
-        cache.value = artwork::encode(&raw).map_or(Value::Null, |artwork| {
-            let id = digest[..12]
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<String>();
-            json!({"artwork":artwork,"artworkId":id})
-        });
+        cache.value = cover_value(&raw, digest).unwrap_or(Value::Null);
         cache.key = Some(key);
     }
     cache.value.clone()

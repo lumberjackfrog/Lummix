@@ -2,9 +2,11 @@
 
 Lummix captures the selected microphone and the verified Spotify renderer, mixes them in Rust, and writes stereo audio to the selected VB-CABLE endpoint. The process-loopback worker, packet queue, speech detector, gain ramps, limiter and device callback run without a Python callback. The capture and render threads use a bounded queue. The capture worker checks the process creation time and discards its old queue when the selected renderer changes.
 
+![Before and after timings, memory use and installer size for the Lummix Rust conversion](rust-benchmarks.png)
+
 ## Measurements
 
-Measured on an AMD Ryzen 9 9950X3D running Windows x64. The baseline is commit `c8a5a2d`, which already used Rust for the inner sample mix. Both builds processed the same 48 kHz input. Each measurement covers delivering a process packet and running the complete device callback through the test driver. Each workload ran three times per build with 60,000 blocks per run. The table gives the median time per 480-frame block.
+Measured on an AMD Ryzen 9 9950X3D running Windows x64. The baseline is commit `c8a5a2d`, which already used Rust for the inner sample mix. Both builds processed the same 48 kHz input. Each measurement covers delivering a process packet and running the complete device callback through the test driver. Each workload ran three times per build with 60,000 blocks per run. The table gives the median time per 480-frame block. [Audio samples](benchmarks/audio.json)
 
 | Workload | Previous implementation | Rust capture and routing | Speedup |
 | --- | ---: | ---: | ---: |
@@ -42,9 +44,27 @@ All four comparisons completed with zero reported callback underruns or overruns
 
 ## Installer and migration
 
-The audited development installer contains 13,729 lines of first-party Rust out of 22,269 nonblank runtime lines (61.65%). The preceding build contained 74 out of 9,833 (0.75%). Counting Rust and Python alone gives 76.90% Rust. The audit reads the actual installer and its frozen Python module list. It excludes third-party libraries, tests and build scripts, and counts the WebAssembly controls once from their Rust source. Python still connects parts of the launcher, setup and local API. The desktop and wrist also use HTML, CSS and JavaScript. [Installer audit script](../scripts/count-native-source.py)
+The standalone Windows build runs its launcher, setup, Spotify and local mixer services in Rust. Its installer contains 17,620 nonblank lines of first-party Rust out of 22,036 runtime lines (79.96%). The desktop and wrist use 4,378 lines of HTML, CSS and JavaScript, and Windows setup uses 38 lines of PowerShell. The installer contains zero Python source files, Python extension modules or Python interpreters. Python remains in the repository for building, testing and comparing against previous implementations. The counts exclude tests, tooling and third-party code. WebAssembly is counted once from the Rust that produced it. [Installer audit script](../scripts/count-native-source.py)
 
-The candidate is 14,787,610 bytes. The public 1.0.8 installer is 42,824,066 bytes. A clean Windows run upgraded from 1.0.8, exercised three install/uninstall cycles, restored damaged settings from backup and launched the mixer via both shortcuts. First-time setup installed Spotify as a standard user and staged VB-CABLE, retaining the restart prompt. The candidate is unsigned. [Installer build](https://github.com/lumberjackfrog/Lummix/actions/runs/45868619780) · [Installed application tests](https://github.com/lumberjackfrog/Lummix/actions/runs/45869354743)
+The shipped 1.0.8 installer was 42,824,066 bytes. The intermediate hybrid installer was 14,787,610 bytes with 61.65% Rust. The standalone candidate was 5,014,554 bytes. [Hybrid installer and upgrade checks](https://github.com/lumberjackfrog/Lummix/actions/runs/45869354743)
+
+The same Windows Server 2022 x64 runner compared the hybrid installer with the exact standalone EXE supplied for testing. Each desktop launch used a fresh profile and waited until the real mixer displayed its controls. Four alternating pairs measured desktop startup and four measured per-user installation. Six pairs measured the media service. Each row gives the median across trials. [Windows samples](benchmarks/windows.json) · [Benchmark run](https://github.com/lumberjackfrog/Lummix/actions/runs/45882706350)
+
+| Measurement | Hybrid | Standalone Rust |
+| --- | ---: | ---: |
+| Visible window | 2.45 s | 2.28 s |
+| Mixer ready to use | 3.92 s | 3.74 s |
+| Desktop working sets including WebView2 | 409.2 MiB | 333.2 MiB |
+| Media service ready | 364.9 ms | 35.3 ms |
+| Gain API response | 20.58 ms | 15.16 ms |
+| Gain API p95 | 24.97 ms | 15.95 ms |
+| Media service private memory | 31.34 MiB | 2.71 MiB |
+| Per-user install | 1.89 s | 1.18 s |
+| Driver file verification | 580 ms | 587 ms |
+
+Desktop memory sums the Lummix and WebView2 working sets within each trial. Shared pages can appear in more than one process. The Lummix processes fell from 120.2 to 44.6 MiB. WebView2 used about 289 MiB in both builds. The separate media memory figure measures private bytes after the first Spotify status request.
+
+Reading a gain fader measures one local API request. The Windows receiver tests above measure when audio actually arrives. The installation timing covers Lummix itself. Checking the bundled driver files took about 7 ms longer in this run. The separate installer qualification covered a 1.0.8 upgrade, fresh installs, repair and uninstall. [Installed application checks](https://github.com/lumberjackfrog/Lummix/actions/runs/45879692339)
 
 ## Reproduce
 
@@ -52,4 +72,6 @@ The candidate is 14,787,610 bytes. The public 1.0.8 installer is 42,824,066 byte
 - Run `windows/tests/device_route.py` on Windows with the named, idle Steam virtual devices to check actual capture, routing and gain. The test checks the system defaults and active sessions before opening a stream.
 - Run `windows/tests/route_latency.py --baseline <previous-checkout> --output latency.json` with the same Python test environment and built release DLLs to compare device timing. The baseline checkout must include its own built DSP.
 - Run `windows/tests/signal_latency.py --baseline <previous-checkout> --order ABBA --output signal-abba.json` and repeat with `--order BAAB --output signal-baab.json` to time audio arriving at the receiver. Use the same dedicated Windows virtual devices, and run the two commands sequentially.
-- Run `scripts/count-native-source.py --help` for an installer-backed language inventory. It checks the installer digest, inspects the frozen application and compares its shipped interface files to the source commit.
+- Enable the hybrid comparison in the **Build and verify Windows installer** workflow to compare the two shipped payloads on one Windows runner. To benchmark an installer you already tested, supply its successful build run ID in the comparison input.
+- With Matplotlib installed, run `python scripts/plot-native-benchmarks.py docs/benchmarks/windows.json docs/benchmarks/audio.json docs/rust-benchmarks.png` to redraw the chart from the Windows and audio results.
+- Run `scripts/count-native-source.py --help` for an installer-backed language inventory. It checks the installer digest, inspects the MSI file table and compares its shipped interface files to the source commit.

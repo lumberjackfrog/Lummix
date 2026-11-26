@@ -108,7 +108,7 @@ fn own(path: Vec<u16>, ready: mpsc::SyncSender<Functions>, stop: mpsc::Receiver<
     Some(())
 }
 
-pub(super) struct Driver {
+pub(crate) struct Driver {
     api: Functions,
     pub(super) streams: Mutex<usize>,
     stop: mpsc::Sender<()>,

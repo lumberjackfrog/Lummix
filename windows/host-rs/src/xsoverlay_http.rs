@@ -25,7 +25,7 @@ struct Panel {
     mixer_port: u16,
     qa: bool,
     mixer: Mutex<()>,
-    addon: Mutex<Addon>,
+    addon: Mutex<Box<dyn Fn(u32) -> Option<Value> + Send>>,
     token: String,
 }
 
@@ -110,14 +110,7 @@ impl Panel {
     }
 
     fn config(&self, request: Request, action: u32) {
-        let mut output = [0; 4096];
-        let size = match self.addon.lock() {
-            Ok(callback) => callback(action, output.as_mut_ptr(), output.len()),
-            Err(_) => 0,
-        };
-        let result = output
-            .get(..size)
-            .and_then(|bytes| serde_json::from_slice::<Value>(bytes).ok());
+        let result = self.addon.lock().ok().and_then(|callback| callback(action));
         let Some(Value::Object(mut response)) = result else {
             return reject(request, 503, true);
         };
@@ -261,11 +254,11 @@ impl Panel {
     }
 }
 
-fn open(
+pub fn open_native(
     root: PathBuf,
     bind: u16,
     mixer_port: u16,
-    callback: Addon,
+    callback: impl Fn(u32) -> Option<Value> + Send + 'static,
     address: Ipv4Addr,
 ) -> Option<(Listener, u16)> {
     if !root.join("xsoverlay-panel.html").is_file() {
@@ -282,7 +275,7 @@ fn open(
         mixer_port,
         qa: address.octets()[3] == 2,
         mixer: Mutex::new(()),
-        addon: Mutex::new(callback),
+        addon: Mutex::new(Box::new(callback)),
         token: private_http::token()?,
     };
     private_http::listen(address, bind, move |request| state.handle(request))
@@ -306,7 +299,17 @@ pub unsafe extern "C" fn lummix_wrist_start(
     };
     let root = PathBuf::from(OsString::from_wide(slice::from_raw_parts(root, length)));
     let address = Ipv4Addr::new(127, 0, 0, if qa { 2 } else { 1 });
-    let Some((listener, bound)) = open(root, bind, mixer_port, callback, address) else {
+    let Some((listener, bound)) = open_native(
+        root,
+        bind,
+        mixer_port,
+        move |action| {
+            let mut bytes = [0; 4096];
+            let size = callback(action, bytes.as_mut_ptr(), bytes.len());
+            serde_json::from_slice(bytes.get(..size)?).ok()
+        },
+        address,
+    ) else {
         return null_mut();
     };
     port.write(bound);

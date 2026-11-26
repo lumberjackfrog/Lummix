@@ -14,10 +14,11 @@ import win32con as c
 import win32gui as gui
 import win32process
 
+from native_qa import STAGED, verify_bundle, verify_process
+
 HERE = Path(__file__).resolve().parent
 EVIDENCE = HERE.parents[1] / ".build/qa"
 EVIDENCE.mkdir(parents=True, exist_ok=True)
-RUNTIME = HERE.parent / "portable-runtime"
 CLASS = "LumMixStudioHost"
 class Identifier(ctypes.Structure):
     _fields_ = [("size",wintypes.DWORD),("hwnd",wintypes.HWND),("uid",wintypes.UINT),("guid",ctypes.c_ubyte*16)]
@@ -50,18 +51,19 @@ def main():
     assert not hosts(),"An existing Lummix native window is already on this desktop"
     assert gui.FindWindow("Shell_TrayWnd",None),"Explorer is unavailable"
     initial_focus=gui.GetForegroundWindow()
-    native=Path(sys.argv[1]).resolve() if len(sys.argv)>1 else None
-    args=[str(native)] if native else [sys.executable,"-c","from studio_window import run;run()"]
-    if native and native.name=="Lummix Helper.exe":args.append("launch")
+    native=Path(sys.argv[1]).resolve() if len(sys.argv)>1 else STAGED
+    verify_bundle(native)
+    args=[str(native)]
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         env={**os.environ,"LOCALAPPDATA":tmp}
         si=subprocess.STARTUPINFO();si.dwFlags=subprocess.STARTF_USESHOWWINDOW;si.wShowWindow=c.SW_HIDE
         def start():
-            return subprocess.Popen(args,cwd=RUNTIME if not native else native.parent,env=env,startupinfo=si,
+            return subprocess.Popen(args,cwd=native.parent,env=env,startupinfo=si,
                                     creationflags=subprocess.CREATE_NO_WINDOW)
         p=start();hwnd=None
         try:
             hwnd=until(lambda:next(iter(hosts(p.pid)),None))
+            verify_process(native, p.pid, modules=("WebView2Loader.dll",))
             assert not gui.IsWindowVisible(hwnd),"QA window did not honor hidden Win32 startup"
             gui.EnableWindow(hwnd,False)
             style=gui.GetWindowLong(hwnd,c.GWL_EXSTYLE)

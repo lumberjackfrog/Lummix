@@ -120,7 +120,7 @@ pub struct Shared {
     pub xruns: AtomicU64,
 }
 impl Shared {
-    fn new(c: Controls) -> Self {
+    pub(crate) fn new(c: Controls) -> Self {
         Self {
             controls: Mutex::new(c),
             bus: Bus::new(),
@@ -429,10 +429,10 @@ pub unsafe extern "C" fn lummix_engine_controls(engine: &Engine, c: Controls) ->
 }
 #[repr(C)]
 pub struct Metrics {
-    rms: f32,
-    reduction: f32,
-    music: u32,
-    xruns: u64,
+    pub rms: f32,
+    pub reduction: f32,
+    pub music: u32,
+    pub xruns: u64,
 }
 #[no_mangle]
 pub extern "C" fn lummix_engine_metrics(engine: &Engine) -> Metrics {

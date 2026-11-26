@@ -22,6 +22,7 @@ use windows::{
     Win32::System::WinRT::{RoInitialize, RoUninitialize, RO_INIT_MULTITHREADED},
 };
 
+pub mod api;
 mod artwork;
 mod audio_sessions;
 mod capability;

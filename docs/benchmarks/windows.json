@@ -1,0 +1,730 @@
+{
+  "pairs": 6,
+  "baseline_sha256": "9cee51354fc8ec037da060e3926ecc71f147750c683b2dfe9dd100b7a1264079",
+  "candidate_sha256": "051139ff6e5dad1bc9f35c0e0807ce816ad361da158c06866bf95ed291fdc412",
+  "installer_bytes": {
+    "before": 14787610,
+    "after": 5014554
+  },
+  "media_trials": {
+    "before": [
+      {
+        "ready_ms": 647.2633999999857,
+        "gains_median_ms": 20.60455,
+        "gains_p95_ms": 25.0522,
+        "status_first_ms": 124.26340000001801,
+        "status_state": "no_session",
+        "working_set_mib": 50.390625,
+        "private_mib": 31.484375,
+        "processes": 1
+      },
+      {
+        "ready_ms": 371.0853000000043,
+        "gains_median_ms": 20.53765,
+        "gains_p95_ms": 25.0039,
+        "status_first_ms": 42.31409999999869,
+        "status_state": "no_session",
+        "working_set_mib": 50.171875,
+        "private_mib": 31.19921875,
+        "processes": 1
+      },
+      {
+        "ready_ms": 354.04040000000236,
+        "gains_median_ms": 20.57495,
+        "gains_p95_ms": 24.7847,
+        "status_first_ms": 37.599400000004835,
+        "status_state": "no_session",
+        "working_set_mib": 50.14453125,
+        "private_mib": 31.2890625,
+        "processes": 1
+      },
+      {
+        "ready_ms": 357.9420000000084,
+        "gains_median_ms": 20.59405,
+        "gains_p95_ms": 24.9365,
+        "status_first_ms": 42.84049999998274,
+        "status_state": "no_session",
+        "working_set_mib": 50.20703125,
+        "private_mib": 31.2734375,
+        "processes": 1
+      },
+      {
+        "ready_ms": 379.0410999999949,
+        "gains_median_ms": 20.60905,
+        "gains_p95_ms": 24.7044,
+        "status_first_ms": 42.32779999998115,
+        "status_state": "no_session",
+        "working_set_mib": 50.3203125,
+        "private_mib": 31.38671875,
+        "processes": 1
+      },
+      {
+        "ready_ms": 358.7340999999924,
+        "gains_median_ms": 20.5656,
+        "gains_p95_ms": 25.0985,
+        "status_first_ms": 42.87080000000287,
+        "status_state": "no_session",
+        "working_set_mib": 50.3046875,
+        "private_mib": 31.44140625,
+        "processes": 1
+      }
+    ],
+    "after": [
+      {
+        "ready_ms": 64.31219999998916,
+        "gains_median_ms": 15.36,
+        "gains_p95_ms": 15.926,
+        "status_first_ms": 34.126899999989746,
+        "status_state": "no_session",
+        "working_set_mib": 14.88671875,
+        "private_mib": 3.0390625,
+        "processes": 1
+      },
+      {
+        "ready_ms": 37.97789999998713,
+        "gains_median_ms": 15.0641,
+        "gains_p95_ms": 15.9426,
+        "status_first_ms": 33.34559999998987,
+        "status_state": "no_session",
+        "working_set_mib": 14.21875,
+        "private_mib": 2.99609375,
+        "processes": 1
+      },
+      {
+        "ready_ms": 24.9095000000068,
+        "gains_median_ms": 15.2278,
+        "gains_p95_ms": 16.0764,
+        "status_first_ms": 32.23180000000525,
+        "status_state": "no_session",
+        "working_set_mib": 14.234375,
+        "private_mib": 2.703125,
+        "processes": 1
+      },
+      {
+        "ready_ms": 24.398000000019238,
+        "gains_median_ms": 15.20825,
+        "gains_p95_ms": 16.1507,
+        "status_first_ms": 17.450599999989436,
+        "status_state": "no_session",
+        "working_set_mib": 14.21484375,
+        "private_mib": 2.68359375,
+        "processes": 1
+      },
+      {
+        "ready_ms": 32.62619999998151,
+        "gains_median_ms": 14.504449999999999,
+        "gains_p95_ms": 15.9099,
+        "status_first_ms": 17.944799999980887,
+        "status_state": "no_session",
+        "working_set_mib": 14.21484375,
+        "private_mib": 2.6796875,
+        "processes": 1
+      },
+      {
+        "ready_ms": 39.15409999999042,
+        "gains_median_ms": 15.109200000000001,
+        "gains_p95_ms": 15.9623,
+        "status_first_ms": 32.656599999995706,
+        "status_state": "no_session",
+        "working_set_mib": 14.234375,
+        "private_mib": 2.70703125,
+        "processes": 1
+      }
+    ]
+  },
+  "media_medians": {
+    "before": {
+      "ready_ms": 364.90969999999834,
+      "gains_median_ms": 20.5845,
+      "gains_p95_ms": 24.9702,
+      "status_first_ms": 42.584149999981946,
+      "working_set_mib": 50.255859375,
+      "private_mib": 31.337890625,
+      "processes": 1.0
+    },
+    "after": {
+      "ready_ms": 35.30204999998432,
+      "gains_median_ms": 15.158725,
+      "gains_p95_ms": 15.95245,
+      "status_first_ms": 32.44420000000048,
+      "working_set_mib": 14.2265625,
+      "private_mib": 2.705078125,
+      "processes": 1.0
+    }
+  },
+  "setup_trials": {
+    "before": [
+      {
+        "install_ms": 3531.0130000000017,
+        "driver_verification_ms": 5907.866100000007
+      },
+      {
+        "install_ms": 1803.537700000021,
+        "driver_verification_ms": 538.7405000000172
+      },
+      {
+        "install_ms": 1781.6882000000192,
+        "driver_verification_ms": 556.1005000000137
+      },
+      {
+        "install_ms": 1986.4038999999707,
+        "driver_verification_ms": 603.4313999999767
+      }
+    ],
+    "after": [
+      {
+        "install_ms": 1160.3594999999984,
+        "driver_verification_ms": 574.0187000000105
+      },
+      {
+        "install_ms": 1125.59779999998,
+        "driver_verification_ms": 534.1367999999989
+      },
+      {
+        "install_ms": 1194.683399999974,
+        "driver_verification_ms": 648.9728999999897
+      },
+      {
+        "install_ms": 1200.1017999999704,
+        "driver_verification_ms": 600.6448999999634
+      }
+    ]
+  },
+  "setup_medians": {
+    "before": {
+      "install_ms": 1894.970799999996,
+      "driver_verification_ms": 579.7659499999952
+    },
+    "after": {
+      "install_ms": 1177.521449999986,
+      "driver_verification_ms": 587.331799999987
+    }
+  },
+  "desktop": {
+    "trials": [
+      {
+        "version": "before",
+        "trial": 1,
+        "visibleWindowMs": 2453.17,
+        "desktopReadyMs": 9352.71,
+        "windowPid": 6152,
+        "lummixWorkingSetBytes": 125849600,
+        "webViewWorkingSetBytes": 303448064,
+        "lummixProcesses": [
+          {
+            "pid": 4452,
+            "image": "Lummix.exe",
+            "workingSetBytes": 27774976
+          },
+          {
+            "pid": 6152,
+            "image": "Lummix.exe",
+            "workingSetBytes": 46301184
+          },
+          {
+            "pid": 7576,
+            "image": "Lummix.exe",
+            "workingSetBytes": 51773440
+          }
+        ],
+        "webViewProcesses": [
+          {
+            "pid": 1496,
+            "image": "msedgewebview2.exe",
+            "workingSetBytes": 32509952
+          },
+          {
+            "pid": 2080,
+            "image": "msedgewebview2.exe",
+            "workingSetBytes": 49508352
+          },
+          {
+            "pid": 6332,
+            "image": "msedgewebview2.exe",
+            "workingSetBytes": 96632832
+          },
+          {
+            "pid": 6452,
+            "image": "msedgewebview2.exe",
+            "workingSetBytes": 18911232
+          },
+          {
+            "pid": 6744,
+            "image": "msedgewebview2.exe",
+            "workingSetBytes": 8024064
+          },
+          {
+            "pid": 6768,
+            "image": "msedgewebview2.exe",
+            "workingSetBytes": 97861632
+          }
+        ],
+        "shutdownClean": true
+      },
+      {
+        "version": "after",
+        "trial": 1,
+        "visibleWindowMs": 2280.31,
+        "desktopReadyMs": 3708.04,
+        "windowPid": 8004,
+        "lummixWorkingSetBytes": 46755840,
+        "webViewWorkingSetBytes": 298422272,
+        "lummixProcesses": [
+          {
+            "pid": 6956,
+            "image": "Lummix.exe",
+            "workingSetBytes": 7426048
+          },
+          {
+            "pid": 7100,
+            "image": "Lummix.exe",
+            "workingSetBytes": 15212544
+          },
+          {
+            "pid": 8004,
+            "image": "Lummix.exe",
+            "workingSetBytes": 24117248
+          }
+        ],
+        "webViewProcesses": [
+          {
+            "pid": 1640,
+            "image": "msedgewebview2.exe",
+            "workingSetBytes": 18931712
+          },
+          {
+            "pid": 2580,
+            "image": "msedgewebview2.exe",
+            "workingSetBytes": 48517120
+          },
+          {
+            "pid": 3268,
+            "image": "msedgewebview2.exe",
+            "workingSetBytes": 30818304
+          },
+          {
+            "pid": 3616,
+            "image": "msedgewebview2.exe",
+            "workingSetBytes": 8003584
+          },
+          {
+            "pid": 4644,
+            "image": "msedgewebview2.exe",
+            "workingSetBytes": 95776768
+          },
+          {
+            "pid": 7860,
+            "image": "msedgewebview2.exe",
+            "workingSetBytes": 96374784
+          }
+        ],
+        "shutdownClean": true
+      },
+      {
+        "version": "after",
+        "trial": 2,
+        "visibleWindowMs": 2284.84,
+        "desktopReadyMs": 3745.23,
+        "windowPid": 5620,
+        "lummixWorkingSetBytes": 46768128,
+        "webViewWorkingSetBytes": 303603712,
+        "lummixProcesses": [
+          {
+            "pid": 2500,
+            "image": "Lummix.exe",
+            "workingSetBytes": 15228928
+          },
+          {
+            "pid": 5620,
+            "image": "Lummix.exe",
+            "workingSetBytes": 24125440
+          },
+          {
+            "pid": 6668,
+            "image": "Lummix.exe",
+            "workingSetBytes": 7413760
+          }
+        ],
+        "webViewProcesses": [
+          {
+            "pid": 2676,
+            "image": "msedgewebview2.exe",
+            "workingSetBytes": 97144832
+          },
+          {
+            "pid": 3020,
+            "image": "msedgewebview2.exe",
+            "workingSetBytes": 97878016
+          },
+          {
+            "pid": 3764,
+            "image": "msedgewebview2.exe",
+            "workingSetBytes": 8003584
+          },
+          {
+            "pid": 4944,
+            "image": "msedgewebview2.exe",
+            "workingSetBytes": 50794496
+          },
+          {
+            "pid": 6584,
+            "image": "msedgewebview2.exe",
+            "workingSetBytes": 30863360
+          },
+          {
+            "pid": 7916,
+            "image": "msedgewebview2.exe",
+            "workingSetBytes": 18919424
+          }
+        ],
+        "shutdownClean": true
+      },
+      {
+        "version": "before",
+        "trial": 2,
+        "visibleWindowMs": 2437.6,
+        "desktopReadyMs": 3900.7,
+        "windowPid": 1496,
+        "lummixWorkingSetBytes": 125952000,
+        "webViewWorkingSetBytes": 304193536,
+        "lummixProcesses": [
+          {
+            "pid": 1496,
+            "image": "Lummix.exe",
+            "workingSetBytes": 45494272
+          },
+          {
+            "pid": 2144,
+            "image": "Lummix.exe",
+            "workingSetBytes": 27652096
+          },
+          {
+            "pid": 6016,
+            "image": "Lummix.exe",
+            "workingSetBytes": 52805632
+          }
+        ],
+        "webViewProcesses": [
+          {
+            "pid": 2524,
+            "image": "msedgewebview2.exe",
+            "workingSetBytes": 32432128
+          },
+          {
+            "pid": 6688,
+            "image": "msedgewebview2.exe",
+            "workingSetBytes": 98156544
+          },
+          {
+            "pid": 6840,
+            "image": "msedgewebview2.exe",
+            "workingSetBytes": 18935808
+          },
+          {
+            "pid": 7776,
+            "image": "msedgewebview2.exe",
+            "workingSetBytes": 51339264
+          },
+          {
+            "pid": 8072,
+            "image": "msedgewebview2.exe",
+            "workingSetBytes": 8015872
+          },
+          {
+            "pid": 8132,
+            "image": "msedgewebview2.exe",
+            "workingSetBytes": 95313920
+          }
+        ],
+        "shutdownClean": true
+      },
+      {
+        "version": "before",
+        "trial": 3,
+        "visibleWindowMs": 2453.52,
+        "desktopReadyMs": 3886.97,
+        "windowPid": 7656,
+        "lummixWorkingSetBytes": 126238720,
+        "webViewWorkingSetBytes": 266461184,
+        "lummixProcesses": [
+          {
+            "pid": 2544,
+            "image": "Lummix.exe",
+            "workingSetBytes": 27881472
+          },
+          {
+            "pid": 7656,
+            "image": "Lummix.exe",
+            "workingSetBytes": 45662208
+          },
+          {
+            "pid": 8060,
+            "image": "Lummix.exe",
+            "workingSetBytes": 52695040
+          }
+        ],
+        "webViewProcesses": [
+          {
+            "pid": 736,
+            "image": "msedgewebview2.exe",
+            "workingSetBytes": 73277440
+          },
+          {
+            "pid": 1824,
+            "image": "msedgewebview2.exe",
+            "workingSetBytes": 8019968
+          },
+          {
+            "pid": 2044,
+            "image": "msedgewebview2.exe",
+            "workingSetBytes": 39972864
+          },
+          {
+            "pid": 2192,
+            "image": "msedgewebview2.exe",
+            "workingSetBytes": 30957568
+          },
+          {
+            "pid": 7588,
+            "image": "msedgewebview2.exe",
+            "workingSetBytes": 95305728
+          },
+          {
+            "pid": 7796,
+            "image": "msedgewebview2.exe",
+            "workingSetBytes": 18927616
+          }
+        ],
+        "shutdownClean": true
+      },
+      {
+        "version": "after",
+        "trial": 3,
+        "visibleWindowMs": 2287.9,
+        "desktopReadyMs": 3740.0,
+        "windowPid": 1700,
+        "lummixWorkingSetBytes": 46694400,
+        "webViewWorkingSetBytes": 302120960,
+        "lummixProcesses": [
+          {
+            "pid": 1452,
+            "image": "Lummix.exe",
+            "workingSetBytes": 15220736
+          },
+          {
+            "pid": 1700,
+            "image": "Lummix.exe",
+            "workingSetBytes": 24051712
+          },
+          {
+            "pid": 7412,
+            "image": "Lummix.exe",
+            "workingSetBytes": 7421952
+          }
+        ],
+        "webViewProcesses": [
+          {
+            "pid": 1956,
+            "image": "msedgewebview2.exe",
+            "workingSetBytes": 51445760
+          },
+          {
+            "pid": 3284,
+            "image": "msedgewebview2.exe",
+            "workingSetBytes": 30904320
+          },
+          {
+            "pid": 4396,
+            "image": "msedgewebview2.exe",
+            "workingSetBytes": 95150080
+          },
+          {
+            "pid": 4644,
+            "image": "msedgewebview2.exe",
+            "workingSetBytes": 97665024
+          },
+          {
+            "pid": 6332,
+            "image": "msedgewebview2.exe",
+            "workingSetBytes": 8024064
+          },
+          {
+            "pid": 7312,
+            "image": "msedgewebview2.exe",
+            "workingSetBytes": 18931712
+          }
+        ],
+        "shutdownClean": true
+      },
+      {
+        "version": "after",
+        "trial": 4,
+        "visibleWindowMs": 2279.74,
+        "desktopReadyMs": 3929.14,
+        "windowPid": 6484,
+        "lummixWorkingSetBytes": 46751744,
+        "webViewWorkingSetBytes": 303300608,
+        "lummixProcesses": [
+          {
+            "pid": 5728,
+            "image": "Lummix.exe",
+            "workingSetBytes": 7417856
+          },
+          {
+            "pid": 5776,
+            "image": "Lummix.exe",
+            "workingSetBytes": 15208448
+          },
+          {
+            "pid": 6484,
+            "image": "Lummix.exe",
+            "workingSetBytes": 24125440
+          }
+        ],
+        "webViewProcesses": [
+          {
+            "pid": 660,
+            "image": "msedgewebview2.exe",
+            "workingSetBytes": 97390592
+          },
+          {
+            "pid": 1076,
+            "image": "msedgewebview2.exe",
+            "workingSetBytes": 97665024
+          },
+          {
+            "pid": 2496,
+            "image": "msedgewebview2.exe",
+            "workingSetBytes": 18968576
+          },
+          {
+            "pid": 2704,
+            "image": "msedgewebview2.exe",
+            "workingSetBytes": 8024064
+          },
+          {
+            "pid": 3328,
+            "image": "msedgewebview2.exe",
+            "workingSetBytes": 50417664
+          },
+          {
+            "pid": 5420,
+            "image": "msedgewebview2.exe",
+            "workingSetBytes": 30834688
+          }
+        ],
+        "shutdownClean": true
+      },
+      {
+        "version": "before",
+        "trial": 4,
+        "visibleWindowMs": 2455.39,
+        "desktopReadyMs": 3945.09,
+        "windowPid": 2332,
+        "lummixWorkingSetBytes": 126164992,
+        "webViewWorkingSetBytes": 302780416,
+        "lummixProcesses": [
+          {
+            "pid": 1932,
+            "image": "Lummix.exe",
+            "workingSetBytes": 52772864
+          },
+          {
+            "pid": 2332,
+            "image": "Lummix.exe",
+            "workingSetBytes": 45662208
+          },
+          {
+            "pid": 5732,
+            "image": "Lummix.exe",
+            "workingSetBytes": 27729920
+          }
+        ],
+        "webViewProcesses": [
+          {
+            "pid": 1196,
+            "image": "msedgewebview2.exe",
+            "workingSetBytes": 30941184
+          },
+          {
+            "pid": 1448,
+            "image": "msedgewebview2.exe",
+            "workingSetBytes": 96747520
+          },
+          {
+            "pid": 5596,
+            "image": "msedgewebview2.exe",
+            "workingSetBytes": 18939904
+          },
+          {
+            "pid": 7196,
+            "image": "msedgewebview2.exe",
+            "workingSetBytes": 8019968
+          },
+          {
+            "pid": 7340,
+            "image": "msedgewebview2.exe",
+            "workingSetBytes": 51404800
+          },
+          {
+            "pid": 7520,
+            "image": "msedgewebview2.exe",
+            "workingSetBytes": 96727040
+          }
+        ],
+        "shutdownClean": true
+      }
+    ],
+    "summary": {
+      "before": {
+        "executableSha256": "c8dfe193bf54b5a311fa9e6e104c7ac5b2894b9ac5463a0a346c37e7aa397ea6",
+        "visibleWindowMs": {
+          "median": 2453.3450000000003,
+          "min": 2437.6,
+          "max": 2455.39
+        },
+        "desktopReadyMs": {
+          "median": 3922.895,
+          "min": 3886.97,
+          "max": 9352.71
+        },
+        "lummixWorkingSetBytes": {
+          "median": 126058496.0,
+          "min": 125849600,
+          "max": 126238720
+        },
+        "webViewWorkingSetBytes": {
+          "median": 303114240.0,
+          "min": 266461184,
+          "max": 304193536
+        }
+      },
+      "after": {
+        "executableSha256": "ada315a49498efdb19e8c4df970c3000f2b710bd6cec3c922f84daa9a3dfaae0",
+        "visibleWindowMs": {
+          "median": 2282.575,
+          "min": 2279.74,
+          "max": 2287.9
+        },
+        "desktopReadyMs": {
+          "median": 3742.615,
+          "min": 3708.04,
+          "max": 3929.14
+        },
+        "lummixWorkingSetBytes": {
+          "median": 46753792.0,
+          "min": 46694400,
+          "max": 46768128
+        },
+        "webViewWorkingSetBytes": {
+          "median": 302710784.0,
+          "min": 298422272,
+          "max": 303603712
+        }
+      }
+    },
+    "pairCount": 4,
+    "environment": "fresh per-user and Evergreen WebView2 profiles on the hosted runner desktop",
+    "workingSet": "Summed per-process RSS bytes at mixer readiness, shared pages may count more than once"
+  }
+}

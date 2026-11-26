@@ -256,9 +256,9 @@ fn utc_now() -> String {
     )
 }
 
-fn tracked(executable: &Path, script: &Path) -> Option<Vec<String>> {
+fn tracked(executable: &Path, args: &[&std::ffi::OsStr]) -> Option<Vec<String>> {
     let mut child = Command::new(executable)
-        .arg(script)
+        .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -293,7 +293,7 @@ fn tracked(executable: &Path, script: &Path) -> Option<Vec<String>> {
         .then_some(labels)
 }
 
-fn scan(executable: &Path, script: &Path, steam: &Path) -> Value {
+fn scan(executable: &Path, args: &[&std::ffi::OsStr], steam: &Path) -> Value {
     let mut warnings = Vec::new();
     let (connected, runtimes) = match processes().and_then(|processes| Ok((processes, physical()?)))
     {
@@ -303,7 +303,7 @@ fn scan(executable: &Path, script: &Path, steam: &Path) -> Value {
                 .filter_map(|(process, label)| processes.contains(*process).then_some(*label))
                 .collect::<BTreeSet<_>>();
             let connected = if processes.contains("vrserver") {
-                match tracked(executable, script) {
+                match tracked(executable, args) {
                     Some(tracked) => catalog::merge_connected(names, tracked),
                     None => {
                         warnings.push("SteamVR tracked-device status unavailable.");
@@ -361,21 +361,28 @@ pub unsafe extern "C" fn lummix_vr_scan(
     let (Some(executable), Some(script)) = (paths["exe"].as_str(), paths["script"].as_str()) else {
         return 0;
     };
+    copy_result(
+        &cached_scan(Path::new(executable), &[std::ffi::OsStr::new(script)]),
+        output,
+        capacity,
+    )
+}
+pub fn cached_scan(executable: &Path, args: &[&std::ffi::OsStr]) -> Vec<u8> {
     static CACHE: OnceLock<Mutex<Option<Cached>>> = OnceLock::new();
     let Ok(mut cache) = CACHE.get_or_init(|| Mutex::new(None)).lock() else {
-        return 0;
+        return b"{}".to_vec();
     };
     let value = cache.get_or_insert_with(|| Cached {
         checked: Instant::now(),
         payload: Vec::new(),
     });
     if value.payload.is_empty() || value.checked.elapsed() > CACHE_TIME {
-        value.payload = scan(Path::new(executable), Path::new(script), &steam_root())
+        value.payload = scan(executable, args, &steam_root())
             .to_string()
             .into_bytes();
         value.checked = Instant::now();
     }
-    copy_result(&value.payload, output, capacity)
+    value.payload.clone()
 }
 
 #[cfg(test)]

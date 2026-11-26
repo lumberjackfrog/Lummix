@@ -13,7 +13,6 @@ import shutil
 import subprocess
 from tempfile import TemporaryDirectory
 
-from PyInstaller.archive.readers import CArchiveReader
 from tree_sitter import Language, Parser
 import tree_sitter_rust
 
@@ -98,7 +97,19 @@ def inspect(args, temp):
             raise ValueError(f"Missing installer payload {name}")
         return identity
 
-    native = {p: packaged(p) for p in [*NATIVE.values(), "Lummix Host.exe", "_internal/controls.wasm"]}
+    standalone = file_id("Lummix Host.exe") not in table
+    if standalone:
+        runtime = ["Lummix.exe", "studio/controls.wasm", "_internal/controls.wasm",
+                   "_internal/WebView2Loader.dll", "_internal/libportaudio64bit.dll"]
+        forbidden = [name for name in table.values() if name.lower().endswith((".py",".pyc",".pyd"))
+                     or name.lower().startswith("python") and name.lower().endswith((".zip",".exe",".dll"))
+                     or name.lower() in {"lummix helper.exe","lummix host.exe","lummix_media.dll",
+                                         "lummix_dsp.dll","lummix_host.dll","base_library.zip"}]
+        if forbidden:
+            raise ValueError(f"Unexpected Python or legacy runtime files: {forbidden}")
+    else:
+        runtime = [*NATIVE.values(), "Lummix Host.exe", "_internal/controls.wasm"]
+    native = {p: packaged(p) for p in runtime}
     portaudio = "_internal/libportaudio64bit.dll"
     if file_id(portaudio) in table:
         native[portaudio] = packaged(portaudio)
@@ -122,13 +133,25 @@ def inspect(args, temp):
     if payloads["studio/controls.wasm"] != payloads["_internal/controls.wasm"]:
         raise ValueError("Desktop and wrist use different control binaries")
 
-    frozen = CArchiveReader(str(temp / exe))
-    pyz, = (name for name, entry in frozen.toc.items() if entry[-1] == "z")
-    modules = set(frozen.open_embedded_archive(pyz).toc) | set(frozen.toc)
-    python = [p for p in map(PurePosixPath, files) if p.parent.as_posix() in ("windows","windows/runtime")
-              and p.suffix == ".py" and p.stem in modules]
-    if not {"native_audio", "cable_mixer", "runtime_main"} <= {p.stem for p in python}:
-        raise ValueError("Expected mixer modules missing from the frozen Python archive")
+    python, modules = [], set()
+    if standalone:
+        # The installer smoke test runs --runtime-info and inspects loaded modules.
+        # Check the shipped image and the actual Cargo linkage from this checkout too.
+        image = (temp / exe).read_bytes()
+        if b"MEI\014\013\012\013\016" in image or image[:2] != b"MZ":
+            raise ValueError("Unexpected launcher image / embedded PyInstaller archive")
+        for dep in (b'lummix-dsp = { path = "../dsp" }', b'lummix-media = { path = "../media_native" }'):
+            if dep not in git("show", ref + ":windows/host-rs/Cargo.toml"):
+                raise ValueError("Missing linked Rust engine")
+    else:
+        from PyInstaller.archive.readers import CArchiveReader
+        frozen = CArchiveReader(str(temp / exe))
+        pyz, = (name for name, entry in frozen.toc.items() if entry[-1] == "z")
+        modules = set(frozen.open_embedded_archive(pyz).toc) | set(frozen.toc)
+        python = [p for p in map(PurePosixPath, files) if p.parent.as_posix() in ("windows","windows/runtime")
+                  and p.suffix == ".py" and p.stem in modules]
+        if not {"native_audio","cable_mixer","runtime_main"} <= {p.stem for p in python}:
+            raise ValueError("Expected mixer modules missing from the frozen Python archive")
     rust = [p for p in files if p.endswith(".rs") and any(p.startswith(root+"/") for root in NATIVE)
             and p != "windows/dsp/src/replay.rs"]
     inventory = {}
@@ -141,12 +164,14 @@ def inspect(args, temp):
         lines = rust_lines(source) if suffix == ".rs" else sum(bool(x.strip()) for x in source.splitlines())
         inventory[name] = lines
         by_type[suffix] += lines
+    by_type[".py"] += 0
     total = sum(by_type.values())
     return {"commit": ref, "installer_sha256": checksum, "installer_bytes": args.installer.stat().st_size,
+            "runtime": "standalone-rust" if standalone else "hybrid",
             "bundles_numpy": "numpy" in modules, "bundles_pillow": "PIL" in modules,
             "bundles_sounddevice": "sounddevice" in modules, "bundles_cffi": "cffi" in modules,
             "native_payload_sha256": payloads,
-            "method": "Nonblank first-party runtime lines including comments. Checks installer payloads and frozen Python module membership. Excludes vendored assets, tests, Rust test-only items and replay injection, and build/packaging files. WASM is counted once from Rust source.",
+            "method": "Nonblank first-party application source lines including comments in linked crates and packaged assets. Unused functions may be removed by the linker. Python includes only frozen modules in the installer. Excludes tests, replay hooks, vendored assets and offline build tools. WASM is counted once.",
             "counts": dict(sorted(by_type.items())), "total": total, "rust_percent": 100 * by_type[".rs"] / total,
             "files": inventory}
 

@@ -1,7 +1,6 @@
 """Exercise packaged helpers from a different directory without a Python on PATH."""
 import argparse
 import base64
-import ctypes
 import hashlib
 import io
 import json
@@ -17,8 +16,12 @@ from urllib.parse import unquote
 
 import requests
 import psutil
-from studio_assets import STUDIO_FILES
-from lummix_window import MEDIA_CAPABILITIES
+from native_qa import STAGED, STUDIO_FILES, verify_bundle, verify_listener
+
+MEDIA_CAPABILITIES = {"spotify-session-peak-v1", "mic-route-v1", "mixer-duck-v1", "studio-preferences-v1",
+                      "mix-setup-alias-v1", "cable-restart-v1", "spotify-detection-v2", "spotify-window-artwork-v1"}
+if sys.getwindowsversion().build >= 20348:
+    MEDIA_CAPABILITIES.add("spotify-process-mix-v1")
 
 HERE = Path(__file__).resolve().parent
 EVIDENCE = HERE.parents[1] / ".build/qa"
@@ -27,23 +30,19 @@ UI = HERE.parents[1] / "studio"
 TEST_PREFERENCES = {"snap": 5, "followTheme": False, "closeToTray": False}
 TEST_GAINS = {"micGain": 72, "musicGain": 138, "micMuted": True, "musicMuted": False}
 
-def verify_audio_driver(dsp):
-    portaudio = dsp.with_name("libportaudio64bit.dll")
+def verify_audio_driver(exe, cwd, env, output):
+    portaudio = exe.parent / "_internal/libportaudio64bit.dll"
     digest = hashlib.sha256(portaudio.read_bytes()).hexdigest()
     assert digest == "ec080194f01e4095c7fb43dbd7ed05af922c5b34295056a9ff56782741d65481"
-    library = ctypes.CDLL(str(dsp))
-    load = library.lummix_driver_load
-    load.argtypes = (ctypes.c_wchar_p, ctypes.c_size_t)
-    load.restype = ctypes.c_void_p
-    free = library.lummix_driver_free
-    free.argtypes = (ctypes.c_void_p,)
-    free.restype = None
-    path = str(portaudio)
-    for _ in range(2):
-        handle = load(path, len(path.encode("utf-16-le")) // 2)
-        assert handle, "Could not initialize the packaged PortAudio library"
-        free(handle)
+    reply = native_command(exe, "verify-audio-driver", cwd, env, output)
+    assert reply == {"runtime": "rust", "driver": "portaudio", "cycles": 2}, reply
     return digest
+
+
+def native_command(exe, mode, cwd, env, output):
+    finished = subprocess.run([str(exe), mode], cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=output,
+                              creationflags=subprocess.CREATE_NO_WINDOW, timeout=30, check=True)
+    return json.loads(finished.stdout)
 
 
 def verify_studio_assets(fetch, installed):
@@ -76,6 +75,7 @@ def verify_reinstall_profile(exe, phase):
     if phase == "seed":
         assert not any(path.exists() for path in files), "Expected unused runner settings"
     else:
+        verify_bundle(exe)
         assert all(path.is_file() for path in files), "Uninstall removed a seeded settings file"
         if phase == "recover":
             saved = json.loads(backup.read_bytes())["settings"][preferences.name]
@@ -114,6 +114,9 @@ def verify_reinstall_profile(exe, phase):
                 except requests.ConnectionError:
                     time.sleep(.2)
             assert health["service"] == "lummix-media" and MEDIA_CAPABILITIES <= set(health["capabilities"])
+            if phase != "seed":
+                verify_listener(exe, child.pid, "127.0.0.2", 41838)
+                assert "spotify-smtc-rust-v1" in health["capabilities"]
             settings = request("/mix/preferences")
             mix = request("/mix/gains")
             if phase == "seed":
@@ -147,13 +150,11 @@ def main(installed_exe=None):
     with tempfile.TemporaryDirectory(prefix="LumMixPortableTest-") as folder:
         if installed_exe is None:
             root = Path(folder)/"Unzipped app"
-            shutil.copytree(HERE.parents[1]/".build/frozen/runtime", root)
-            exe = str((root/"Lummix Helper.exe").rename(root/"Lummix.exe"))
-            (root/"studio").mkdir()
-            for name in STUDIO_FILES:
-                shutil.copy2(UI/unquote(name),root/"studio"/unquote(name))
+            shutil.copytree(STAGED.parent, root)
+            exe = str(root / STAGED.name)
         else:
             exe = str(installed_exe.resolve(strict=True))
+        verify_bundle(Path(exe))
         image = Path(exe).read_bytes()
         pe_offset, = struct.unpack_from("<I", image, 0x3c)
         assert image[pe_offset:pe_offset+4] == b"PE\0\0"
@@ -181,6 +182,11 @@ def main(installed_exe=None):
                          timeout=kwargs.pop("timeout",12), allow_redirects=False, **kwargs)
         with log.open("wb") as out:
             try:
+                report["runtimeInfo"] = native_command(exe, "--runtime-info", cwd, env, out)
+                assert report["runtimeInfo"] == {
+                    "runtime": "rust", "python": False, "protocol": 2,
+                    "components": ["host", "dsp", "media", "controls-wasm"]
+                }
                 for port, mode in ((41835,"studio"),(41836,"wrist"),(41838,"spotify"),(41839,"addon")):
                     proc[port] = subprocess.Popen([exe,mode,"--parent-stdin"],cwd=cwd,env=env,
                         creationflags=subprocess.CREATE_NO_WINDOW,stdin=subprocess.PIPE,stdout=out,stderr=out)
@@ -200,10 +206,10 @@ def main(installed_exe=None):
                 report["studioAssetsWithDifferentLineEndings"] = verify_studio_assets(
                     fetch, Path(exe).parent / "studio"
                 )
-                native_studio = Path(exe).with_name("Lummix Host.exe")
-                assert any(Path(child.exe()) == native_studio for child in
-                           psutil.Process(proc[41835].pid).children()), "Packaged Studio did not run the Rust host"
-                report["nativeStudioSha256"] = hashlib.sha256(native_studio.read_bytes()).hexdigest()
+                for port, child in proc.items():
+                    verify_listener(Path(exe), child.pid, "127.0.0.2", port)
+                report["nativeStudioSha256"] = hashlib.sha256(image).hexdigest()
+                report["standaloneImageSha256"] = report["nativeStudioSha256"]
                 assert fetch(41835,"/private-runtime-test.log").status_code == 404
                 report["studioAssetsExact"] = len(STUDIO_FILES)
                 report["wrist"] = fetch(41836,"/lummix-health").json()
@@ -216,17 +222,7 @@ def main(installed_exe=None):
                 assert cable_state in ("ready","missing","partial"), cable_state
                 assert fetch(41836,"/preview").status_code in (200,302)
                 mix = fetch(41838,"/mix/gains").json()
-                dll = Path(exe).parent / "_internal/lummix_dsp.dll"
-                assert dll.is_file() and any(Path(mapping.path) == dll for mapping in
-                    psutil.Process(proc[41838].pid).memory_maps()), "Installed media service did not load its Rust mixer"
-                report["loadedRustMixer"] = {"bytes":dll.stat().st_size, "sha256":hashlib.sha256(dll.read_bytes()).hexdigest()}
-                host_library = dll.with_name("lummix_host.dll")
-                for port in (41836, 41838, 41839):
-                    assert any(Path(m.path) == host_library for m in psutil.Process(proc[port].pid).memory_maps()), (
-                        f"The installed service on {port} did not load its native host")
-                report["portAudioSha256"] = verify_audio_driver(dll)
-                assert not any(p.name.lower().startswith(("numpy", "_cffi_backend", "_sounddevice", "pil."))
-                               for p in dll.parent.iterdir())
+                report["portAudioSha256"] = verify_audio_driver(Path(exe), cwd, env, out)
                 report["nativeServicePorts"] = [41835, 41836, 41838, 41839]
                 if os.environ.get("GITHUB_ACTIONS") == "true" and not any(
                         p.info["name"] == "Spotify.exe" for p in psutil.process_iter(["name"])):
@@ -254,14 +250,9 @@ def main(installed_exe=None):
                 report["wristControls"] = {"addonState":addon["state"], "realIsolatedGain":150,"bothMutesApplied":True}
                 health=fetch(41838,"/lummix-health").json()
                 assert health["service"]=="lummix-media" and health["protocol"]==2
+                assert health["runtime"] == "rust"
                 assert MEDIA_CAPABILITIES<=set(health["capabilities"])
-                media_dll = Path(exe).parent / "_internal/lummix_media.dll"
                 assert "spotify-smtc-rust-v1" in health["capabilities"]
-                assert media_dll.is_file() and any(Path(mapping.path) == media_dll for mapping in
-                    psutil.Process(proc[41838].pid).memory_maps()), "Packaged Spotify service did not load Rust media"
-                report["loadedRustMedia"] = {
-                    "bytes": media_dll.stat().st_size, "sha256": hashlib.sha256(media_dll.read_bytes()).hexdigest()
-                }
                 report["mediaCapabilities"]=sorted(health["capabilities"])
                 mic=fetch(41838,"/mix/mic").json()
                 assert isinstance(mic["inputs"],list) and mic["routeActive"] is False

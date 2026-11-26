@@ -31,7 +31,7 @@ const MANIFEST_LIMIT: usize = 8192;
 const CHUNK: usize = 128 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Failure {
+pub(crate) enum Failure {
     Invalid = 1,
     Network = 2,
     Storage = 3,
@@ -39,9 +39,9 @@ enum Failure {
     Current = 5,
 }
 
-type Outcome<T> = Result<T, Failure>;
+pub(crate) type Outcome<T> = Result<T, Failure>;
 
-fn identity(name: &str) -> Outcome<&'static str> {
+pub(crate) fn identity(name: &str) -> Outcome<&'static str> {
     SOURCE
         .lines()
         .find_map(|line| {
@@ -455,7 +455,7 @@ fn unlink(path: &Path) -> Outcome<()> {
     }
 }
 
-fn cleanup(directory: &Path) -> Outcome<()> {
+pub(crate) fn cleanup(directory: &Path) -> Outcome<()> {
     plain(directory)?;
     if !directory.exists() {
         return Ok(());
@@ -625,8 +625,12 @@ fn install(
 }
 
 fn shell(path: &Path) -> Outcome<()> {
+    use windows_sys::Win32::System::Com::{
+        CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED,
+    };
     let path: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
     let parameters = text_wide(&format!("/LUMMIXWAITPID={}", std::process::id()));
+    let apartment = unsafe { CoInitializeEx(null(), COINIT_APARTMENTTHREADED as u32) };
     let result = unsafe {
         ShellExecuteW(
             null_mut(),
@@ -637,6 +641,9 @@ fn shell(path: &Path) -> Outcome<()> {
             SW_SHOWNORMAL,
         )
     };
+    if apartment >= 0 {
+        unsafe { CoUninitialize() };
+    }
     if result as isize <= 32 {
         return Err(Failure::Storage);
     }
@@ -659,6 +666,87 @@ fn idle_response(status: u32, cors: bool, body: &[u8]) -> bool {
         && body.len() <= 8192
         && serde_json::from_slice::<Value>(body)
             .is_ok_and(|value| value["routeActive"].as_bool() == Some(false))
+}
+
+pub(crate) fn latest_version(current: &str) -> Outcome<Option<Value>> {
+    let internet = Internet::new()?;
+    let releases = internet.json(&format!("{API}?per_page=30"), 1024 * 1024)?;
+    match select(&releases, current) {
+        Ok(row) => qualify(row, |origin| internet.json(origin, MANIFEST_LIMIT)).map(Some),
+        Err(Failure::Current) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn higher_release(document: &Value) -> Outcome<Release<'_>> {
+    let release = signed(document)?;
+    let running = version(identity("VERSION")?).ok_or(Failure::Invalid)?;
+    if version(release.version).is_some_and(|number| number > running) {
+        Ok(release)
+    } else {
+        Err(Failure::Invalid)
+    }
+}
+
+pub(crate) fn download_release(
+    directory: &Path,
+    document: &Value,
+    allowed: impl Fn() -> bool,
+) -> Outcome<()> {
+    let release = higher_release(document)?;
+    let internet = Internet::new()?;
+    stage(
+        directory,
+        &release,
+        |deadline| internet.open(&release.url(), deadline),
+        allowed,
+    )
+}
+
+pub(crate) fn install_release(
+    directory: &Path,
+    document: &Value,
+    allowed: impl Fn() -> bool,
+) -> Outcome<()> {
+    let release = higher_release(document)?;
+    install(directory, &release, || allowed() && route_idle(), shell)
+}
+
+pub(crate) fn checked_recently(directory: &Path, release: &str) -> bool {
+    let stamp = directory.join("last-check");
+    let age = || -> Option<bool> {
+        plain(directory).ok()?;
+        plain(&stamp).ok()?;
+        let metadata = fs::metadata(&stamp).ok()?;
+        let now = std::time::SystemTime::now();
+        let modified = metadata.modified().ok()?;
+        if metadata.len() > 20
+            || !(now
+                .duration_since(modified)
+                .is_ok_and(|age| age < Duration::from_secs(21_600))
+                || modified
+                    .duration_since(now)
+                    .is_ok_and(|advance| advance <= Duration::from_secs(1)))
+        {
+            return Some(false);
+        }
+        Some(fs::read(stamp).ok()? == release.as_bytes())
+    };
+    age().unwrap_or(false)
+}
+
+pub(crate) fn write_check(directory: &Path, release: &str) -> Outcome<()> {
+    plain(directory)?;
+    fs::create_dir_all(directory).map_err(|_| Failure::Storage)?;
+    let _lock = lock_path(directory, true)?;
+    let stamp = directory.join("last-check");
+    unlink(&stamp)?;
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(stamp)
+        .and_then(|mut file| file.write_all(release.as_bytes()))
+        .map_err(|_| Failure::Storage)
 }
 
 type Output = extern "C" fn(*const u8, usize);
@@ -697,23 +785,12 @@ fn perform(
                 return Err(Failure::Invalid);
             }
             let document = serde_json::from_slice(input).map_err(|_| Failure::Invalid)?;
-            let release = signed(&document)?;
-            let running = version(identity("VERSION")?).ok_or(Failure::Invalid)?;
-            if !version(release.version).is_some_and(|version| version > running) {
-                return Err(Failure::Invalid);
-            }
             let callback = gate.ok_or(Failure::Invalid)?;
             let allowed = || callback() != 0;
             if action == 2 {
-                let internet = Internet::new()?;
-                stage(
-                    path,
-                    &release,
-                    |deadline| internet.open(&release.url(), deadline),
-                    allowed,
-                )
+                download_release(path, &document, allowed)
             } else {
-                install(path, &release, || allowed() && route_idle(), shell)
+                install_release(path, &document, allowed)
             }
         }
         4 => cleanup(path),

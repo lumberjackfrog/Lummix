@@ -39,21 +39,21 @@ const UPDATE_CHANGED: u32 = WM_APP + 294;
 const SPOTIFY_CHANGED: u32 = WM_APP + 295;
 const EXIT_TIMER: usize = 17;
 
-const CLOSE_TO_TRAY: u32 = 0;
-const REMEMBER: u32 = 1;
-const BEGIN_EXIT: u32 = 2;
-const FINISH_EXIT: u32 = 3;
-const UPDATE: u32 = 4;
-const SPOTIFY: u32 = 5;
-const WINDOW_FAILED: u32 = 6;
+pub(crate) const CLOSE_TO_TRAY: u32 = 0;
+pub(crate) const REMEMBER: u32 = 1;
+pub(crate) const BEGIN_EXIT: u32 = 2;
+pub(crate) const FINISH_EXIT: u32 = 3;
+pub(crate) const UPDATE: u32 = 4;
+pub(crate) const SPOTIFY: u32 = 5;
+pub(crate) const WINDOW_FAILED: u32 = 6;
 
 type Event = extern "C" fn(u32, *const u8, usize) -> i32;
 
 #[repr(C)]
-struct SavedPlacement {
-    geometry: [f64; 4],
-    screen: [u16; 32],
-    maximized: i32,
+pub(crate) struct SavedPlacement {
+    pub geometry: [f64; 4],
+    pub screen: [u16; 32],
+    pub maximized: i32,
 }
 
 struct Desktop {
@@ -696,14 +696,29 @@ pub unsafe extern "C" fn lummix_desktop_show(token: *const c_void, maxed: i32, n
                 size_of::<u32>() as u32,
             );
         }
-        ShowWindow(
-            hwnd,
-            if maxed != 0 {
-                SW_SHOWMAXIMIZED
-            } else {
-                SW_SHOWNORMAL
-            },
-        );
+        use windows_sys::Win32::System::Threading::{
+            GetStartupInfoW, STARTF_USESHOWWINDOW, STARTUPINFOW,
+        };
+        let mut startup: STARTUPINFOW = std::mem::zeroed();
+        startup.cb = size_of::<STARTUPINFOW>() as u32;
+        GetStartupInfoW(&mut startup);
+        let restore = if maxed != 0 {
+            SW_SHOWMAXIMIZED
+        } else {
+            SW_SHOWNORMAL
+        };
+        let show = match (
+            startup.dwFlags & STARTF_USESHOWWINDOW != 0,
+            startup.wShowWindow as i32,
+        ) {
+            (
+                true,
+                explicit @ (SW_HIDE | SW_SHOWMINIMIZED | SW_MINIMIZE | SW_SHOWMINNOACTIVE
+                | SW_SHOWNOACTIVATE | SW_SHOWMAXIMIZED),
+            ) => explicit,
+            _ => restore,
+        };
+        ShowWindow(hwnd, show);
         windows_sys::Win32::Graphics::Gdi::UpdateWindow(hwnd);
     }
 }
@@ -1033,8 +1048,9 @@ chrome.webview.postMessage('window-state');
                 .chain([0])
                 .collect::<Vec<u16>>()
         };
-        let icon = path(root.join("windows/packaging/Lummix.ico"));
-        let loader = path(root.join(".build/webview2/WebView2Loader.dll"));
+        let data = root.join(".build/frozen/runtime/_internal");
+        let icon = path(data.join("Lummix.ico").canonicalize().unwrap());
+        let loader = path(data.join("WebView2Loader.dll").canonicalize().unwrap());
         let profile = path(fixture.join("profile"));
         let assets = path(assets);
         unsafe {

@@ -1,4 +1,4 @@
-use crate::private_http::{self, single_header, Listener, Request};
+use crate::private_http::{self, header_values, single_header, Listener, Request};
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
@@ -26,10 +26,31 @@ type Dispatch = extern "C" fn(
     status: *mut u16,
 ) -> usize;
 
+pub(crate) struct NativeBody<'a> {
+    pub bytes: &'a [u8],
+    pub oversized: bool,
+}
+
+pub(crate) type NativeDispatch = dyn Fn(&str, &str, &str, &str, &[(String, String)], NativeBody<'_>) -> (u16, Vec<u8>)
+    + Send
+    + Sync;
+
+pub(crate) fn payload_limit(path: &str) -> usize {
+    if path == "/mix/preferences" {
+        401_000
+    } else {
+        256
+    }
+}
+enum Backend {
+    Legacy(Dispatch),
+    Rust(Box<NativeDispatch>),
+}
+
 struct Media {
     host: String,
     routes: HashMap<String, Methods>,
-    dispatch: Dispatch,
+    dispatch: Backend,
     poll_count: AtomicUsize,
 }
 
@@ -159,11 +180,7 @@ impl Media {
             );
         }
         let query = query.to_owned();
-        let limit = if path == "/mix/preferences" {
-            401_000
-        } else {
-            256
-        };
+        let limit = payload_limit(&path);
         let (body, oversized) = if request.method == Method::Post {
             match private_http::read_payload(&mut request, limit) {
                 Ok(body) => (body, false),
@@ -188,36 +205,71 @@ impl Media {
         } else {
             None
         };
-        let meta = json!({
-            "path": path, "query": query, "method":request.method.as_str(),
-            "headers": request.headers(), "oversized": oversized,
-        })
-        .to_string();
-        let mut response = Vec::with_capacity(RESPONSE_LIMIT);
-        let mut status = 0;
-        let size = (self.dispatch)(
-            meta.as_ptr(),
-            meta.len(),
-            body.as_ptr(),
-            body.len(),
-            response.as_mut_ptr(),
-            response.capacity(),
-            &mut status,
-        );
-        if size > RESPONSE_LIMIT || !(100..=599).contains(&status) {
-            return send(
-                request,
-                503,
-                Vec::new(),
-                "application/octet-stream",
-                Some(origin),
-                &[],
-            );
-        }
-        // The callback initializes exactly the returned prefix, with the capacity above.
-        unsafe {
-            response.set_len(size);
-        }
+        let (status, response) = match &self.dispatch {
+            Backend::Rust(dispatch) => {
+                use std::io::Read;
+                let decode = |reader: &mut dyn Read| {
+                    let mut inflated = Vec::new();
+                    reader
+                        .take(limit as u64 + 1)
+                        .read_to_end(&mut inflated)
+                        .map(|_| inflated)
+                        .unwrap_or_default()
+                };
+                let encoding = header_values(&request, "Content-Encoding")
+                    .next()
+                    .unwrap_or("");
+                let body = if encoding.eq_ignore_ascii_case("gzip") {
+                    decode(&mut flate2::read::GzDecoder::new(&body[..]))
+                } else if encoding.eq_ignore_ascii_case("deflate") {
+                    decode(&mut flate2::read::ZlibDecoder::new(&body[..]))
+                } else {
+                    body
+                };
+                let oversized = oversized || body.len() > limit;
+                if oversized && !path.starts_with("/mix/") {
+                    (413, b"Request body too large".to_vec())
+                } else {
+                    dispatch(
+                        request.method.as_str(),
+                        &path,
+                        origin,
+                        &query,
+                        request.headers(),
+                        NativeBody {
+                            bytes: &body,
+                            oversized,
+                        },
+                    )
+                }
+            }
+            Backend::Legacy(dispatch) => {
+                let meta = json!({"path":path,"query":query,"method":request.method.as_str(),
+                                 "headers":request.headers(),"oversized":oversized})
+                .to_string();
+                let mut response = Vec::with_capacity(RESPONSE_LIMIT);
+                let mut status = 0;
+                let size = dispatch(
+                    meta.as_ptr(),
+                    meta.len(),
+                    body.as_ptr(),
+                    body.len(),
+                    response.as_mut_ptr(),
+                    response.capacity(),
+                    &mut status,
+                );
+                if size > RESPONSE_LIMIT || !(100..=599).contains(&status) {
+                    (503, Vec::new())
+                } else {
+                    // This compatibility callback initializes exactly the reported prefix.
+                    unsafe {
+                        response.set_len(size);
+                    }
+                    (status, response)
+                }
+            }
+        };
+        let size = response.len();
         let mime = if status == 413 {
             "text/plain; charset=utf-8"
         } else if size == 0 {
@@ -236,7 +288,7 @@ impl Media {
     }
 }
 
-fn open(config: Value, port: u16, qa: bool, dispatch: Dispatch) -> Option<(Listener, u16)> {
+fn open(config: Value, port: u16, qa: bool, dispatch: Backend) -> Option<(Listener, u16)> {
     let host = config["host"].as_str()?.to_owned();
     let mut routes: HashMap<String, Methods> = HashMap::new();
     for row in config["routes"].as_array()? {
@@ -262,6 +314,19 @@ fn open(config: Value, port: u16, qa: bool, dispatch: Dispatch) -> Option<(Liste
     )
 }
 
+pub(crate) fn listen_native(
+    routes: &[(&str, &str)],
+    qa: bool,
+    dispatch: Box<NativeDispatch>,
+) -> Option<Listener> {
+    let methods: Vec<_> = routes
+        .iter()
+        .map(|(method, path)| [*path, *method])
+        .collect();
+    let config = json!({"host":"127.0.0.1:41838","routes":methods});
+    open(config, 41838, qa, Backend::Rust(dispatch)).map(|(listener, _)| listener)
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn lummix_media_start(
     config: *const u8,
@@ -280,7 +345,7 @@ pub unsafe extern "C" fn lummix_media_start(
     let Ok(config) = serde_json::from_slice(slice::from_raw_parts(config, length)) else {
         return null_mut();
     };
-    let Some((listener, port)) = open(config, port, qa, dispatch) else {
+    let Some((listener, port)) = open(config, port, qa, Backend::Legacy(dispatch)) else {
         return null_mut();
     };
     bound.write(port);
@@ -291,5 +356,211 @@ pub unsafe extern "C" fn lummix_media_start(
 pub unsafe extern "C" fn lummix_media_stop(listener: *mut Listener) {
     if !listener.is_null() {
         drop(Box::from_raw(listener));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mixer_api::{self, Mixer};
+    use std::{
+        fs,
+        io::{Read, Write},
+        net::TcpStream,
+        path::PathBuf,
+        time::Duration,
+    };
+
+    const HOST: &str = "127.0.0.1:41838";
+    const ORIGIN: &str = "http://127.0.0.1:41835";
+
+    struct Fixture(PathBuf);
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    struct Reply {
+        status: u16,
+        head: String,
+        body: Vec<u8>,
+    }
+
+    fn request(port: u16, method: &str, path: &str, fields: &[(&str, &str)], body: &[u8]) -> Reply {
+        let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(4)))
+            .unwrap();
+        write!(stream, "{method} {path} HTTP/1.1\r\n").unwrap();
+        for (key, value) in fields {
+            write!(stream, "{key}: {value}\r\n").unwrap();
+        }
+        if method == "POST" && !fields.iter().any(|(key, _)| *key == "Transfer-Encoding") {
+            write!(stream, "Content-Length: {}\r\n", body.len()).unwrap();
+        }
+        stream.write_all(b"\r\n").unwrap();
+        stream.write_all(body).unwrap();
+        let mut data = Vec::new();
+        stream.read_to_end(&mut data).unwrap();
+        let end = data
+            .windows(4)
+            .position(|value| value == b"\r\n\r\n")
+            .unwrap();
+        let body = data.split_off(end + 4);
+        let head = String::from_utf8(data).unwrap();
+        let status = head.split_whitespace().nth(1).unwrap().parse().unwrap();
+        Reply { status, head, body }
+    }
+
+    fn compress(bytes: &[u8], gzip: bool) -> Vec<u8> {
+        use flate2::{
+            write::{GzEncoder, ZlibEncoder},
+            Compression,
+        };
+        if gzip {
+            let mut writer = GzEncoder::new(Vec::new(), Compression::default());
+            writer.write_all(bytes).unwrap();
+            writer.finish().unwrap()
+        } else {
+            let mut writer = ZlibEncoder::new(Vec::new(), Compression::default());
+            writer.write_all(bytes).unwrap();
+            writer.finish().unwrap()
+        }
+    }
+
+    #[test]
+    fn native_mixer_wire_applies_origin_methods_and_payload_limits_in_order() {
+        let fixture = Fixture(
+            std::env::temp_dir().join(format!("LummixMediaWireFixture-{}", std::process::id())),
+        );
+        fs::create_dir(&fixture.0).unwrap();
+        let mixer = Mixer::new(&fixture.0, &fixture.0, false);
+        let config = json!({"host":HOST, "routes":mixer_api::ROUTES.iter()
+            .map(|(method, route)| [route,method]).collect::<Vec<_>>()});
+        let (_listen, port) = open(
+            config,
+            0,
+            false,
+            Backend::Rust(Box::new(move |method, path, origin, _, headers, body| {
+                let (status, body) = mixer.handle(method, path, origin, headers, body);
+                (status, mixer_api::response_body(status, body))
+            })),
+        )
+        .unwrap();
+        let good = [("Host", HOST), ("Origin", ORIGIN)];
+        for headers in [
+            vec![("Host", HOST)],
+            vec![("Host", HOST), ("Origin", "http://untrusted.invalid")],
+            vec![("Host", HOST), ("Host", HOST), ("Origin", ORIGIN)],
+            vec![("Host", HOST), ("Origin", ORIGIN), ("Origin", ORIGIN)],
+        ] {
+            let blocked = request(port, "GET", "/mix/gains", &headers, &[]);
+            assert_eq!(blocked.status, 403);
+            assert!(!blocked.head.contains("Access-Control-Allow-Origin"));
+        }
+        let check = request(
+            port,
+            "OPTIONS",
+            "/mix/gains",
+            &[good[0], good[1], ("Access-Control-Request-Method", "POST")],
+            &[],
+        );
+        assert_eq!(check.status, 204);
+        assert!(check
+            .head
+            .contains("Access-Control-Allow-Methods: GET, POST\r\n"));
+        assert!(check.head.contains("X-Lum-Mix-Token"));
+        assert_eq!(request(port, "HEAD", "/mix/gains", &good, &[]).status, 405);
+        assert_eq!(request(port, "GET", "/mix/unknown", &good, &[]).status, 404);
+        let first = request(port, "GET", "/mix/%67ains?probe=1", &good, &[]);
+        assert_eq!(first.status, 200);
+        assert!(first
+            .head
+            .contains(&format!("Access-Control-Allow-Origin: {ORIGIN}\r\n")));
+        let state: Value = serde_json::from_slice(&first.body).unwrap();
+        let auth = ("X-Lum-Mix-Token", state["token"].as_str().unwrap());
+        let mime = ("Content-Type", "application/json");
+        for gzip in [true, false] {
+            let encoding = if gzip { "gzip" } else { "deflate" };
+            let encoded = compress(br#"{"micGain":71.25}"#, gzip);
+            let result = request(
+                port,
+                "POST",
+                "/mix/gains",
+                &[good[0], good[1], auth, mime, ("Content-Encoding", encoding)],
+                &encoded,
+            );
+            assert_eq!(result.status, 200);
+            assert_eq!(
+                serde_json::from_slice::<Value>(&result.body).unwrap()["micGain"],
+                json!(71.25)
+            );
+        }
+        let chunks = b"4\r\n{\"mi\r\nc\r\ncMuted\":true\r\n1\r\n}\r\n0\r\n\r\n";
+        assert_eq!(
+            request(
+                port,
+                "POST",
+                "/mix/gains",
+                &[
+                    good[0],
+                    good[1],
+                    auth,
+                    mime,
+                    ("Transfer-Encoding", "chunked")
+                ],
+                chunks
+            )
+            .status,
+            200
+        );
+        let mut expanded = br#"{"musicGain":12}"#.to_vec();
+        expanded.resize(300, b' ');
+        let compressed = compress(&expanded, true);
+        assert!(compressed.len() < 256);
+        let encoding = ("Content-Encoding", "gzip");
+        for body in [&expanded[..], &compressed[..]] {
+            let codec = if body.len() > 256 {
+                ("Content-Encoding", "identity")
+            } else {
+                encoding
+            };
+            assert_eq!(
+                request(
+                    port,
+                    "POST",
+                    "/mix/gains",
+                    &[good[0], good[1], mime, codec],
+                    body
+                )
+                .status,
+                403
+            );
+            assert_eq!(
+                request(
+                    port,
+                    "POST",
+                    "/mix/gains",
+                    &[good[0], good[1], auth, codec],
+                    body
+                )
+                .status,
+                415
+            );
+            let large = request(
+                port,
+                "POST",
+                "/mix/gains",
+                &[good[0], good[1], auth, mime, codec],
+                body,
+            );
+            assert_eq!(large.status, 413);
+            assert!(!large.head.contains("Access-Control-Allow-Origin"));
+        }
+        let retained = request(port, "GET", "/mix/gains", &good, &[]);
+        let retained = serde_json::from_slice::<Value>(&retained.body).unwrap();
+        assert_eq!(retained["musicGain"], 100);
+        assert_eq!(retained["routeActive"], false);
     }
 }
