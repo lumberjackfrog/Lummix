@@ -2,6 +2,7 @@
 import ctypes
 from ctypes import wintypes
 import hashlib
+import json
 from http.client import HTTPConnection
 import os
 from pathlib import Path
@@ -70,6 +71,68 @@ def _endpoint_ready(port):
         return False
     finally:
         connection.close()
+
+
+_MIXER_STATE = """() => {
+    const frame = document.querySelector('#canvas');
+    const mixer = frame?.contentDocument;
+    const visible = node => {
+        const r = node?.getBoundingClientRect();
+        return Boolean(r?.width && r?.height
+            && node.ownerDocument.defaultView.getComputedStyle(node).visibility === 'visible');
+    };
+    const art = mixer?.querySelector('#lum-visualizer');
+    return {
+        url: location.href,
+        boardState: document.readyState,
+        mixerState: mixer?.readyState,
+        mixerTitle: mixer?.title,
+        frame: visible(frame),
+        mic: visible(mixer?.querySelector('#mic')),
+        music: visible(mixer?.querySelector('#music')),
+        artwork: Boolean(art?.querySelector('.lum-cover-image, img, canvas') || visible(art)),
+        release: typeof frame?.contentWindow?.releaseLummixAudio === 'function',
+    };
+}"""
+_MIXER_READY = f"""() => {{
+    const state = ({_MIXER_STATE})();
+    return state.url.startsWith('http://127.0.0.1:41835/')
+        && state.frame && state.mic && state.music && state.artwork && state.release;
+}}"""
+
+
+def _wait_for_mixer(browser, deadline, version, number):
+    cdp = browser.new_browser_cdp_session()
+    last_error = None
+    targets = []
+    try:
+        while (remaining := deadline - time.perf_counter()) > 0:
+            # A protocol round trip dispatches page creation and navigation events
+            # even when the sole page was about:blank when we attached.
+            targets = cdp.send("Target.getTargets")["targetInfos"]
+            for context in browser.contexts:
+                for page in context.pages:
+                    try:
+                        page.wait_for_function(_MIXER_READY, polling=40,
+                                               timeout=min(300, max(1, remaining * 1000)))
+                        return
+                    except PlaywrightError as error:
+                        last_error = str(error).splitlines()[0]
+            time.sleep(POLL_SECONDS)
+        diagnostics = []
+        for context in browser.contexts:
+            for page in context.pages:
+                try:
+                    diagnostics.append(page.evaluate(_MIXER_STATE))
+                except PlaywrightError as error:
+                    diagnostics.append({"url": page.url, "error": str(error).splitlines()[0]})
+        raise AssertionError(
+            f"{version} trial {number}: real mixer did not become ready. "
+            + json.dumps({"targets": [{"url": item["url"], "type": item["type"]} for item in targets],
+                          "pages": diagnostics, "lastPlaywrightError": last_error})
+        )
+    finally:
+        cdp.detach()
 
 
 def _owns_image(exe, process):
@@ -170,25 +233,7 @@ def _trial(exe, version, number, work_dir, chromium):
             _wait_until(lambda: _endpoint_ready(debug_port), remaining(), "WebView2 CDP did not start")
             browser = chromium.connect_over_cdp(f"http://127.0.0.1:{debug_port}", timeout=remaining() * 1000)
 
-            def mixer_ready():
-                for context in browser.contexts:
-                    for page in context.pages:
-                        if not page.url.startswith("http://127.0.0.1:41835/"):
-                            continue
-                        try:
-                            if page.evaluate("""() => {
-                                const frame = document.querySelector('#canvas');
-                                const mixer = frame?.contentDocument;
-                                const visualizer = mixer?.querySelector('#lum-visualizer');
-                                return Boolean(mixer?.readyState === 'complete' && visualizer?.getClientRects().length
-                                    && typeof frame.contentWindow.releaseLummixAudio === 'function');
-                            }"""):
-                                return page
-                        except PlaywrightError:
-                            continue
-                return None
-
-            _wait_until(mixer_ready, remaining(), "The real Studio mixer did not become ready")
+            _wait_for_mixer(browser, begin + START_TIMEOUT, version, number)
             ready_ms = (time.perf_counter() - begin) * 1000
             children = []
 

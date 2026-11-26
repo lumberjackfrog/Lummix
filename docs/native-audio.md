@@ -42,9 +42,22 @@ All four comparisons completed with zero reported callback underruns or overruns
 
 ## Installer and migration
 
-The audited development installer contains 13,729 lines of first-party Rust out of 22,269 nonblank runtime lines (61.65%). The preceding build contained 74 out of 9,833 (0.75%). Counting Rust and Python alone gives 76.90% Rust. The audit reads the actual installer and its frozen Python module list. It excludes third-party libraries, tests and build scripts, and counts the WebAssembly controls once from their Rust source. Python still connects parts of the launcher, setup and local API. The desktop and wrist also use HTML, CSS and JavaScript. [Installer audit script](../scripts/count-native-source.py)
+The standalone Windows build runs its launcher, setup, Spotify and local mixer services in Rust. Its installer contains 17,620 nonblank lines of first-party Rust out of 22,036 runtime lines (79.96%). The desktop and wrist use 4,378 lines of HTML, CSS and JavaScript, and Windows setup uses 38 lines of PowerShell. The installer contains zero Python source files, Python extension modules or Python interpreters. Python remains in the repository for building, testing and comparing against previous implementations. The counts exclude tests, tooling and third-party code. WebAssembly is counted once from the Rust that produced it. [Installer audit script](../scripts/count-native-source.py)
 
-The candidate is 14,787,610 bytes. The public 1.0.8 installer is 42,824,066 bytes. A clean Windows run upgraded from 1.0.8, exercised three install/uninstall cycles, restored damaged settings from backup and launched the mixer via both shortcuts. First-time setup installed Spotify as a standard user and staged VB-CABLE, retaining the restart prompt. The candidate is unsigned. [Installer build](https://github.com/lumberjackfrog/Lummix/actions/runs/45868619780) · [Installed application tests](https://github.com/lumberjackfrog/Lummix/actions/runs/45869354743)
+The shipped 1.0.8 installer was 42,824,066 bytes. The intermediate hybrid installer was 14,787,610 bytes with 61.65% Rust. The standalone candidate was 5,014,554 bytes. [Hybrid installer and upgrade checks](https://github.com/lumberjackfrog/Lummix/actions/runs/45869354743)
+
+The following medians compare the actual hybrid and standalone installers on the same Windows Server 2022 x64 runner. Six alternating pairs measured the media service, and four pairs timed real per-user installs. The API measurement is a request to read mixer gains. The memory figure is private memory for the media worker, sampled after startup and its first Spotify status request. The driver check times verification of the bundled vendor files.
+
+| Measurement | Hybrid | Standalone Rust |
+| --- | ---: | ---: |
+| Media service ready | 444 ms | 35 ms |
+| Gain API response | 20.53 ms | 0.46 ms |
+| Gain API p95 | 25.13 ms | 7.16 ms |
+| Media service private memory | 31.51 MiB | 3.00 MiB |
+| Per-user install | 1.93 s | 1.48 s |
+| Driver file verification | 746 ms | 623 ms |
+
+The run saved the underlying samples before its separate desktop timing probe timed out. Physical microphone-to-headset and VRChat network latency require a receiver measurement. [Raw timing artifact in the installer run](https://github.com/lumberjackfrog/Lummix/actions/runs/45877908963)
 
 ## Reproduce
 
@@ -52,4 +65,5 @@ The candidate is 14,787,610 bytes. The public 1.0.8 installer is 42,824,066 byte
 - Run `windows/tests/device_route.py` on Windows with the named, idle Steam virtual devices to check actual capture, routing and gain. The test checks the system defaults and active sessions before opening a stream.
 - Run `windows/tests/route_latency.py --baseline <previous-checkout> --output latency.json` with the same Python test environment and built release DLLs to compare device timing. The baseline checkout must include its own built DSP.
 - Run `windows/tests/signal_latency.py --baseline <previous-checkout> --order ABBA --output signal-abba.json` and repeat with `--order BAAB --output signal-baab.json` to time audio arriving at the receiver. Use the same dedicated Windows virtual devices, and run the two commands sequentially.
-- Run `scripts/count-native-source.py --help` for an installer-backed language inventory. It checks the installer digest, inspects the frozen application and compares its shipped interface files to the source commit.
+- Enable the hybrid comparison in the **Build and verify Windows installer** workflow to compare the two shipped payloads on one Windows runner.
+- Run `scripts/count-native-source.py --help` for an installer-backed language inventory. It checks the installer digest, inspects the MSI file table and compares its shipped interface files to the source commit.
