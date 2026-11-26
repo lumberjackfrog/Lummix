@@ -21,11 +21,13 @@ output{font-size:clamp(9px,5vw,15px);line-height:1;font-variant-numeric:tabular-
 <button id="music" type="button" aria-label="Mute music in the mix" aria-pressed="false" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 4.7 21 2v14.2c0 2-1.8 3.6-4 3.6s-3.7-1.1-3.7-2.8c0-2 2.5-3.8 5.2-3.4V7L12 8.6v10c0 2-1.9 3.7-4.2 3.7s-3.8-1.2-3.8-3c0-2 2.8-3.7 6-3.2Z"/><path class="slash" d="M2 2l20 20"/></svg></button>
 <label><input id="gain" type="range" min="0" max="200" step="10" value="100" aria-label="Music output gain" disabled><output for="gain">—</output></label>
 </main><p id="status" role="status">Connecting to Lummix…</p>
+<script src="/controls-bridge.js"></script>
 <script>
+(async () => {
 'use strict';
 const mic=document.querySelector('#mic'), music=document.querySelector('#music'), gain=document.querySelector('#gain');
 const value=document.querySelector('output'), status=document.querySelector('#status'), nested=window.parent!==window;
-let current={}, pending={}, busy=false, dragging=false, lastStep=0, lastBeat=0, online=false;
+let dragging=false, lastStep=0, lastBeat=0, step=10;
 function heartbeat(type){if(nested)parent.postMessage({type},'*');}
 window.addEventListener('message',event=>{
   if(!nested || event.source!==parent || event.data?.type!=='lummix-wrist-theme')return;
@@ -35,8 +37,16 @@ window.addEventListener('message',event=>{
       document.documentElement.style.setProperty('--'+prop,color);
   }
 });
+let controls;
+try {
+  controls = await window.LumControls;
+} catch {
+  status.textContent='Lummix wrist controls unavailable';
+  heartbeat('lummix-wrist-unavailable');
+  return;
+}
 function draw(){
-  const shown={...current,...pending};
+  const shown=controls.shown(), online=controls.online();
   mic.setAttribute('aria-pressed',String(!!shown.micMuted));
   music.setAttribute('aria-pressed',String(!!shown.musicMuted));
   mic.setAttribute('aria-label',shown.micMuted?'Unmute microphone':'Mute microphone');
@@ -52,36 +62,49 @@ async function request(path,patch){
   if(patch){headers['Content-Type']='application/json';options.method='POST';options.body=JSON.stringify(patch);}
   const res=await fetch(path,options);if(!res.ok)throw Error('Mixer unavailable');return res.json();
 }
-async function exchange(){
-  if(busy)return;
-  busy=true;
-  try{
-    do{
-      const patch=pending;pending={};
-      current=await request('/controls',Object.keys(patch).length?patch:null);
-      online=true;draw();
-    }while(Object.keys(pending).length);
-    const now=Date.now();
-    if(now-lastBeat>4000){heartbeat('lummix-wrist-ready');lastBeat=now;}
-    if(now-lastStep>5000){lastStep=now;const data=await request('/step');gain.dataset.step=String(data.step);}
-  }catch{online=false;pending={};lastBeat=0;heartbeat('lummix-wrist-unavailable');draw();}
-  finally{busy=false;if(Object.keys(pending).length)exchange();}
+async function exchange(poll = false){
+  let patch=controls.next(true,poll);
+  if(patch===undefined)return;
+  while(patch!==undefined){
+    try{
+      controls.commit(await request('/controls',patch));
+      draw();
+    }catch{
+      controls.fail(false);
+      lastBeat=0;
+      heartbeat('lummix-wrist-unavailable');
+      draw();
+      return;
+    }
+    patch=controls.next(true,false);
+  }
+  const now=Date.now();
+  if(now-lastBeat>4000){heartbeat('lummix-wrist-ready');lastBeat=now;}
+  if(now-lastStep>5000){
+    lastStep=now;
+    try{
+      const data=await request('/step');
+      if([1,5,10,20].includes(data.step))step=data.step;
+    }catch{}
+  }
 }
-function send(patch){Object.assign(current,patch);Object.assign(pending,patch);draw();exchange();}
-mic.onclick=()=>send({micMuted:mic.getAttribute('aria-pressed')!=='true'});
-music.onclick=()=>send({musicMuted:music.getAttribute('aria-pressed')!=='true'});
+function send(patch){controls.change(patch);draw();exchange();}
+mic.onclick=()=>send({micMuted:!controls.shown().micMuted});
+music.onclick=()=>send({musicMuted:!controls.shown().musicMuted});
 gain.step='1';
-function snapped(){const step=Number(gain.dataset.step)||10;return Math.max(0,Math.min(200,Math.round(Number(gain.value)/step)*step));}
+const slider=key=>controls.slider(0,200,step,false,gain.valueAsNumber,key);
 gain.onpointerdown=()=>{dragging=true;};
-gain.oninput=()=>{value.textContent=snapped()+'%';};
-gain.onchange=()=>{dragging=false;send({musicGain:snapped()});};
+gain.oninput=()=>{value.textContent=slider()+'%';};
+gain.onchange=()=>{dragging=false;send({musicGain:slider()});};
 gain.onpointerup=gain.onpointercancel=gain.onblur=()=>{dragging=false;};
 gain.onkeydown=e=>{
-  if(!['ArrowUp','ArrowRight','ArrowDown','ArrowLeft'].includes(e.key))return;
-  e.preventDefault();const step=Number(gain.dataset.step)||10,direction=['ArrowUp','ArrowRight'].includes(e.key)?1:-1;
-  const base=Number(gain.value)/step;
-  send({musicGain:Math.max(0,Math.min(200,(direction===1?Math.floor(base)+1:Math.ceil(base)-1)*step))});
+  if(e.altKey||e.ctrlKey||e.metaKey||!controls.handlesKey(e.key))return;
+  e.preventDefault();
+  const next=slider(e.key);
+  if(next!==gain.valueAsNumber)send({musicGain:next});
 };
-setInterval(()=>{if(!document.hidden)exchange();},800);
-document.addEventListener('visibilitychange',()=>{if(!document.hidden)exchange();});exchange();
+setInterval(()=>{if(!document.hidden)exchange(true);},800);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)exchange(true);});
+exchange(true);
+})();
 </script></html>

@@ -1,17 +1,15 @@
-"""Optional local Spotify transport for Lum Mix. Run with the existing Windows Python.
+"""Local Spotify and mixer HTTP routes.
 
-Uses Windows.Media.Control and aiohttp. Reads metadata only for the desktop Spotify app.
+Windows media access is provided by the Rust library and scoped to official Spotify sessions.
 No playback is requested until an allowed mixer origin presents its status capability.
 """
 import asyncio
-import base64
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 import ctypes
 from dataclasses import dataclass
 import hashlib
 import hmac
-from io import BytesIO
 import math
 import os
 import secrets
@@ -22,12 +20,12 @@ from mix_gains_http import MixOutput
 from studio_preferences import StudioPreferences
 from mic_routes import MicRoutes
 from mix_duck_http import MixDucking
-from spotify_duck_http import DUCK_METHODS, DuckRoutes, native_controller
 from spotify_volume_http import VolumeError, VolumeRoutes
 from spotify_window_transport import WindowPlayer, transport as window_transport
 from spotify_artwork import ArtworkCache
 from spotify_peak import SpotifyPeak
-from spotify_locations import STORE_FAMILY, store_installed, website_installed
+from spotify_locations import STORE_FAMILY, _remember, _saved, store_installed, website_installed
+from spotify_native import NativeChangeListener, NativeManager, NativeSession, provider as media_provider
 
 HOST = "127.0.0.1"
 PORT = 41838
@@ -35,8 +33,6 @@ ORIGINS = {"http://127.0.0.1:41835", "http://localhost:41835"}
 
 SPOTIFY_IDS = {"spotify.exe": "desktop", STORE_FAMILY.casefold() + "!spotify": "store"}
 TOKEN_LIFETIME = 600
-MAX_ART_BYTES = 4 * 1024 * 1024
-MAX_ART_PIXELS = 12_000_000
 CHANGE_WAIT = 22
 CHANGE_DEBOUNCE = .055
 TRANSPORT = {
@@ -69,20 +65,14 @@ def read_installations():
 
 
 async def thumbnail_bytes(thumbnail):
-    from winsdk.windows.storage.streams import DataReader
-    with await thumbnail.open_read_async() as stream:
-        size = stream.size
-        if not 0 < size <= MAX_ART_BYTES:
-            return None
-        with DataReader(stream.get_input_stream_at(0)) as reader:
-            if await reader.load_async(size) != size:
-                return None
-            data = bytearray(size)
-            reader.read_bytes(data)
-            return data
+    # Injected providers can supply artwork without a Windows media object.
+    return await thumbnail.read_bytes()
 
 
 def read_session_media(session):
+    if isinstance(session, NativeSession):
+        return session.read_media()
+
     # PortAudio can initialize the HTTP thread as STA. The thumbnail stream created
     # there needs a Windows message pump; asyncio alone does not dispatch those
     # messages. Acquire BOTH the properties and stream on our dedicated MTA thread.
@@ -113,20 +103,8 @@ def read_session_media(session):
 
 
 def encode_artwork(data):
-    from PIL import Image
-    try:
-        with Image.open(BytesIO(data), formats=("JPEG", "PNG", "WEBP", "GIF")) as image:
-            if image.width * image.height > MAX_ART_PIXELS:
-                return None
-            image.thumbnail((768, 768), Image.Resampling.LANCZOS)
-            rgb = image.convert("RGB")
-            # Preserve the artwork pixels while dropping source metadata and animation.
-            rgb.info.clear()
-            out = BytesIO()
-            rgb.save(out, "JPEG", quality=85)
-    except (Image.DecompressionBombError, ValueError, OSError, SyntaxError):
-        return None
-    return "data:image/jpeg;base64," + base64.b64encode(out.getvalue()).decode("ascii")
+    native = media_provider()
+    return native.encode_artwork(data) if native is not None else None
 
 
 def spotify_sessions(manager):
@@ -135,39 +113,48 @@ def spotify_sessions(manager):
 
 class WindowsSessions:
     async def manager(self):
-        from winsdk.windows.media.control import GlobalSystemMediaTransportControlsSessionManager
-        return await GlobalSystemMediaTransportControlsSessionManager.request_async()
+        native = media_provider()
+        if native is None:
+            raise NotImplementedError("The Rust media library is required for Windows media sessions")
+        await asyncio.to_thread(native.call, 6)
+        return NativeManager(native)
 
-    async def spotify(self):
-        return spotify_sessions(await self.manager())
+    async def selected(self):
+        native = media_provider()
+        if native is None:
+            raise NotImplementedError("The Rust media library is required for Windows media sessions")
+        result = await asyncio.to_thread(native.call, 12)
+        state = result["state"]
+        return (NativeSession(native, *result["session"]) if state == "ready" else None), state
 
     @staticmethod
     def running_player():
         """Identify the local player even while Windows media controls are starting or unavailable."""
-        from spotify_process_feed import AmbiguousTarget, spotify_target
+        from spotify_locations import spotify_process_roots
         from spotify_volume_http import VolumeError, spotify_windows
-        import win32gui
 
-        try:
-            target = spotify_target()
-        except AmbiguousTarget:
+        roots = spotify_process_roots()
+        if roots is None:
+            return {"state": "unavailable"}
+        if len(roots) > 1:
             return {"state": "ambiguous"}
-        if not target:
+        if not roots:
             return None
-        pid, created, edition = target
+        pid, created, edition = roots[0]
         result = {"state": "detected", "edition": edition}
         try:
             windows = [hwnd for hwnd, owner, started in spotify_windows(edition)
                        if owner == pid and started == created]
             if len(windows) == 1:
-                artist, separator, title = win32gui.GetWindowText(windows[0]).partition(" - ")
+                native = media_provider()
+                artist, separator, title = native.call(14, windows[0], pid).partition(" - ")
                 if separator and title.strip() and artist.strip():
                     result.update(title=title.strip()[:256], artist=artist.strip()[:256])
                 player = WindowPlayer(edition, (windows[0], pid, created))
                 result.update(window_transport(player))
                 if result.get("canPlay") or result.get("canPause"):
                     result.update(state="ready", transportSource="spotify_window", window=player)
-        except (OSError, VolumeError, win32gui.error):
+        except (OSError, RuntimeError, VolumeError):
             pass
         return result
 
@@ -175,6 +162,8 @@ class WindowsSessions:
 def session_timeline(session, info):
     """SMTC positions are samples at LastUpdatedTime, often several seconds old."""
     try:
+        if isinstance(session, NativeSession):
+            return session.current_timeline()
         t = session.get_timeline_properties()
         start, end = t.start_time.total_seconds(), t.end_time.total_seconds()
         if end <= start:
@@ -195,6 +184,17 @@ def session_timeline(session, info):
 def can_seek(controls, timeline):
     return bool(getattr(controls, "is_playback_position_enabled", False)
                 and timeline is not None and timeline["minSeek"] is not None)
+
+
+async def matches_selection(current, original):
+    if current.source_app_user_model_id.casefold() != original.source_app_user_model_id.casefold():
+        return False
+    if isinstance(original, NativeSession):
+        try:
+            return await asyncio.to_thread(original.matches, current)
+        except (OSError, RuntimeError):
+            return False
+    return True
 
 
 class ChangeFeed:
@@ -222,7 +222,7 @@ class ChangeFeed:
 
     def dispatch(self, refresh):
         # WinRT delivers callbacks on its own threads. All subscription state,
-        # debounce timers and HTTP waiters belong to the aiohttp event loop.
+        # Debounce timers and HTTP waiters belong to the media event loop.
         if not self.closed and self.loop and not self.loop.is_closed():
             self.loop.call_soon_threadsafe(self.schedule, refresh)
 
@@ -317,6 +317,58 @@ class ChangeFeed:
         self.notify()
 
 
+class NativeChangeFeed:
+    """Turn Rust event notifications into a shared asyncio wakeup for HTTP waiters."""
+
+    def __init__(self):
+        self.prefix = secrets.token_hex(8)
+        self.wakeup = asyncio.Event()
+        self.lock = asyncio.Lock()
+        self.listener = self.loop = None
+        self.closed = False
+        self.retry_after = 0
+
+    def notify(self):
+        previous, self.wakeup = self.wakeup, asyncio.Event()
+        previous.set()
+
+    def wake(self, _sequence):
+        if not self.closed and not self.loop.is_closed():
+            self.loop.call_soon_threadsafe(self.notify)
+
+    async def changes(self, since):
+        async with self.lock:
+            if self.listener is None and not self.closed and time.monotonic() >= self.retry_after:
+                self.retry_after = time.monotonic() + 30
+                try:
+                    self.loop = asyncio.get_running_loop()
+                    native = media_provider()
+                    if native is not None:
+                        self.listener = await asyncio.to_thread(NativeChangeListener, native, self.prefix, self.wake)
+                except (OSError, RuntimeError):
+                    pass
+        if self.listener is None:
+            return {"revision": f"{self.prefix}.0", "events": False}
+        current = self.listener.read()
+        try:
+            async with asyncio.timeout(CHANGE_WAIT):
+                while self.listener is not None and current["events"] and since == current["revision"]:
+                    await self.wakeup.wait()
+                    if self.listener is not None:
+                        current = self.listener.read()
+        except TimeoutError:
+            pass
+        return current if self.listener is not None else dict(current, events=False)
+
+    async def close(self, app):
+        self.closed = True
+        self.notify()
+        async with self.lock:
+            listener, self.listener = self.listener, None
+            if listener is not None:
+                await asyncio.to_thread(listener.close)
+
+
 @dataclass
 class Selection:
     session: object
@@ -328,6 +380,7 @@ class Player:
     def __init__(self, sessions, inventory=read_installations):
         self.sessions = sessions
         self.tokens = OrderedDict()
+        self.capabilities = None
         self.lock = asyncio.Lock()
         self.inventory_lock = asyncio.Lock()
         self.inventory = inventory
@@ -339,6 +392,11 @@ class Player:
         self.media_worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="LumSpotifyMedia")
 
     async def close(self, app):
+        if self.capabilities is not None:
+            native, store = self.capabilities
+            native.capability(4, store)
+            self.capabilities = None
+        self.tokens.clear()
         await asyncio.to_thread(self.media_worker.shutdown, wait=True, cancel_futures=True)
 
     async def artwork(self, labels, data, edition):
@@ -367,6 +425,8 @@ class Player:
 
     async def selected(self):
         try:
+            if isinstance(self.sessions, WindowsSessions):
+                return await asyncio.wait_for(self.sessions.selected(), 3)
             choices = await asyncio.wait_for(self.sessions.spotify(), 3)
         except (ImportError, NotImplementedError):
             return None, "unsupported"
@@ -383,12 +443,43 @@ class Player:
         return (playing[0], "ready") if len(playing) == 1 else (None, "ambiguous")
 
     def issue(self, session, origin):
+        if isinstance(session, (NativeSession, WindowPlayer)) and isinstance(self.sessions, WindowsSessions):
+            if self.capabilities is None:
+                native = media_provider()
+                self.capabilities = native, native.capability(0)
+            native, store = self.capabilities
+            issued = native.capability(1, store, origin=origin)
+            for token in issued["evicted"]:
+                self.tokens.pop(token, None)
+            token = issued["token"]
+            self.tokens[token] = Selection(session, origin, 0)
+            return token
         now = time.monotonic()
         while self.tokens and (next(iter(self.tokens.values())).expires <= now or len(self.tokens) >= 64):
             self.tokens.popitem(last=False)
         token = secrets.token_urlsafe(32)
         self.tokens[token] = Selection(session, origin, now + TOKEN_LIFETIME)
         return token
+
+    def valid_selection(self, token, origin):
+        selected = self.tokens.get(token)
+        if selected is None:
+            return None
+        if self.capabilities is not None:
+            native, store = self.capabilities
+            try:
+                return selected if native.capability(2, store, token=token, origin=origin) else None
+            except (OSError, RuntimeError):
+                return None
+        if selected.expires > time.monotonic() and hmac.compare_digest(selected.origin, origin):
+            return selected
+        return None
+
+    def revoke(self, token):
+        self.tokens.pop(token, None)
+        if self.capabilities is not None:
+            native, store = self.capabilities
+            native.capability(3, store, token=token)
 
     async def snapshot(self, origin, previous_artwork_id=None):
         (session, state), installed = await asyncio.gather(self.selected(), self.installation_status())
@@ -451,20 +542,20 @@ class Player:
         return result
 
     async def validate_duck_start(self, origin, token):
-        selection = self.tokens.get(token)
-        if not selection or selection.expires <= time.monotonic() or not hmac.compare_digest(selection.origin, origin):
+        selection = self.valid_selection(token, origin)
+        if not selection:
             return 403, "refresh_selection"
         if isinstance(selection.session, WindowPlayer):
             return 409, "windows_media_unavailable"
         current, _ = await self.selected()
-        if current is None or current.source_app_user_model_id.casefold() != selection.session.source_app_user_model_id.casefold():
+        if current is None or not await matches_selection(current, selection.session):
             return 409, "selection_changed"
         return 200, None
 
     async def control(self, origin, token, action):
         async with self.lock:
-            selected = self.tokens.get(token)
-            if not selected or selected.expires <= time.monotonic() or not hmac.compare_digest(selected.origin, origin):
+            selected = self.valid_selection(token, origin)
+            if not selected:
                 return 403, status("unavailable", error="refresh_selection")
             if isinstance(selected.session, WindowPlayer):
                 try:
@@ -474,17 +565,17 @@ class Player:
                 return 200, await self.snapshot(origin)
             current, state = await self.selected()
             if current is None:
-                self.tokens.pop(token, None)
+                self.revoke(token)
                 return 409, status(state, error="selection_changed")
             # Dispatch to the exact originally selected native session, never the current system player.
-            if current.source_app_user_model_id.casefold() != selected.session.source_app_user_model_id.casefold():
-                self.tokens.pop(token, None)
+            if not await matches_selection(current, selected.session):
+                self.revoke(token)
                 return 409, status("unavailable", error="selection_changed")
             session = selected.session
             try:
                 info = session.get_playback_info()
                 if current.get_playback_info().playback_status != info.playback_status:
-                    self.tokens.pop(token, None)
+                    self.revoke(token)
                     return 409, status("unavailable", error="selection_changed")
                 playing = info.playback_status.name == "PLAYING"
                 if (action == "play" and playing) or (action == "pause" and info.playback_status.name == "PAUSED"):
@@ -509,12 +600,101 @@ class Player:
             return 200, await self.snapshot(origin)
 
 
+class NativePlayer(Player):
+    """Adapt the native player, exact session handles and async artwork fetches to HTTP."""
+
+    def __init__(self, sessions, inventory):
+        super().__init__(sessions, inventory)
+        self.location_revision = 0
+        self.saved_desktop = _saved().get("desktop")
+
+    @staticmethod
+    def remember_locations(paths):
+        for edition, path in paths.items():
+            if path:
+                _remember(edition, path)
+
+    async def snapshot(self, origin, previous_artwork_id=None):
+        try:
+            native = media_provider()
+            if native is None:
+                return await super().snapshot(origin, previous_artwork_id)
+            fields = await asyncio.to_thread(native.player_snapshot, self.saved_desktop)
+        except (OSError, RuntimeError, UnicodeError):
+            return status("unavailable")
+        revision = fields.pop("inventoryRevision")
+        paths = fields.pop("inventoryPaths")
+        if revision != self.location_revision:
+            self.location_revision = revision
+            self.saved_desktop = paths.get("desktop")
+            await asyncio.to_thread(self.remember_locations, paths)
+        session = fields.pop("session", None)
+        window = fields.pop("window", None)
+        if session:
+            fields["token"] = self.issue(session, origin)
+        elif window:
+            fields["token"] = self.issue(WindowPlayer(window[0], tuple(window[1])), origin)
+        if fields.get("itemUrl") and not fields.get("artwork"):
+            cover = await self.spotify_covers.get(fields["itemUrl"])
+            if cover:
+                fields["artworkId"], fields["artwork"] = cover
+        result = status(**fields)
+        if result["artworkId"] and result["artworkId"] == previous_artwork_id:
+            result.pop("artwork", None)
+        return result
+
+    async def validate_duck_start(self, origin, token):
+        selection = self.valid_selection(token, origin)
+        if selection is None:
+            return 403, "refresh_selection"
+        session = selection.session
+        if isinstance(session, WindowPlayer):
+            return 409, "windows_media_unavailable"
+        try:
+            if await asyncio.to_thread(session.native.call, 22, session.identity):
+                return 200, None
+        except (OSError, RuntimeError):
+            pass
+        return 409, "selection_changed"
+
+    async def control(self, origin, token, action):
+        async with self.lock:
+            selection = self.valid_selection(token, origin)
+            if selection is None:
+                return 403, status("unavailable", error="refresh_selection")
+            target = selection.session
+            if isinstance(target, WindowPlayer):
+                try:
+                    await asyncio.to_thread(window_transport, target, action)
+                except VolumeError as error:
+                    return error.http, status("unavailable", error=error.reason)
+                return 200, await self.snapshot(origin)
+            command = ("play", "pause", "previous", "next", "stop", "seekBack15", "seekForward15").index(action)
+            try:
+                result = await asyncio.to_thread(target.native.call, 21, target.identity, command)
+            except (OSError, RuntimeError):
+                return 503, status("unavailable", error="check_player")
+            code = result["status"]
+            if result.get("error") == "selection_changed":
+                self.revoke(token)
+            if result["refresh"]:
+                snapshot = await self.snapshot(origin)
+                if result.get("error"):
+                    snapshot["error"] = result["error"]
+                return code, snapshot
+            return code, status(result["state"], error=result["error"])
+
+
 def create_app(sessions=None, *, expected_host=f"{HOST}:{PORT}", inventory=read_installations,
                duck_factory=None, mix_output=None, peak_meter=None):
-    player = Player(sessions if sessions is not None else WindowsSessions(), inventory)
-    feed = ChangeFeed(player.sessions)
+    player_type = NativePlayer if sessions is None and inventory is read_installations else Player
+    player = player_type(sessions if sessions is not None else WindowsSessions(), inventory)
+    feed = NativeChangeFeed() if player_type is NativePlayer else ChangeFeed(player.sessions)
     peak_meter = peak_meter if peak_meter is not None else SpotifyPeak()
-    allowed_methods = {path: (method,) for path, method in DUCK_METHODS.items()} if duck_factory is not None else {}
+    allowed_methods = {}
+    if duck_factory is not None:
+        from spotify_duck_http import DUCK_METHODS, DuckRoutes
+        allowed_methods.update({path: (method,) for path, method in DUCK_METHODS.items()})
     allowed_methods["/lummix-health"] = ("GET",)
     allowed_methods["/mix/duck"] = ("GET", "POST")
     allowed_methods["/mix/preferences"] = ("GET", "POST")
@@ -545,6 +725,11 @@ def create_app(sessions=None, *, expected_host=f"{HOST}:{PORT}", inventory=read_
         # Report API contracts, independent of whether Spotify or a physical mic is connected.
         paths = {r.resource.canonical for r in request.app.router.routes()}
         caps = ["spotify-detection-v2", "spotify-window-artwork-v1"]
+        try:
+            if isinstance(player.sessions, WindowsSessions) and media_provider() is not None:
+                caps.append("spotify-smtc-rust-v1")
+        except (OSError, RuntimeError):
+            pass
         if "/spotify/volume" in paths:
             caps.append("spotify-player-volume-v1")
         if "/spotify/peak" in paths:
@@ -571,7 +756,7 @@ def create_app(sessions=None, *, expected_host=f"{HOST}:{PORT}", inventory=read_
         token = request.headers.get("X-Lum-Spotify-Token", "")
         selection = player.tokens.get(token)
         if selection and isinstance(selection.session, WindowPlayer):
-            if selection.expires <= time.monotonic() or not hmac.compare_digest(selection.origin, origin):
+            if not player.valid_selection(token, origin):
                 return web.json_response({"state": "unavailable", "error": "refresh_selection"}, status=403)
             try:
                 from spotify_volume_http import spotify_windows
@@ -650,5 +835,10 @@ def create_app(sessions=None, *, expected_host=f"{HOST}:{PORT}", inventory=read_
 
 
 if __name__ == "__main__":
-    web.run_app(create_app(), host=HOST, port=PORT, access_log=None, print=None)
+    from media_http import run
+
+    async def main():
+        await run(create_app(), HOST, linked=False)
+
+    asyncio.run(main())
 

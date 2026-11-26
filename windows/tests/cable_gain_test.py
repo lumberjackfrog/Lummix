@@ -24,6 +24,30 @@ class Fixture:
 
 
 class GainTests(unittest.TestCase):
+    def test_real_callback_negotiates_short_then_standard_device_periods(self):
+        from pa_fixture import Driver
+        for reject_short, reject_low, expected in (
+            (False, False, [("low", 240)]),
+            (True, False, [("low", 240), ("low", 480)]),
+            (False, True, [("low", 240), ("low", 480), ("high", 480)]),
+        ):
+            with self.subTest(expected=expected):
+                driver = Driver()
+                driver.device.defaultLowInputLatency = driver.device.defaultLowOutputLatency = .003
+                driver.reject_short, driver.reject_low = reject_short, reject_low
+                mixer = CableMixer(stream_factory=driver.stream)
+                mixer.start_mic_route(31, 71)
+                try:
+                    self.assertEqual([(m, n) for m, _, _, n, _, _ in driver.opens], expected)
+                    n = mixer.stream.frames
+                    voice = np.full(n, .125, np.float32)
+                    out = np.empty((n, 2), np.float32)
+                    driver.callback(voice.ctypes.data, out.ctypes.data, n, None, 0, driver.user)
+                    np.testing.assert_array_equal(out, np.repeat(voice[:,None], 2, axis=1))
+                finally:
+                    mixer.stop()
+                self.assertTrue(driver.closed)
+
     def test_independent_double_and_sample_ramps(self):
         f = Fixture()
         self.assertEqual((Controls().mic_gain, Controls().file_gain), (1, 1))

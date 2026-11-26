@@ -40,6 +40,9 @@ if ($LASTEXITCODE -ne 0) { throw 'Pinned package restore failed.' }
 if ($LASTEXITCODE -ne 0) { throw 'Runtime build failed.' }
 Sign-ReleaseFile (Join-Path $root '.build\frozen\runtime\Lummix Helper.exe')
 Sign-ReleaseFile (Join-Path $root '.build\frozen\runtime\_internal\lummix_dsp.dll')
+Sign-ReleaseFile (Join-Path $root '.build\frozen\runtime\_internal\lummix_media.dll')
+Sign-ReleaseFile (Join-Path $root '.build\frozen\runtime\_internal\lummix_host.dll')
+Sign-ReleaseFile (Join-Path $root '.build\frozen\runtime\Lummix Host.exe')
 & $Python (Join-Path $windows 'packaging\package.py')
 if ($LASTEXITCODE -ne 0) { throw 'Runtime archive packaging failed.' }
 $dist = Join-Path $root 'dist'

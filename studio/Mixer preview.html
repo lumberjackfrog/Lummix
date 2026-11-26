@@ -54,12 +54,13 @@ button:active:not(:disabled){outline-offset:2px}
 <link rel="stylesheet" href="global-pulse.css">
 <script src="global-pulse.js?v=media2" defer></script>
 <script src="mixer-visualizer.js" defer></script>
-<script src="output-gains.js?v=media2" defer></script>
-<script src="mixer-console.js?v=single-setup4" defer></script>
-<script src="spotify-ducking.js?v=mix-bus3" defer></script>
-<script src="idle-art.js" defer></script>
-<script src="live-theme.js" defer></script>
-<script src="studio-preferences.js?v=startup1" defer></script>
+<script src="controls-bridge.js"></script>
+<script src="output-gains.js?v=rust-controls1" defer></script>
+<script src="mixer-console.js?v=rust-controls1" defer></script>
+<script src="spotify-ducking.js?v=rust-controls1" defer></script>
+<script src="idle-art.js?v=rust-appearance1" defer></script>
+<script src="live-theme.js?v=rust-appearance1" defer></script>
+<script src="studio-preferences.js?v=rust-appearance1" defer></script>
 </head>
 <body><main class="frame">
 <div class="layout" id="layout">
@@ -204,61 +205,49 @@ if(location.href==='about:srcdoc' && parent.location.origin==='http://127.0.0.1:
 document.documentElement.dataset.theme = 'light';
 const get = id => document.getElementById(id);
 const snapPreference=get('slider-snapping'), snapKey='lum-pref-slider-snap';
-function validSnap(raw){return raw!==null && ['0','5','10','20'].includes(raw)?Number(raw):10;}
-try{snapPreference.value=String(validSnap(localStorage.getItem(snapKey)));}catch{}
-function sliderStops(min,max,isDepth){
-  const preference=Number(snapPreference.value);
-  const increment=isDepth && preference ? (max-min)*preference/100 : (preference||1);
-  const stops=[];
-  for(let offset=0;offset<max-min;offset+=increment){
-    const stop=Math.round(min+offset);
-    if(stops.at(-1)!==stop)stops.push(stop);
-  }
-  if(stops.at(-1)!==max)stops.push(max);
-  return stops;
+function snapPercent(value,max,controls){
+  return controls.slider(0,max,Number(snapPreference.value),false,value);
 }
-function nearestStop(value,stops){
-  return stops.reduce((best,stop)=>Math.abs(value-stop)<=Math.abs(value-best)?stop:best);
-}
-function snapPercent(value,max){return nearestStop(value,sliderStops(0,max,false));}
-function bindSlider(input){
+function bindSlider(input,controls){
   // Native step=any preserves off-grid saved values until the user moves the control.
   input.step='any';
   const min=Number(input.min),max=Number(input.max),isDepth=input.id==='duck';
-  const stops=()=>sliderStops(min,max,isDepth);
-  input.addEventListener('input',()=>{input.value=nearestStop(input.valueAsNumber,stops());},true);
+  const next=key=>controls.slider(min,max,Number(snapPreference.value),isDepth,input.valueAsNumber,key);
+  input.addEventListener('input',()=>{input.value=next();},true);
   input.addEventListener('keydown',event=>{
-    if(event.altKey||event.ctrlKey||event.metaKey)return;
-    const v=input.valueAsNumber, points=stops();
-    const up=points.find(stop=>stop>v)??max, down=points.findLast(stop=>stop<v)??min;
-    const page=(max-min)/10;
-    const values={ArrowRight:up,ArrowUp:up,ArrowLeft:down,ArrowDown:down,Home:min,End:max,
-      PageUp:Math.max(up,nearestStop(v+page,points)),PageDown:Math.min(down,nearestStop(v-page,points))};
-    if(!Object.hasOwn(values,event.key))return;
+    if(event.altKey||event.ctrlKey||event.metaKey||!controls.handlesKey(event.key))return;
     event.preventDefault();
-    const next=values[event.key];
-    if(next===v)return;
-    input.value=next;
+    const value=next(event.key);
+    if(value===input.valueAsNumber)return;
+    input.value=value;
     for(const name of ['input','change'])input.dispatchEvent(new Event(name,{bubbles:true}));
   });
 }
-for(const id of ['mic','music','duck'])bindSlider(get(id));
+window.LumControls.then(controls=>{
+  try{snapPreference.value=String(controls.appearance.snap(localStorage.getItem(snapKey))??10);}catch{}
+  for(const id of ['mic','music','duck'])bindSlider(get(id),controls);
+  for(const name of ['sounds','follow-theme','dark','companion']){
+    try{
+      const saved=controls.appearance.boolean(localStorage.getItem('lum-pref-'+name));
+      if(saved!==undefined)get(name).checked=saved;
+    }catch{}
+  }
+  render();sendWristState();
+}).catch(()=>{});
 snapPreference.addEventListener('change',()=>{
   try{localStorage.setItem(snapKey,snapPreference.value);}catch{}
   sendWristState();
 });
 window.addEventListener('storage',event=>{
-  if(event.key===snapKey){snapPreference.value=String(validSnap(event.newValue));sendWristState();}
+  if(event.key===snapKey)window.LumControls.then(({appearance})=>{
+    snapPreference.value=String(appearance.snap(event.newValue)??10);sendWristState();
+  }).catch(()=>{});
 });
 const state = {active:false, micMuted:false, spotifyMuted:false, duckEnabled:false, linked:true, monitor:false};
 const usable = () => (state.linked || !get('companion').checked) && get('input').value !== 'lost';
 const write = (id, text) => { const el=get(id); (el.querySelector(':scope > .button-label')||el).textContent = text; };
 for(const name of ['sounds','follow-theme','dark','companion']){
   const control=get(name);
-  try{
-    const saved=localStorage.getItem('lum-pref-'+name);
-    if(saved==='true'||saved==='false')control.checked=saved==='true';
-  }catch{}
   control.addEventListener('change',()=>{try{localStorage.setItem('lum-pref-'+name,String(control.checked));}catch{}});
 }
 const fade={value:0,from:0,target:0,start:0,span:0,frame:0};
@@ -384,7 +373,9 @@ window.addEventListener('message',event=>{
     get('wrist-error').hidden=true;
     sendWristState();
   } else if(event.data?.type==='lum-wrist-music-level' && state.linked && usable() && Number.isInteger(event.data.value) && event.data.value>=0 && event.data.value<=200){
-    window.LumOutputGains?.set({musicGain:snapPercent(event.data.value,200)});
+    window.LumControls.then(controls=>{
+      window.LumOutputGains?.set({musicGain:snapPercent(event.data.value,200,controls)});
+    }).catch(()=>{});
   } else if(event.data?.type==='lum-wrist-toggle-music' && state.linked && usable()){
     window.LumOutputGains?.set({musicMuted:!state.spotifyMuted});cue();
   } else if(event.data?.type==='lum-wrist-toggle-mic' && state.linked && usable()){

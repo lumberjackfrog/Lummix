@@ -1,5 +1,5 @@
 /* The backdrop is a user preference. Spotify continues to own the cover thumbnail. */
-(() => {
+(async () => {
   const host = document.getElementById('lum-visualizer');
   const choice = document.getElementById('idle-style');
   const picker = document.getElementById('background-picker');
@@ -8,14 +8,15 @@
   const wrist = document.getElementById('native-wrist');
   const wristOrigin = 'http://127.0.0.1:41836';
   const prefix = 'data:image/jpeg;base64,';
-  const valid = value => typeof value === 'string' && value.length < 400000 &&
-    value.startsWith(prefix) && /^[a-z0-9+/]+={0,2}$/i.test(value.slice(prefix.length));
+  let appearance;
+  try{({appearance}=await window.LumControls);}catch{return;}
+  const valid = value => appearance.image(value);
   let image = '', mode = 'album', upload = 0;
   try {
     const saved = localStorage.getItem('lum-idle-image');
     if (valid(saved)) image = saved;
-    if (image && localStorage.getItem('lum-idle-style') === 'custom') mode = 'custom';
-  } catch {}
+    mode = appearance.background(localStorage.getItem('lum-idle-style'), Boolean(image), mode);
+  } catch{}
 
   function share() {
     wrist.contentWindow?.postMessage({
@@ -39,7 +40,7 @@
   }
   document.addEventListener('lum-preferences-applied',({detail})=>{
     const savedImage=valid(detail.image)?detail.image:image;
-    const savedMode=detail.background==='album'?'album':detail.background==='custom' && savedImage?'custom':mode;
+    const savedMode=appearance.background(detail.background,Boolean(savedImage),mode);
     if(savedMode===mode && savedImage===image) return;
     image=savedImage;mode=savedMode;choice.value=mode;apply();
   });

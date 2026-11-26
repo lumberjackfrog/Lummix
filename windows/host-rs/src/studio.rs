@@ -1,0 +1,102 @@
+use std::io::{self, Cursor};
+use std::path::Path;
+use std::thread;
+
+use tiny_http::{Header, Method, Request, Response, Server};
+
+use crate::studio_response;
+
+pub use studio_response::HOST;
+
+fn valid_host(headers: &[Header]) -> bool {
+    let mut hosts = headers.iter().filter(|header| header.field.equiv("Host"));
+    hosts
+        .next()
+        .is_some_and(|header| header.value.as_str() == HOST)
+        && hosts.next().is_none()
+}
+
+fn reply(status: u16, mime: &'static str, data: Vec<u8>) -> Response<Cursor<Vec<u8>>> {
+    let headers = [
+        ("Content-Type", mime),
+        ("X-Content-Type-Options", "nosniff"),
+        ("Cache-Control", "no-store"),
+    ]
+    .map(|(name, value)| Header::from_bytes(name, value).expect("valid static HTTP header"));
+    let length = data.len();
+    Response::new(
+        status.into(),
+        headers.to_vec(),
+        Cursor::new(data),
+        Some(length),
+        None,
+    )
+    .with_chunked_threshold(usize::MAX)
+}
+
+fn response(request: &Request, root: &Path) -> Response<Cursor<Vec<u8>>> {
+    let result = studio_response::response(
+        request.method() == &Method::Get,
+        valid_host(request.headers()),
+        request.url(),
+        root,
+    );
+    reply(result.status, result.mime, result.body)
+}
+
+pub fn serve(server: Server, root: &Path) -> io::Result<()> {
+    thread::scope(|scope| {
+        for _ in 0..3 {
+            scope.spawn(|| {
+                let _ = serve_requests(&server, root);
+            });
+        }
+        serve_requests(&server, root)
+    })
+}
+
+fn serve_requests(server: &Server, root: &Path) -> io::Result<()> {
+    loop {
+        let request = server.recv()?;
+        let response = response(&request, root);
+        let _ = request.respond(response);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::studio_files::asset;
+
+    #[test]
+    fn studio_routes_cover_encoded_space_and_only_allowed_entries() {
+        assert_eq!(asset("/").unwrap().0, "index.html");
+        assert_eq!(
+            asset("/Mixer%20preview.html?v=1").unwrap().0,
+            "Mixer preview.html"
+        );
+        for path in [
+            "../index.html",
+            "/../index.html",
+            "//index.html",
+            "/%2e%2e/index.html",
+            "/index%2ehtml",
+            "/spotify-volume.js",
+        ] {
+            assert!(asset(path).is_none(), "{path}");
+        }
+    }
+
+    #[test]
+    fn host_must_be_exactly_one_canonical_value() {
+        let host = Header::from_bytes("hOsT", HOST).unwrap();
+        assert!(valid_host(&[host.clone()]));
+        assert!(!valid_host(&[host.clone(), host]));
+        assert!(!valid_host(&[]));
+        assert!(!valid_host(&[Header::from_bytes(
+            "Host",
+            "127.0.0.2:41835"
+        )
+        .unwrap()]));
+    }
+}

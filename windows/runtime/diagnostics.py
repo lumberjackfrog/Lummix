@@ -4,6 +4,7 @@ from http.client import HTTPException
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 from threading import Lock, Thread
 
@@ -23,8 +24,22 @@ def folder():
     return Path(os.environ["LOCALAPPDATA"]) / "LumMix" / "Diagnostics"
 
 
+def _native(*args):
+    host = Path(sys.executable).resolve().with_name("Lummix Host.exe")
+    result = subprocess.run([str(host), "diagnostics", *args], creationflags=subprocess.CREATE_NO_WINDOW,
+                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if result.returncode:
+        raise OSError("The Lummix host could not access diagnostic logs.")
+
+
 def _write_locked(code):
     try:
+        if getattr(sys, "frozen", False):
+            if code.startswith("audio_snapshot "):
+                _native("snapshot", VERSION, *(field.split("=", 1)[1] for field in code.split()[1:]))
+            else:
+                _native("record", VERSION, code)
+            return
         build = sys.getwindowsversion().build
         stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         line = f"{stamp} Lummix={VERSION} WinBuild={build} {code}\n".encode("ascii")
@@ -77,5 +92,8 @@ def clear():
     global _generation
     with _lock:
         _generation += 1
+        if getattr(sys, "frozen", False):
+            _native("clear")
+            return
         for name in ("lummix.log", "lummix.previous.log"):
             (folder() / name).unlink(missing_ok=True)

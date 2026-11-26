@@ -3,6 +3,7 @@ from dataclasses import dataclass
 
 from spotify_volume_http import VolumeError, controls, spotify_windows
 from spotify_artwork import spotify_item
+from spotify_native import provider as media_provider
 
 
 @dataclass(frozen=True)
@@ -67,46 +68,17 @@ def artwork_bar(ui, uia, root):
 
 
 def transport(player, action=None):
-    import comtypes
-    import comtypes.client
-    comtypes.CoInitialize()
     try:
-        from comtypes.gen import UIAutomationClient as uia
+        native = media_provider()
+        if native is None:
+            raise OSError("The Rust media library is required for Spotify window transport")
         if spotify_windows(player.edition) != [player.identity]:
             raise VolumeError("selection_changed")
-        ui = comtypes.client.CreateObject(uia.CUIAutomation, interface=uia.IUIAutomation)
-        root = ui.ElementFromHandle(player.identity[0])
-        names = ui.CreateOrCondition(*(ui.CreatePropertyCondition(uia.UIA_NamePropertyId, name) for name in GROUPS))
-        condition = ui.CreateAndCondition(names, ui.CreatePropertyCondition(uia.UIA_ControlTypePropertyId,
-                                                                           uia.UIA_GroupControlTypeId))
-        groups = root.FindAll(uia.TreeScope_Descendants, condition)
-        if groups.Length != 1 and action is None:
-            return artwork_bar(ui, uia, root)
-        if groups.Length != 1:
-            raise VolumeError("no_player_controls")
-        buttons = {}
-        for button in controls(ui, uia, groups.GetElement(0), uia.UIA_ButtonControlTypeId, uia.TreeScope_Children):
-            key = LABELS.get(button.CurrentName.strip().casefold())
-            if not key or not button.CurrentIsEnabled:
-                continue
-            if key in buttons:
-                raise VolumeError("ambiguous_player_controls")
-            pattern = button.GetCurrentPattern(uia.UIA_InvokePatternId)
-            if pattern:
-                buttons[key] = pattern.QueryInterface(uia.IUIAutomationInvokePattern)
-        try:
-            result = dispatch(buttons, action)
-        except VolumeError:
-            if action is not None:
-                raise
-            result = {}
-        if action is None:
-            try:
-                result.update(now_playing(ui, uia, ui.ControlViewWalker.GetParentElement(groups.GetElement(0))))
-            except (OSError, comtypes.COMError):
-                pass
+        handle, pid, _ = player.identity
+        command = {None: 0, "play": 1, "pause": 2, "previous": 3, "next": 4}.get(action, 5)
+        result = native.call(9, handle, command, pid)
+        if "reason" in result:
+            raise VolumeError(result["reason"])
         return result
-    except (OSError, comtypes.COMError) as error:
+    except (OSError, RuntimeError) as error:
         raise VolumeError("no_player_controls") from error
-    finally:
-        comtypes.CoUninitialize()

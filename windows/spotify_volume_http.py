@@ -1,15 +1,13 @@
 """Read and set Spotify’s own visible player volume through Windows UI Automation."""
 import asyncio
 from collections import OrderedDict
-import ctypes
 import math
-import os
 import time
-from pathlib import PureWindowsPath
 
 from aiohttp import web
 
-from spotify_duck import spotify_path
+from spotify_locations import spotify_processes
+from spotify_native import provider as media_provider
 
 
 class VolumeError(Exception):
@@ -27,40 +25,15 @@ _REMOTE_PREFIXES = ("listening on ", "playing on ", "escuchando en ", "reproduci
 
 def spotify_windows(edition):
     """Only inspect the known installed app's top-level Windows. Do not activate it."""
-    from ctypes import wintypes
-    import psutil
-    user = ctypes.WinDLL("user32", use_last_error=True)
-    visitor = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
-    user.EnumWindows.argtypes = (visitor, wintypes.LPARAM)
-    user.IsWindowVisible.argtypes = (wintypes.HWND,)
-    user.GetWindowThreadProcessId.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
-    user.GetClassNameW.argtypes = (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
-    windows = []
-
-    @visitor
-    def visit(hwnd, _):
-        kind = ctypes.create_unicode_buffer(64)
-        if not user.IsWindowVisible(hwnd) or not user.GetClassNameW(hwnd, kind, len(kind)):
-            return True
-        if kind.value != "Chrome_WidgetWin_1":
-            return True
-        pid = wintypes.DWORD()
-        user.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        try:
-            proc = psutil.Process(pid.value)
-            if proc.name().casefold() != "spotify.exe":
-                return True
-            path = PureWindowsPath(proc.exe())
-            package = "store" if "windowsapps" in (p.casefold() for p in path.parts) else "desktop"
-            if package == edition and spotify_path(path, os.environ):
-                windows.append((hwnd, pid.value, proc.create_time()))
-        except (OSError, psutil.Error):
-            pass
-        return True
-
-    if not user.EnumWindows(visit, 0):
-        raise VolumeError("window_unavailable", 503)
-    return windows
+    try:
+        native = media_provider()
+        if native is None:
+            raise OSError("The Rust media library is required for Spotify window discovery")
+        processes = spotify_processes()
+        return [(handle, pid, processes[pid][1]) for handle, pid in native.call(13)
+                if pid in processes and processes[pid][2] == edition]
+    except (OSError, RuntimeError):
+        raise VolumeError("window_unavailable", 503) from None
 
 
 def controls(ui, module, root, kind, scope=None):
@@ -150,20 +123,17 @@ def apply_target(target, expected, change, module):
 
 
 def native_volume(edition, expected, change):
-    import comtypes
-    import comtypes.client
-    comtypes.CoInitialize()
     try:
-        try:
-            from comtypes.gen import UIAutomationClient as mod
-        except ImportError:
-            mod = comtypes.client.GetModule("UIAutomationCore.dll")
-        ui = comtypes.client.CreateObject(mod.CUIAutomation, interface=mod.IUIAutomation)
-        return apply_target(volume_target(ui, mod, spotify_windows(edition)), expected, change, mod)
-    except (comtypes.COMError, OSError):
+        native = media_provider()
+        if native is None:
+            raise OSError("The Rust media library is required for Spotify player volume")
+        result = native.volume(spotify_windows(edition), expected, change)
+        if isinstance(result, dict):
+            raise VolumeError(result["reason"], result["http"])
+        key, state = result
+        return key, state
+    except (OSError, RuntimeError):
         raise VolumeError("slider_unavailable", 503) from None
-    finally:
-        comtypes.CoUninitialize()
 
 
 def valid_change(body):

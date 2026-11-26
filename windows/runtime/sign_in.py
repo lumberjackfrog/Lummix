@@ -2,6 +2,7 @@
 import os
 from pathlib import Path
 import re
+import subprocess
 import sys
 import winreg
 
@@ -9,6 +10,13 @@ import winreg
 RUN = r"Software\Microsoft\Windows\CurrentVersion\Run"
 APPROVAL = r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"
 NAME = "Lummix"
+NATIVE_STATES = {
+    "enabled": (True, True, ""),
+    "disabled": (False, True, ""),
+    "unavailable": (False, False, "Available in the Windows app."),
+    "occupied": (False, False, "Another startup entry already uses the name Lummix."),
+    "blocked": (False, False, "Windows has disabled Lummix. You can enable it in Settings → Apps → Startup."),
+}
 
 
 class SignIn:
@@ -16,6 +24,24 @@ class SignIn:
         self.exe = Path(executable or sys.executable).resolve()
         self.hive = hive
         self.install_root = install_root or Path(os.environ["LOCALAPPDATA"]) / "Programs" / NAME
+        self.native = (getattr(sys, "frozen", False) and executable is None
+                       and hive == winreg.HKEY_CURRENT_USER and install_root is None)
+
+    def _native(self, action):
+        host = self.exe.with_name("Lummix Host.exe")
+        result = subprocess.run([str(host), "sign-in", action, str(self.exe)], capture_output=True,
+                                stdin=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW)
+        if result.returncode == 5:
+            raise PermissionError("Windows blocked access to the Lummix startup entry.")
+        if result.returncode:
+            raise OSError("The Lummix host could not access the startup entry.")
+        if action == "refresh":
+            return
+        try:
+            enabled, editable, message = NATIVE_STATES[result.stdout.strip().decode("ascii")]
+        except (KeyError, UnicodeError) as error:
+            raise OSError("Invalid startup status from the Lummix host.") from error
+        return dict(enabled=enabled, editable=editable, message=message)
 
     def read(self, key):
         try:
@@ -36,6 +62,8 @@ class SignIn:
                 and all(re.fullmatch(r"\d+\.\d+\.\d+", path.parent.name) for path in (target, self.exe)))
 
     def state(self):
+        if self.native:
+            return self._native("state")
         if self.exe.name.lower() != "lummix.exe":
             return dict(enabled=False, editable=False, message="Available in the Windows app.")
         value = self.read(RUN)
@@ -47,6 +75,8 @@ class SignIn:
         return dict(enabled=value is not None, editable=True, message="")
 
     def change(self, enabled):
+        if self.native:
+            return self._native("enable" if enabled else "disable")
         if self.exe.name.lower() != "lummix.exe":
             return self.state()
         value = self.read(RUN)
@@ -64,5 +94,7 @@ class SignIn:
         return self.state()
 
     def refresh_after_upgrade(self):
+        if self.native:
+            return self._native("refresh")
         if self.owns(self.read(RUN)):
             self.change(True)

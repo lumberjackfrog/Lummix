@@ -1,199 +1,65 @@
-"""Windows' application-loopback capture, restricted to a verified Spotify process tree."""
-from collections import deque
+"""Lifetime and status of the Rust process-specific Spotify source."""
 import ctypes
-from ctypes import wintypes
+import json
 import os
-from pathlib import Path
 import sys
 import threading
-import time
+from weakref import finalize
 
-import numpy as np
-import psutil
-
-from cable_mixer import BLOCK
-from spotify_cable_guard import direct_to_cable
-from spotify_duck import spotify_path
-
-
-class AmbiguousTarget(Exception):
-    pass
+from cable_mixer import Controls
+from native_audio import Engine, _release_owned
 
 
 def supported():
-    return os.name=="nt" and sys.getwindowsversion().build>=20348
-
-
-def spotify_target():
-    matches={}
-    for proc in psutil.process_iter(["name"]):
-        if (proc.info["name"] or "").casefold()!="spotify.exe":
-            continue
-        try:
-            path=proc.exe()
-            if spotify_path(path,os.environ):
-                edition="store" if "windowsapps" in (p.lower() for p in Path(path).parts) else "desktop"
-                matches[proc.pid]=(proc.ppid(),proc.create_time(),edition)
-        except (OSError,psutil.Error):
-            continue
-    roots=[(pid,created,edition) for pid,(parent,created,edition) in matches.items() if parent not in matches]
-    if len(roots)>1:
-        raise AmbiguousTarget()
-    return roots[0] if roots else None
-
-
-def windows():
-    k=ctypes.WinDLL("kernel32",use_last_error=True)
-    k.OpenProcess.argtypes=[wintypes.DWORD,wintypes.BOOL,wintypes.DWORD]
-    k.OpenProcess.restype=wintypes.HANDLE
-    k.CreateEventW.argtypes=[ctypes.c_void_p,wintypes.BOOL,wintypes.BOOL,wintypes.LPCWSTR]
-    k.CreateEventW.restype=wintypes.HANDLE
-    k.SetEvent.argtypes=[wintypes.HANDLE]
-    k.CloseHandle.argtypes=[wintypes.HANDLE]
-    k.GetProcessTimes.argtypes=[wintypes.HANDLE]+[ctypes.POINTER(wintypes.FILETIME)]*4
-    return k
-
-
-class Capture:
-    """One pinned process handle. Packet memory never leaves the mixer or writes to disk."""
-    def __init__(self, target):
-        pid,created,self.edition=target
-        self.target=target
-        self.blocks=deque(maxlen=6)
-        self.tail=np.empty((0,2),np.float32)
-        self.last_signal=0.
-        self.attached=False
-        self.accepting=True
-        self.code=None
-        self.k=windows()
-        self.process=self.k.OpenProcess(0x00100000|0x1000,False,pid)
-        if not self.process:
-            raise OSError("Target unavailable")
-        try:
-            stamps=[wintypes.FILETIME() for _ in range(4)]
-            if not self.k.GetProcessTimes(self.process,*(ctypes.byref(x) for x in stamps)):
-                raise OSError("Target unavailable")
-            stamp=stamps[0]
-            actual=((stamp.dwHighDateTime<<32)|stamp.dwLowDateTime)/10_000_000-11644473600
-            if abs(actual-created)>.001:
-                raise OSError("Target restarted")
-            self.event=self.k.CreateEventW(None,True,False,None)
-            if not self.event:
-                raise OSError("Capture unavailable")
-        except BaseException:
-            self.k.CloseHandle(self.process)
-            raise
-        self.thread=threading.Thread(target=self.run,name="LumAppAudio",daemon=True)
-        self.thread.start()
-
-    def packet(self,data,frames,flags):
-        if not self.accepting:return
-        if not frames:
-            self.attached=True
-            return
-        if flags&1:  # DATA_DISCONTINUITY: never bridge a gap with old partial samples.
-            self.tail=np.empty((0,2),np.float32)
-        if data:
-            block=np.ctypeslib.as_array(data,shape=(frames*2,)).reshape((-1,2)).astype(np.float32)
-            block *= 1/32768
-        else:
-            block=np.zeros((frames,2),np.float32)
-        if self.tail.size:
-            block=np.concatenate((self.tail,block),axis=0)
-        complete=len(block)//BLOCK*BLOCK
-        for idx in range(0,complete,BLOCK):
-            unit=block[idx:idx+BLOCK]
-            # Windows may dither digital silence by one 16-bit LSB.
-            if np.max(unit) > 4/32768 or np.min(unit) < -4/32768:
-                self.last_signal=time.monotonic()
-                self.blocks.append(unit)
-            else:
-                self.blocks.append(None)
-        self.tail=block[complete:]
-
-    def run(self):
-        try:
-            from process_loopback import capture_process
-            capture_process(self.process,self.event,self.packet)
-            self.code=0
-        except Exception as exc:
-            self.code=getattr(exc,"hresult",None) or getattr(exc,"winerror",None) or -1
-
-    def next(self):
-        try:return self.blocks.popleft()
-        except IndexError:return None
-
-    def close(self):
-        self.accepting=False
-        self.k.SetEvent(self.event)
-        self.thread.join()
-        self.blocks.clear()
-        self.k.CloseHandle(self.event)
-        self.k.CloseHandle(self.process)
+    return os.name == "nt" and sys.getwindowsversion().build >= 20348
 
 
 class SpotifyProcessFeed:
-    """Only constructed for an explicitly started mix. Check routing before every attachment."""
-    def __init__(self,signed_render_ids,*,discover=spotify_target,guard=direct_to_cable):
-        self.ids=frozenset(signed_render_ids)
-        self.discover,self.guard=discover,guard
-        self.capture=None
-        self.state="connecting" if supported() else "unsupported"
-        self.edition=None
-        self.stop=threading.Event()
-        self.thread=None
-        if self.state!="unsupported":
-            self.thread=threading.Thread(target=self.watch,name="LumSpotifySource",daemon=True)
-            self.thread.start()
+    states = ("connecting","waiting_spotify","waiting_audio","receiving","direct_to_cable","unavailable","ambiguous")
+
+    def __init__(self, signed_render_ids, *, engine=None, probe=None):
+        self.engine = engine if engine is not None else Engine(Controls())
+        self.lock = threading.Lock()
+        self.handle = None
+        self.inactive = "unsupported" if not supported() else "unavailable"
+        if not supported():
+            return
+        if probe is None:
+            from spotify_native import provider
+            try:
+                media = provider()
+                if media is None:
+                    return
+                probe = media.dll.lummix_audio_source
+            except (OSError, AttributeError, RuntimeError):
+                return
+        self.probe = probe
+        self.handle = self.engine.dll.lummix_watch_start(self.engine.handle,json.dumps(sorted(signed_render_ids)).encode(),
+                                                       ctypes.cast(probe, ctypes.c_void_p))
+        if self.handle:
+            self._release = finalize(self, _release_owned, self.engine.dll.lummix_watch_close,
+                                     self.handle, self.engine, probe)
+
+    def _status(self):
+        with self.lock:
+            return self.engine.dll.lummix_watch_status(self.handle) if self.handle else None
+
+    @property
+    def state(self):
+        value = self._status()
+        return self.states[value & 255] if value is not None else self.inactive
+
+    @property
+    def edition(self):
+        value = self._status()
+        return {1:"desktop",2:"store"}.get(value >> 8) if value is not None else None
 
     def next(self):
-        cap=self.capture
-        return cap.next() if cap and cap.accepting else None
-
-    def detach(self):
-        cap,self.capture=self.capture,None
-        if cap:cap.close()
-
-    def watch(self):
-        try:
-            while not self.stop.is_set():
-                wait=.5
-                try:
-                    target=self.discover()
-                    if self.capture and self.capture.target!=target:self.detach()
-                    self.edition=target[2] if target else None
-                    if not target:
-                        self.state="waiting_spotify"
-                    else:
-                        blocked=self.guard(target[0],self.ids)
-                        if blocked is not False:
-                            self.detach()
-                            self.state="direct_to_cable" if blocked is True else "unavailable"
-                        else:
-                            if self.capture is None and not self.stop.is_set():
-                                self.state="connecting"
-                                self.capture=Capture(target)
-                            cap=self.capture
-                            if cap and cap.code is not None:
-                                self.detach()
-                                self.state="unavailable"
-                                wait=2
-                            elif cap and cap.attached:
-                                self.state="receiving" if time.monotonic()-cap.last_signal<1.2 else "waiting_audio"
-                except AmbiguousTarget:
-                    self.detach()
-                    self.edition=None
-                    self.state="ambiguous"
-                except Exception:
-                    self.detach()
-                    self.state="unavailable"
-                    wait=2
-                self.stop.wait(wait)
-        finally:
-            self.detach()
-            self.state="off"
-            self.edition=None
+        return self.engine.read() if self.state in ("receiving","waiting_audio","connecting") else None
 
     def close(self):
-        self.stop.set()
-        if self.thread:self.thread.join()
+        with self.lock:
+            self.inactive = "off"
+            if self.handle:
+                self._release()
+                self.handle = None

@@ -94,6 +94,9 @@ try:
         cfg=Path(tmp)/"LumMix/studio-preferences.json";cfg.parent.mkdir()
         env["PATH"]=os.environ["SystemRoot"]+"\\System32;"+os.environ["SystemRoot"]
         si=win32process.STARTUPINFO();si.lpDesktop="winsta0\\"+name
+        with socket.socket() as check:
+            check.settimeout(.4)
+            studio_reuse = check.connect_ex(("127.0.0.1", 41835)) == 0
         def launch():
             args = ["-c","import lummix_window; lummix_window.launch()"] if source_run else (["launch"] if "Helper" in exe.name else [])
             if window_only:args=["-c","import ctypes;ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4));from studio_window import run;run()"]
@@ -106,6 +109,14 @@ try:
         proc,thread,pid,_=launch()
         until(handles,38);hwnd=windows[0]
         time.sleep(2)
+        library = exe.parent / "_internal/lummix_host.dll"
+        if (not window_only and not studio_reuse and library.is_file()
+                and b"lummix_host_start_embedded\0" in library.read_bytes()):
+            window_pid = win32process.GetWindowThreadProcessId(hwnd)[1]
+            assert any(connection.status == psutil.CONN_LISTEN and connection.laddr.port == 41835
+                       for connection in psutil.Process(window_pid).net_connections(kind="tcp")), (
+                "Normal startup did not bind Studio HTTP in the desktop process."
+            )
         host = next((p for p in psutil.process_iter(["name","exe"]) if p.info["name"]=="Lummix Helper.exe"
             and p.info["exe"] and Path(p.info["exe"])==exe.parent/"runtime/Lummix Helper.exe" and "launch" in p.cmdline()),None)
         board_title=win32gui.GetWindowText(hwnd)

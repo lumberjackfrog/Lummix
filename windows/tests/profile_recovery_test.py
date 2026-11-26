@@ -7,6 +7,8 @@ from threading import Barrier
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, PropertyMock, patch
+import win32con
+import win32file
 
 from mic_routes import MicRoutes, write_selection
 from mix_duck_http import MixDucking
@@ -68,9 +70,14 @@ class Recovery(unittest.TestCase):
         expected = {"revision": 9, "gains": {"musicGain": 70}}
         profile_save.save(self.gains, expected)
         self.gains.write_text("null")
-        with patch.object(profile_save, "_atomic", side_effect=PermissionError("file in use")), \
-                self.assertLogs("profile_save"):
-            restored = MixOutput(self.gains, Mock())
+        # Read access remains possible, but Windows must refuse atomic replacement.
+        handle = win32file.CreateFile(str(self.gains), win32con.GENERIC_READ, win32con.FILE_SHARE_READ,
+                                      None, win32con.OPEN_EXISTING, win32con.FILE_ATTRIBUTE_NORMAL, None)
+        try:
+            with self.assertLogs("profile_save"):
+                restored = MixOutput(self.gains, Mock())
+        finally:
+            handle.Close()
         self.assertFalse(restored.read_error)
         self.assertEqual((9, 70), (restored.revision, restored.gains["musicGain"]))
         self.assertEqual("null", self.gains.read_text())

@@ -10,7 +10,7 @@ ROOT=HERE.parents[1]
 RUNTIME=HERE.parent/"runtime"
 STUDIO=ROOT/"studio"
 sys.path.insert(0,str(RUNTIME))
-from runtime_main import STUDIO_FILES
+from studio_assets import STUDIO_FILES
 
 def assemble(destination=ROOT/"dist"):
     runtime=ROOT/".build/frozen/runtime"

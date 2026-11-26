@@ -2,7 +2,7 @@
 
 Use a 64-bit Windows development machine with CPython 3.12 x64 (including the `py` launcher), and NSIS 3. The MSI builder uses Python 3.12's `msilib`. Desktop playback uses the installed Evergreen WebView2 runtime. Application-specific audio capture needs Windows build 20348 or newer.
 
-Install the x64 Rust MSVC toolchain and the C++ linker from Visual Studio Build Tools on the build machine. The installer includes the compiled sample mixer. Friends only need the Windows installer.
+Install rustup and the x64 C++ linker from Visual Studio Build Tools on the build machine. The repository pins the Rust compiler and WebAssembly target. The installer includes the compiled Windows audio, media and host modules and the shared WebAssembly controls. Friends only need the Windows installer.
 
 From the repository root, run:
 
@@ -14,16 +14,20 @@ The script creates a repository-local virtual environment, restores pinned Pytho
 
 ## Source and dependencies
 
-- `studio/` contains the desktop interface. The list of files served and packaged is `windows/runtime/runtime_main.py:STUDIO_FILES`.
-- `windows/` contains the loopback services for the media mixer and optional wrist preview. `windows/process_loopback.py` uses the Windows application-loopback API to capture the selected process tree. Audio starts on an explicit mixer action.
-- `windows/runtime/` contains the private window, single-instance launcher, tray, DPI support and PyInstaller recipe. `windows/packaging/` builds the ZIP and per-user MSI. `setup/` wraps the MSI into the one-file installer.
+- `studio/` contains the desktop interface. The shared asset list is `windows/runtime/studio-assets.txt`. The browser bindings load the module built from `windows/controls-rs/` on desktop and wrist.
+- `windows/dsp/` owns the live microphone input, process-loopback capture, bounded audio queue, gain ramps, speech ducking, limiting and duplex device callback. `windows/media_native/` identifies the Spotify process, checks its output route and supplies playback events, controls and artwork. Audio starts on an explicit mixer action.
+- `windows/host-rs/` contains native host services, the WebView2 controller and the XSOverlay integration. `windows/runtime/` contains the launcher adapters and PyInstaller recipe. `windows/packaging/` builds the ZIP and per-user MSI. `setup/` wraps the MSI into the one-file installer.
 - The compiler downloads base VB-CABLE Pack46 directly from VB-Audio and verifies its exact 1,324,680 bytes and SHA-256 `bc44e8974191a5a2427d6c979e2dab08dbb09925f3f435dfa2f0ba3e45b6eb90`. Native setup separately checks the reviewed installer hash, VB-Audio Authenticode signer and Microsoft driver catalog. Build-time verification never installs a driver. The optional setup on an end-user computer asks Windows to approve the signed vendor installer. [Original VB-CABLE package](https://vb-audio.com/Cable/) · [Distribution terms](https://vb-audio.com/Services/licensing.htm)
 - The compiler downloads Microsoft.Web.WebView2 1.0.4370.26 from the official NuGet feed, verifies SHA-256 `1c0dacac84b70109b3fd42f90c53a0ba942abc3a87590d7a4e0ccd86e4a06cf4`, then checks the x64 loader's hash and Microsoft Authenticode identity. Only the loader and notices go into the package. [Microsoft SDK package](https://www.nuget.org/packages/Microsoft.Web.WebView2/1.0.4370.26) · [WebView2 runtime distribution](https://learn.microsoft.com/microsoft-edge/webview2/concepts/distribution)
-- `.build/` stores verified downloads, generated COM wrappers' inputs, the frozen runtime. `dist/` stores generated distributables. XSOverlay and SteamVR resources come from the user's own local installations. [Third-party notices](../THIRD_PARTY.md)
+- `.build/` stores verified downloads, compiled Rust targets, the SDK loader and the frozen runtime. `dist/` stores generated distributables. XSOverlay and SteamVR resources come from the user's own local installations. [Third-party notices](../THIRD_PARTY.md)
 
 ## Tests
 
-`scripts/test-windows.ps1` builds the dependency-free Rust crate offline and compares its audio output with the NumPy renderer. The manual GitHub checks also replay generated audio against the pre-port source and measure complete 480-frame callbacks, including the Python call into Rust. Playback devices and VRChat are outside that timing.
+`scripts/test-windows.ps1` builds and tests the locked Rust crates and exercises the deployed interfaces. The manual GitHub checks also replay generated audio against two fixed revisions. The comparison with `c8a5a2d` measures process packet delivery through the real output callback and compares the resulting samples. Reproduce it with `windows/tests/route_replay.py --help`.
+
+On a Windows machine with the dedicated Steam virtual audio endpoints, `windows/tests/device_route.py` tests real WASAPI capture, routing, gain and ducking. `windows/tests/route_latency.py` measures a gain change from a test control pipe to a process-loopback observer. Both tests check that their endpoints are idle and use generated signals. The results include Windows buffering. An in-game microphone-to-listener measurement requires a separate VRChat receiver.
+
+Measured timings and the reproduction steps are in the [Windows audio comparison](../docs/native-audio.md).
 
 The backend fixtures cover source selection, authorization, route ownership, gain and limiting, sidechain ducking, media transport and installer outcomes. The browser-to-native gain test needs Chromium. Install its test dependency once after creating the build environment:
 

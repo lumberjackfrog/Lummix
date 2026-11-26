@@ -3,8 +3,10 @@ import os
 from itertools import chain
 from pathlib import Path, PureWindowsPath
 import re
+from types import SimpleNamespace
 
 import profile_save
+from spotify_native import provider as media_provider
 
 
 STORE_FAMILY = "SpotifyAB.SpotifyMusic_zpdnekdrzrea0"
@@ -24,7 +26,7 @@ def local_executable(candidate):
             and path.name.casefold() == "spotify.exe" and ".." not in path.parts)
 
 
-def registered_desktop_paths():
+def legacy_desktop_registrations():
     import winreg
     app_paths = r"Software\Microsoft\Windows\CurrentVersion\App Paths\Spotify.exe"
     uninstall = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Spotify"
@@ -36,21 +38,29 @@ def registered_desktop_paths():
                         value, _ = winreg.QueryValueEx(handle, field)
                 except (FileNotFoundError, PermissionError):
                     continue
-                if not isinstance(value, str) or not value.strip():
-                    continue
-                if field == "DisplayIcon":
-                    value = re.sub(r",\s*-?\d+\s*$", "", value)
-                path = PureWindowsPath(os.path.expandvars(value.strip().strip('"')))
-                if field == "InstallLocation":
-                    path /= "Spotify.exe"
-                if local_executable(path) and "windowsapps" not in (part.casefold() for part in path.parts):
-                    yield path
+                yield field, value
+
+
+def registered_desktop_paths():
+    native = media_provider()
+    entries = native.call(8) if native is not None else legacy_desktop_registrations()
+    for field, value in entries:
+        if not isinstance(value, str) or not value.strip() or "\0" in value:
+            continue
+        if field == "DisplayIcon":
+            value = re.sub(r",\s*-?\d+\s*$", "", value)
+        path = PureWindowsPath(os.path.expandvars(value.strip().strip('"')))
+        if field == "InstallLocation":
+            path /= "Spotify.exe"
+        if local_executable(path) and "windowsapps" not in (part.casefold() for part in path.parts):
+            yield path
 
 
 def store_packages():
-    from winsdk.windows.management.deployment import PackageManager, PackageTypes
-    packages = PackageManager().find_packages_for_user_with_package_types("", STORE_FAMILY, PackageTypes.MAIN)
-    return list(packages or ())
+    native = media_provider()
+    if native is None:
+        raise NotImplementedError("The Rust media library is required for Store installation discovery")
+    return [SimpleNamespace(installed_path=path) for path in native.call(5)]
 
 
 def _store_paths(packages):
@@ -90,6 +100,22 @@ def known_process_path(candidate, env):
         except (AttributeError, ImportError, OSError, RuntimeError):
             return False
     return env is os.environ and path in registered_desktop_paths()
+
+
+def spotify_processes():
+    """Use Windows process identities, trusting only known Spotify installation paths."""
+    native = media_provider()
+    if native is None:
+        return None
+    return {pid: (parent, created, edition) for pid, parent, created, edition in native.call(10)}
+
+
+def spotify_process_roots():
+    matches = spotify_processes()
+    if matches is None:
+        return None
+    return [(pid, created, edition) for pid, (parent, created, edition) in matches.items()
+            if parent not in matches]
 
 
 def validate_locations(data):

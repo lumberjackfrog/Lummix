@@ -1,8 +1,7 @@
 """Check whether the player's own render stream already feeds the mixer output."""
 import comtypes
-import psutil
 from pycaw.api.audiopolicy import IAudioSessionControl2, IAudioSessionManager2
-from pycaw.pycaw import AudioUtilities
+from spotify_native import provider as media_provider
 
 
 def session_state(device, tree):
@@ -40,30 +39,15 @@ def inspect_routes(devices, signed_ids, tree):
     return False
 
 
-def probe(root_pid, signed_ids):
-    root = psutil.Process(root_pid)
-    tree = {root.pid, *(p.pid for p in root.children(recursive=True))}
-    collection = AudioUtilities.GetDeviceEnumerator().EnumAudioEndpoints(0, 1)
-    devices = [collection.Item(i) for i in range(collection.GetCount())]
-    return inspect_routes(devices, signed_ids, tree)
-
-
 def direct_to_cable(root_pid: int, signed_render_ids) -> bool | None:
     """True means a direct stream, None means the route cannot be confirmed."""
     ids = {s.casefold() for s in signed_render_ids if isinstance(s, str)}
     if not ids or not root_pid:
         return None
-    initialized = False
     try:
-        try:
-            comtypes.CoInitializeEx(comtypes.COINIT_MULTITHREADED)
-            initialized = True
-        except OSError as exc:
-            if exc.winerror != -2147417850:  # RPC_E_CHANGED_MODE: already STA.
-                raise
-        return probe(root_pid, ids)
-    except (comtypes.COMError, OSError, psutil.Error):
-        return None
-    finally:
-        if initialized:
-            comtypes.CoUninitialize()
+        native = media_provider()
+        if native is not None:
+            return native.direct_to_cable(root_pid, ids)
+    except (OSError, RuntimeError):
+        pass
+    return None

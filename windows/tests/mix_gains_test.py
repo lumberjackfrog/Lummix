@@ -82,6 +82,14 @@ class Tests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(restarted.gains["micGain"],200)
         self.assertIsNone(restarted.mixer.stream)
 
+    async def test_fractional_gain_roundtrips_exactly_through_native_and_disk(self):
+        gain = 127.88535969157675
+        token = (await self.get())["token"]
+        response = await self.post({"micGain": gain}, token)
+        self.assertEqual(response.status, 200)
+        self.assertEqual((await response.json())["micGain"], gain)
+        self.assertEqual(MixOutput(self.path).gains["micGain"], gain)
+
     async def test_real_browser_drives_shared_native_callback(self):
         sock=socket.socket()
         sock.bind(("127.0.0.1",0))

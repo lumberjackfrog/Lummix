@@ -14,8 +14,8 @@ import psutil
 
 def tone(frequency):
     import sounddevice as sd
-    from cable_mixer import _devices
-    sinks=[i for i,d in _devices() if d["name"]=="Speakers (Steam Streaming Speakers)" and d["max_output_channels"]>=2]
+    from device_route import wasapi_devices
+    sinks=[i for i,d in wasapi_devices() if d["name"]=="Speakers (Steam Streaming Speakers)" and d["max_output_channels"]>=2]
     if len(sinks)!=1:raise RuntimeError("The designated nonphysical test render endpoint is unavailable")
     phase=0
     def render(out,n,t,status):
@@ -24,12 +24,14 @@ def tone(frequency):
         out[:]=(.09*np.sin(phase_ix*2*np.pi*frequency/48000))[:,None]
         phase+=n
     with sd.OutputStream(device=sinks[0],samplerate=48000,channels=2,dtype="float32",callback=render):
+        print(os.getpid(), flush=True)
         time.sleep(35)
 
 
-def spawn(*args):
+def spawn(*args, report=False):
     return subprocess.Popen([sys.executable,"-B",str(Path(__file__).resolve()),*map(str,args)],
-                            creationflags=subprocess.CREATE_NO_WINDOW)
+                            creationflags=subprocess.CREATE_NO_WINDOW,stdout=subprocess.PIPE if report else None,
+                            text=True)
 
 
 def finish(p):
@@ -47,7 +49,7 @@ def read(feed,seconds=.55):
         chunk=feed.next()
         if chunk is None:time.sleep(.003)
         else:chunks.append(chunk)
-    assert len(chunks)>=seconds*100,(feed.state,len(chunks),feed.capture.code if feed.capture else None)
+    assert len(chunks)>=seconds*100,(feed.state,len(chunks))
     return np.concatenate(chunks)[:,0]
 
 
@@ -57,15 +59,23 @@ def powers(signal,hz):
 
 
 def run():
+    from device_route import reserve
     from spotify_process_feed import SpotifyProcessFeed,supported
     assert supported()
+    reserve()
     children=[]
     def source(hz):
-        proc=spawn("--tree",hz);children.append(proc)
-        return proc.pid,psutil.Process(proc.pid).create_time(),"desktop"
+        proc=spawn("--tree",hz,report=True);children.append(proc)
+        # Virtual-environment launchers can add extra silent ancestors. The Rust
+        # renderer-selection integration test independently checks their resolution.
+        renderer=int(proc.stdout.readline())
+        proc.stdout.close()
+        assert renderer in {p.pid for p in psutil.Process(proc.pid).children(recursive=True)}
+        return renderer,psutil.Process(renderer).create_time(),"desktop"
     target=source(525);other=spawn("--tone",1050);children.append(other)
     direct=False
-    feed=SpotifyProcessFeed({"fixture"},discover=lambda:target,guard=lambda pid,ids:direct)
+    from source_fixture import synthetic_probe
+    feed=SpotifyProcessFeed({"fixture"},probe=synthetic_probe(lambda:target,lambda:direct))
     try:
         data=read(feed)
         match,reject=powers(data,525),powers(data,1050)
@@ -74,7 +84,7 @@ def run():
         direct=True
         deadline=time.monotonic()+3
         while feed.state!="direct_to_cable" and time.monotonic()<deadline:time.sleep(.02)
-        assert feed.capture is None and feed.next() is None and feed.state=="direct_to_cable"
+        assert feed.next() is None and feed.state=="direct_to_cable"
         direct=False
         data=read(feed,.3)
         assert powers(data,525)>.02
@@ -94,5 +104,9 @@ def run():
 
 if __name__=="__main__":
     if len(sys.argv)>1 and sys.argv[1]=="--tone":tone(float(sys.argv[2]))
-    elif len(sys.argv)>1 and sys.argv[1]=="--tree":spawn("--tone",sys.argv[2]).wait()
+    elif len(sys.argv)>1 and sys.argv[1]=="--tree":
+        leaf=spawn("--tone",sys.argv[2],report=True)
+        print(leaf.stdout.readline().strip(), flush=True)
+        leaf.stdout.close()
+        sys.exit(leaf.wait())
     else:run()

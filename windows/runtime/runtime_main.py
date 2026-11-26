@@ -4,15 +4,17 @@ import json
 import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-import re
+import subprocess
 import sys
 import threading
 from urllib.parse import urlsplit
-from studio_assets import STUDIO_FILES, studio_asset
+from studio_assets import studio_asset
+from xsoverlay_install import discover as wrist_sources
 
 EXECUTABLE = Path(sys.executable).resolve()
 ROOT = (EXECUTABLE.parent if EXECUTABLE.stem.lower() == "lummix" else EXECUTABLE.parent.parent) if getattr(sys,"frozen",False) else Path(__file__).resolve().parents[2]
 DATA = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
+NATIVE_HOST = EXECUTABLE.with_name("Lummix Host.exe")
 
 
 class Studio(BaseHTTPRequestHandler):
@@ -45,27 +47,6 @@ class Studio(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
 
-def wrist_sources():
-    import winreg
-    steam = Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")) / "Steam"
-    try:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam") as key:
-            steam = Path(winreg.QueryValueEx(key, "SteamPath")[0])
-    except OSError:
-        pass
-    roots = [steam]
-    vdf = steam / "steamapps/libraryfolders.vdf"
-    if vdf.is_file():
-        roots.extend(Path(value.replace("\\\\", "\\")) for value in re.findall(
-            r'"path"\s*"([^"]+)"', vdf.read_text(encoding="utf-8", errors="replace")))
-    for library in roots:
-        for product in ("XSOverlay_Beta","XSOverlay"):
-            directory = library / "steamapps/common" / product / "XSOverlay_Data/StreamingAssets/Plugins/Applications"
-            if (directory/"_UI/Default/Wrist.html").is_file():
-                return directory.resolve()
-    return None
-
-
 def serve(server, linked):
     if linked:
         def on_parent_exit():
@@ -74,37 +55,6 @@ def serve(server, linked):
         threading.Thread(target=on_parent_exit, daemon=True).start()
     with server:
         server.serve_forever()
-
-
-def start_wrist(bind, linked):
-    import cable_setup
-    wrist = importlib.import_module("wrist-server")
-    wrist.here = DATA
-    installed = wrist_sources()
-    wrist.installed = installed
-    if getattr(sys,"frozen",False):
-        cable_setup._controller.prepare = lambda: cable_setup.package((DATA/"VBCABLE_Driver_Pack46.zip").read_bytes)
-    class LocalWrist(wrist.Renderer):
-        def log_message(self,*args):
-            pass
-
-        def do_GET(self):
-            if self.headers.get_all("Host") != ["127.0.0.1:41836"]:
-                self.send_error(403)
-                return
-            route = urlsplit(self.path).path
-            if route == "/lummix-health":
-                self.send_bytes(json.dumps({"service":"lummix-wrist","ready":True,
-                                           "vendorAvailable":bool(installed),"cableRestartSupport":True}).encode(), "application/json")
-                return
-            if route == "/preview" and not installed:
-                self.send_bytes(b'<!doctype html><meta charset="utf-8"><style>html{color-scheme:dark;font:16px system-ui}body{padding:1em}</style><p>Wrist preview requires XSOverlay on this PC.</p>', "text/html")
-                return
-            if route == "/wrist-fixture.js" and not wrist.config.is_file():
-                self.send_bytes(b"const savedSettings = {};\n" + (DATA/"wrist-fixture.js").read_bytes(), "text/javascript")
-                return
-            super().do_GET()
-    serve(ThreadingHTTPServer((bind,41836),LocalWrist), linked)
 
 
 def helper_streams():
@@ -180,27 +130,33 @@ def main():
         from cable_alias import worker
         raise SystemExit(worker(mode[1]))
     elif mode == ["studio"]:
+        if getattr(sys, "frozen", False):
+            args = [str(NATIVE_HOST), "studio"]
+            if linked:
+                args.append("--parent-stdin")
+            result = subprocess.run(args, stdin=sys.stdin if linked else None, stdout=sys.stdout,
+                                    stderr=sys.stderr, creationflags=subprocess.CREATE_NO_WINDOW)
+            raise SystemExit(result.returncode)
         serve(ThreadingHTTPServer((bind,41835),Studio), linked)
     elif mode == ["wrist"]:
-        start_wrist(bind, linked)
+        from wrist_preview import run
+        run(DATA, wrist_sources(), bind, linked)
     elif mode == ["addon"]:
-        from xsoverlay_service import make_server
-        serve(make_server(wrist_sources, DATA, bind), linked)
-    elif mode == ["spotify"]:
+        from xsoverlay_service import serve_with_window
+        with serve_with_window(wrist_sources, DATA, qa=bind == "127.0.0.2") as port:
+            if port is None:
+                raise OSError("The native XSOverlay listener could not start.")
+            if linked:
+                sys.stdin.buffer.read()
+            else:
+                threading.Event().wait()
+    elif mode in (["spotify"], ["media"]):
+        import asyncio
+        from media_http import run
         helper = importlib.import_module("spotify-helper")
-        if linked:
-            import asyncio
-            async def until_closed():
-                runner = helper.web.AppRunner(helper.create_app(), access_log=None)
-                await runner.setup()
-                try:
-                    await helper.web.TCPSite(runner,bind,41838).start()
-                    await asyncio.to_thread(sys.stdin.buffer.read)
-                finally:
-                    await runner.cleanup()
-            asyncio.run(until_closed())
-        else:
-            helper.web.run_app(helper.create_app(),host=bind,port=41838,access_log=None,print=None)
+        async def serve_media():
+            await run(helper.create_app(), bind, linked)
+        asyncio.run(serve_media())
     elif len(mode) == 1 and Path(mode[0]).resolve() == (DATA/"detect_openvr.py").resolve():
         from detect_openvr import devices
         print(json.dumps(devices()))
@@ -211,22 +167,30 @@ def main():
     elif mode == ["check-spotify"]:
         # A bounded capture check for support. Never open a mic, deliver audio, or touch playback.
         import time
-        from spotify_process_feed import AmbiguousTarget, Capture, spotify_target, supported
+        from cable_mixer import Controls
+        from native_audio import Engine, ProcessCapture
+        from spotify_native import provider
+        from spotify_process_feed import supported
         result = dict(supported=supported(), playerFound=False, attached=False, signal=False)
         try:
-            target = spotify_target()
-            if target:
-                result.update(playerFound=True, edition=target[2])
-            if target and result["supported"]:
-                probe = Capture(target)
+            native = provider()
+            target = native.call(15) if native else {"state": 4}
+            if target["state"] == 1:
+                result.update(playerFound=True, edition=target["edition"])
+            elif target["state"] in (2, 4):
+                result["error"] = "ambiguous" if target["state"] == 2 else "unavailable"
+            if result["playerFound"] and result["supported"]:
+                probe = ProcessCapture(Engine(Controls()), (target["pid"],target["created"],target["edition"]))
                 try:
                     end = time.monotonic() + 4
-                    while time.monotonic() < end and probe.code is None and not probe.last_signal:
+                    state = probe.state
+                    while state in (0, 1) and time.monotonic() < end:
                         time.sleep(.04)
-                    result.update(attached=probe.attached, signal=bool(probe.last_signal), error=probe.code)
+                        state = probe.state
+                    result.update(attached=state in (1, 2), signal=state == 2, error=state if state < 0 else None)
                 finally:
                     probe.close()
-        except (AmbiguousTarget, OSError) as error:
+        except (OSError, RuntimeError) as error:
             result["error"] = type(error).__name__
         print(json.dumps(result))
     else:
