@@ -1033,8 +1033,9 @@ chrome.webview.postMessage('window-state');
                 .chain([0])
                 .collect::<Vec<u16>>()
         };
-        let icon = path(root.join("windows/packaging/Lummix.ico"));
-        let loader = path(root.join(".build/webview2/WebView2Loader.dll"));
+        let data = root.join(".build/frozen/runtime/_internal");
+        let icon = path(data.join("Lummix.ico").canonicalize().unwrap());
+        let loader = path(data.join("WebView2Loader.dll").canonicalize().unwrap());
         let profile = path(fixture.join("profile"));
         let assets = path(assets);
         unsafe {

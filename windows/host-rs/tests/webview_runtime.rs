@@ -25,13 +25,18 @@ const PAGE: &str = r#"<!doctype html>
 <title>Lummix native controller fixture</title>
 <script>
 window.chrome.webview.addEventListener('message', async (event) => {
-  const response = await fetch('controls.wasm?qa=real');
-  const payload = new Uint8Array(await response.arrayBuffer());
-  chrome.webview.postMessage(JSON.stringify({
-    echo: event.data.fixture, mime: response.headers.get('Content-Type'),
-    cache: response.headers.get('Cache-Control'),
-    wasm: payload.slice(0, 4).join(','), size: payload.length,
-  }));
+  try {
+    const response = await fetch('controls.wasm?qa=real');
+    if (!response.ok) throw new Error(`WASM response HTTP ${response.status}`);
+    const payload = new Uint8Array(await response.arrayBuffer());
+    chrome.webview.postMessage(JSON.stringify({
+      echo: event.data.fixture, mime: response.headers.get('Content-Type'),
+      cache: response.headers.get('Cache-Control'),
+      wasm: payload.slice(0, 4).join(','), size: payload.length,
+    }));
+  } catch (error) {
+    chrome.webview.postMessage('fixture-error: ' + error);
+  }
 });
 chrome.webview.postMessage('fixture-requests-host');
 </script>"#;
@@ -70,7 +75,7 @@ fn window() -> windows::core::Result<HWND> {
             Default::default(),
             class.lpszClassName,
             w!("Lummix Rust Controller ABI Fixture"),
-            WS_OVERLAPPEDWINDOW,
+            WS_OVERLAPPEDWINDOW | WS_VISIBLE,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
             900,
@@ -105,7 +110,7 @@ fn pump(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let until = Instant::now() + Duration::from_secs(15);
     let mut msg = MSG::default();
-    let mut rendered = false;
+    let mut stage = "waiting for Evergreen controller creation";
     let mut source_check = None;
     unsafe {
         if SetTimer(Some(hwnd), 1, 50, None) == 0 {
@@ -114,15 +119,21 @@ fn pump(
         while Instant::now() < until {
             let events = std::mem::take(&mut *EVENTS.lock().unwrap());
             for (kind, source, data) in events {
-                if kind == 1 {
+                if kind == webview::ERROR {
                     return Err(fail(data));
                 }
-                if kind == 0 {
+                if kind == webview::READY {
                     command(webview::lummix_webview_resize(token, 800, 600), "resize")?;
                     command(webview::lummix_webview_moved(token), "move")?;
                     command(webview::lummix_webview_visible(token, true as i32), "show")?;
+                    stage = "waiting for the intercepted document to request the host message";
                 }
-                if kind == 2 && source == webview::APP_DOCUMENT {
+                if kind == webview::MESSAGE {
+                    if source != webview::APP_DOCUMENT {
+                        return Err(fail(format!(
+                            "Unexpected fixture message source {source:?}"
+                        )));
+                    }
                     if data == "fixture-requests-host" {
                         command(
                             webview::lummix_webview_post_json(
@@ -131,6 +142,7 @@ fn pump(
                             ),
                             "post",
                         )?;
+                        stage = "waiting for the page to fetch and verify the intercepted WASM";
                     } else {
                         let expected = format!(
                             r#"{{"echo":"native","mime":"application/wasm","cache":"no-store","wasm":"0,97,115,109","size":{expected_size}}}"#
@@ -146,11 +158,11 @@ fn pump(
                             "execute",
                         )?;
                         source_check = Some(Instant::now() + Duration::from_millis(500));
-                        rendered = true;
+                        stage = "waiting for the off-origin navigation check";
                     }
                 }
             }
-            if rendered && source_check.is_some_and(|at| Instant::now() >= at) {
+            if source_check.is_some_and(|at| Instant::now() >= at) {
                 let len = webview::lummix_webview_source(token, null_mut(), 0);
                 let mut wide = vec![0; len];
                 webview::lummix_webview_source(token, wide.as_mut_ptr(), len);
@@ -171,7 +183,13 @@ fn pump(
             DispatchMessageW(&msg);
         }
     }
-    Err(fail("Production Rust WebView ABI fixture timed out"))
+    let len = unsafe { webview::lummix_webview_source(token, null_mut(), 0) };
+    let mut wide = vec![0; len];
+    unsafe { webview::lummix_webview_source(token, wide.as_mut_ptr(), len) };
+    let url = String::from_utf16_lossy(wide.strip_suffix(&[0]).unwrap_or(&wide));
+    Err(fail(format!(
+        "Production Rust WebView ABI fixture timed out {stage} (source {url:?})"
+    )))
 }
 
 fn run(loader: &Path, fixture: &Path, wasm: &Path) -> Result<(), Box<dyn std::error::Error>> {
@@ -213,8 +231,9 @@ fn actual_evergreen_controller_round_trip() -> Result<(), Box<dyn std::error::Er
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
         .canonicalize()?;
-    let loader = root.join(".build/webview2/WebView2Loader.dll");
-    let wasm = root.join("studio/controls.wasm");
+    let runtime = root.join(".build/frozen/runtime");
+    let loader = runtime.join("_internal/WebView2Loader.dll").canonicalize()?;
+    let wasm = runtime.join("studio/controls.wasm").canonicalize()?;
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
         .as_nanos();
