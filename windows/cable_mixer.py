@@ -5,6 +5,7 @@ import math
 import numpy as np
 import sounddevice as sd
 from duck_envelope import Envelope
+from native_mix import load_kernel
 
 RATE = 48000
 BLOCK = 480
@@ -66,6 +67,7 @@ class _Fader:
 class MixStage:
     """State belongs to one 48 kHz audio stream. Callback has no locks or I/O."""
     def __init__(self, controls, frames=BLOCK):
+        self.kernel = load_kernel()
         self.mic = _Fader(controls.mic_gain, frames)
         self.file = _Fader(controls.file_gain, frames)
         self.scratch = np.empty((frames, 2), dtype=np.float32)
@@ -95,10 +97,18 @@ class MixStage:
                                    self.clock if detect else None, controls.duck_depth if detect else 0.)
         previous_gain = self.duck_gain
         self.duck_gain = 10 ** (-reduction / 20)
-        out.fill(0)
         if controls.mute_master:
+            out.fill(0)
             self.limit_gain = 1.
             return
+        if self.kernel is not None:
+            gain = self.kernel.render(out, None if mic_muted else mic, None if file_muted else music,
+                                      mic_gain, file_gain, previous_gain, self.duck_gain,
+                                      self.limit_gain, PEAK_CEILING, 1. / LIMITER_RELEASE)
+            if gain is not None:
+                self.limit_gain = gain
+                return
+        out.fill(0)
         if mic is not None and not mic_muted:
             np.multiply(mic[:, :1], mic_gain, out=out)
         scratch = self.scratch[:n]

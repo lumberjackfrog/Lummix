@@ -17,6 +17,7 @@ DIST = BUILD / "frozen"
 DEST = DIST / "runtime"
 sys.path.insert(0,str(SRC))
 import cable_setup
+from dsp.build_dsp import build_dsp
 
 
 def webview_sdk():
@@ -51,6 +52,7 @@ def write_notices(webview):
     notices = DEST / "licenses"
     notices.mkdir(exist_ok=True)
     shutil.copy2(SRC/"packaging/PortAudio-LICENSE.txt",notices/"PortAudio.txt")
+    shutil.copy2(SRC/"packaging/Rust-LICENSE-MIT.txt",notices/"Rust.txt")
     (notices/"WebView2").mkdir(exist_ok=True)
     for name in ("LICENSE.txt","NOTICE.txt"):
         shutil.copy2(webview/name,notices/"WebView2"/name)
@@ -90,6 +92,7 @@ def main():
     uia = GetModule("UIAutomationCore.dll")
     webview = webview_sdk()
     wv = GetModule(str(webview/"WebView2.tlb"))
+    args += ["--add-binary", str(build_dsp())+";."]
     args += ["--add-binary", str(webview/"WebView2Loader.dll")+";.", "--add-data", str(SRC/"packaging/Lummix.ico")+";."]
     for module in (wv.__name__, wv.__wrapper_module__.__name__, uia.__name__, uia.__wrapper_module__.__name__, "wrist-server","spotify-helper","detect_openvr","winsdk._winrt","winsdk.system",
                    "winsdk.windows.media.control","winsdk.windows.management.deployment",

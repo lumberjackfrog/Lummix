@@ -2,6 +2,8 @@
 
 Use a 64-bit Windows development machine with CPython 3.12 x64 (including the `py` launcher), and NSIS 3. The MSI builder uses Python 3.12's `msilib`. Desktop playback uses the installed Evergreen WebView2 runtime. Application-specific audio capture needs Windows build 20348 or newer.
 
+Install the x64 Rust MSVC toolchain and the C++ linker from Visual Studio Build Tools on the build machine. The installer includes the compiled sample mixer. Friends only need the Windows installer.
+
 From the repository root, run:
 
 ```powershell
@@ -20,6 +22,8 @@ The script creates a repository-local virtual environment, restores pinned Pytho
 - `.build/` stores verified downloads, generated COM wrappers' inputs, the frozen runtime. `dist/` stores generated distributables. XSOverlay and SteamVR resources come from the user's own local installations. [Third-party notices](../THIRD_PARTY.md)
 
 ## Tests
+
+`scripts/test-windows.ps1` builds the dependency-free Rust crate offline and compares its audio output with the NumPy renderer. The manual GitHub checks also replay generated audio against the pre-port source and measure complete 480-frame callbacks, including the Python call into Rust. Playback devices and VRChat are outside that timing.
 
 The backend fixtures cover source selection, authorization, route ownership, gain and limiting, sidechain ducking, media transport and installer outcomes. The browser-to-native gain test needs Chromium. Install its test dependency once after creating the build environment:
 
