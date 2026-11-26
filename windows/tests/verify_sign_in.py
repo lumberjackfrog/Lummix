@@ -68,20 +68,21 @@ def mixer_frame(command, profile, chromium):
         assert proc.returncode == 0
 
 
+def open_sheet(button, dialog):
+    button.click(timeout=30000)
+    try:
+        expect(dialog).to_be_visible(timeout=2500)
+    except AssertionError:
+        # A new WebView2 window can consume the first press to activate its window.
+        if not dialog.is_visible():
+            button.press("Enter", timeout=10000)
+        expect(dialog).to_be_visible(timeout=10000)
+
+
 @contextmanager
 def settings(command, profile, chromium, *, return_frame=False):
     with mixer_frame(command, profile, chromium) as frame:
-        button = frame.get_by_role("button", name="Settings", exact=True)
-        dialog = frame.locator("#settings-dialog[open]")
-        button.click(timeout=30000)
-        try:
-            expect(dialog).to_be_visible(timeout=2500)
-        except AssertionError:
-            # WebView2 may use the first pointer press to activate a newly restored window.
-            # Exercise the button's normal keyboard action when the dialog is still closed.
-            if not dialog.is_visible():
-                button.press("Enter", timeout=10000)
-            expect(dialog).to_be_visible(timeout=10000)
+        open_sheet(frame.get_by_role("button", name="Settings", exact=True), frame.locator("#settings-dialog[open]"))
         switch = frame.get_by_role("switch", name="Start with Windows")
         expect(switch).to_be_enabled(timeout=30000)
         yield frame if return_frame else switch

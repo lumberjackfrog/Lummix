@@ -30,7 +30,13 @@ try {
     $proc=Start-Process -FilePath $python -Credential $credentials -LoadUserProfile -WorkingDirectory $scratch -ArgumentList @('-B','verify_first_spotify.py','.',('"'+$program.FullName+'"')) -WindowStyle Hidden -PassThru
     $finished=$proc.WaitForExit(320000)
     $log=Join-Path $scratch 'first-spotify.log'
-    if (Test-Path -LiteralPath $log) { Get-Content -LiteralPath $log -Tail 25 }
+    if (Test-Path -LiteralPath $log) {
+        $evidence=Join-Path $PSScriptRoot '../../.build/qa'
+        New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+        Copy-Item -LiteralPath $log -Destination (Join-Path $evidence 'first-spotify.log')
+        Select-String -LiteralPath $log -Pattern 'standard account|Opened the Spotify|Clicked Install|Spotify setup:|installed the Spotify|Error:|Traceback' |
+            ForEach-Object { $_.Line }
+    }
     if (!$finished -or $proc.ExitCode -ne 0) { throw 'The clean standard-user Spotify installation did not pass.' }
 } finally {
     if ($product) {

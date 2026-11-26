@@ -402,5 +402,6 @@ jobs:
             .build/qa/profile-*.log
             .build/qa/msi-uninstall-*.log
             .build/qa/first-driver.*
+            .build/qa/first-spotify.log
             .build/qa/upgrade.json
             .build/qa/shortcut-launch.json

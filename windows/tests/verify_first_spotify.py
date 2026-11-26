@@ -13,7 +13,7 @@ import win32api
 import win32con
 import win32profile
 import win32security
-from verify_sign_in import mixer_frame
+from verify_sign_in import mixer_frame, open_sheet
 
 
 def verify(exe):
@@ -38,7 +38,8 @@ def verify(exe):
     assert exe.is_file()
     with sync_playwright() as pw:
         with mixer_frame([str(exe)], str(local), pw.chromium) as frame:
-            frame.locator("#connect-spotify").click()
+            open_sheet(frame.locator("#connect-spotify"), frame.locator("#player-connect-dialog[open]"))
+            print("Opened the Spotify setup panel.", flush=True)
             action = frame.locator("#install-player")
             expect(action).to_be_visible(timeout=30000)
             action.click()
