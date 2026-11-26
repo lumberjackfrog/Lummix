@@ -41,4 +41,6 @@ For a signed release, supply `-SigningThumbprint` for a publisher certificate in
 
 Set the version in `windows/release_identity.py`, build and qualify the Windows installer, then run `./scripts/sign-update.ps1 -Setup ./dist/Lummix.Setup.exe -Version <version>` against the final release bytes on the publisher’s Windows account. The script requires the non-exportable CNG key named `Lummix GitHub release manifests v1`. Publish `Lummix.Setup.exe`, `Lummix.Update.json` and `SHA256SUMS.txt` together on a numeric `vX.Y.Z` GitHub release. Drafts stay private. Published preview builds with numeric tags are eligible.
 
+Keep the release in draft while testing the downloaded setup on a Windows client with Application Control enabled. Upgrade from the current public version and verify that both shortcuts open the mixer and the saved settings survive. Publishing the numeric release makes it eligible for the in-app updater and the Discord announcements.
+
 The public key travels in the client. The private key stays in the publisher’s Windows key store. If that key becomes unavailable, distribute a manually installed build with a new verification key. The release-manifest signature authenticates in-app downloads. Windows publisher trust continues to use Authenticode.

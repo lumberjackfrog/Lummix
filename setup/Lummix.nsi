@@ -82,6 +82,9 @@ Section
   ${ElseIf} $0 = 1625
     MessageBox MB_ICONINFORMATION|MB_OK "Your Windows administrator restricts app installations on this PC. Ask them to approve Lummix Setup." /SD IDOK
     Quit
+  ${ElseIf} $0 = 1603
+    MessageBox MB_ICONSTOP|MB_OK "Installation stopped (1603). If Windows Security reported a blocked app, ask your administrator to review Lummix." /SD IDOK
+    Quit
   ${ElseIf} $0 != 0
     MessageBox MB_ICONSTOP|MB_OK "Windows Installer could not finish (error $0). Open Lummix Setup again to retry." /SD IDOK
     Quit

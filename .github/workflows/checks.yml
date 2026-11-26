@@ -31,3 +31,13 @@ jobs:
       - name: Test XSOverlay add-on installation and removal
         shell: pwsh
         run: ./.venv/Scripts/python.exe -m unittest discover -s tests -p test_xsoverlay_install.py -v
+      - name: Test Windows Installer rollback and retry
+        shell: pwsh
+        run: ./.venv/Scripts/python.exe -B windows/tests/verify_installer_rollback.py
+      - name: Save failed rollback test logs
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rollback-logs
+          path: .build/qa/rollback-*.log
+          if-no-files-found: ignore

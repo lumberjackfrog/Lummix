@@ -80,7 +80,8 @@ def main(archive, target):
                       ("RemoveCachedMSI","ShortcutComponent","Lummix.msi","ProductCache",2),
                       ("RemoveEmptyCache","ShortcutComponent",None,"ProductCache",2)])
     add("CustomAction",[("LaunchStudio",210,exe_id,None),
-                        ("RefreshStartup",18,exe_id,"refresh-startup"),
+                        # Run as the installing user after files land, inside the MSI transaction.
+                        ("RefreshStartup",18 | 1024,exe_id,"refresh-startup"),
                         ("RemoveWristAddon",82,exe_id,"remove-addon")])
     actions = {"AppSearch","FindRelatedProducts","LaunchConditions","CostInitialize","FileCost","CostFinalize",
                "InstallValidate","InstallInitialize","ProcessComponents","UnpublishFeatures","RemoveShortcuts",
@@ -90,7 +91,7 @@ def main(archive, target):
     add("InstallExecuteSequence", [(name,cond,n) for name,cond,n in sequence.InstallExecuteSequence if name in actions]+
         [("RemoveExistingProducts","LUMMIX_OLD",1501),
          ("RemoveWristAddon",'REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE',3100),
-         ("RefreshStartup","LUMMIX_OLD AND NOT REMOVE",6650),
+         ("RefreshStartup","NOT Installed AND NOT REMOVE",6550),
          ("LaunchStudio",'NOT Installed AND NOT REMOVE AND UILevel >= 3 AND NOT LUMMIX_NO_LAUNCH',6700)])
     add("InstallUISequence",[(name,cond,n) for name,cond,n in sequence.InstallUISequence if name in
                             {"AppSearch","FindRelatedProducts","LaunchConditions","CostInitialize","FileCost","CostFinalize","ExecuteAction"}])
