@@ -157,6 +157,70 @@ impl Internet {
         Ok(Self(session))
     }
 
+    fn get(&self, host: &str, path: &str) -> Outcome<(u32, Response)> {
+        let (host_wide, path_wide) = (text_wide(host), text_wide(path));
+        let connection = Handle::new(unsafe {
+            WinHttpConnect(
+                self.0 .0,
+                host_wide.as_ptr(),
+                INTERNET_DEFAULT_HTTPS_PORT,
+                0,
+            )
+        })?;
+        let request = Handle::new(unsafe {
+            WinHttpOpenRequest(
+                connection.0,
+                w!("GET"),
+                path_wide.as_ptr(),
+                null(),
+                null(),
+                null(),
+                WINHTTP_FLAG_SECURE | WINHTTP_FLAG_ESCAPE_DISABLE,
+            )
+        })?;
+        let disabled =
+            WINHTTP_DISABLE_REDIRECTS | WINHTTP_DISABLE_COOKIES | WINHTTP_DISABLE_AUTHENTICATION;
+        network(unsafe {
+            WinHttpSetOption(
+                request.0,
+                WINHTTP_OPTION_DISABLE_FEATURE,
+                (&disabled as *const u32).cast(),
+                size_of::<u32>() as u32,
+            )
+        })?;
+        network(unsafe {
+            WinHttpSendRequest(
+                request.0,
+                w!("Accept-Encoding: identity\r\n"),
+                u32::MAX,
+                null(),
+                0,
+                0,
+                0,
+            )
+        })?;
+        network(unsafe { WinHttpReceiveResponse(request.0, null_mut()) })?;
+        let mut status = 0u32;
+        let mut length = size_of::<u32>() as u32;
+        network(unsafe {
+            WinHttpQueryHeaders(
+                request.0,
+                WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                null(),
+                (&mut status as *mut u32).cast(),
+                &mut length,
+                null_mut(),
+            )
+        })?;
+        Ok((
+            status,
+            Response {
+                request,
+                _connection: connection,
+            },
+        ))
+    }
+
     fn open(&self, url: &str, deadline: Instant) -> Outcome<Response> {
         let mut current = url.to_owned();
         for _ in 0..=10 {
@@ -164,66 +228,9 @@ impl Internet {
                 return Err(Failure::Network);
             }
             let (host, path) = split_url(&current)?;
-            let (host_wide, path_wide) = (text_wide(host), text_wide(path));
-            let connection = Handle::new(unsafe {
-                WinHttpConnect(
-                    self.0 .0,
-                    host_wide.as_ptr(),
-                    INTERNET_DEFAULT_HTTPS_PORT,
-                    0,
-                )
-            })?;
-            let request = Handle::new(unsafe {
-                WinHttpOpenRequest(
-                    connection.0,
-                    w!("GET"),
-                    path_wide.as_ptr(),
-                    null(),
-                    null(),
-                    null(),
-                    WINHTTP_FLAG_SECURE | WINHTTP_FLAG_ESCAPE_DISABLE,
-                )
-            })?;
-            let disabled = WINHTTP_DISABLE_REDIRECTS
-                | WINHTTP_DISABLE_COOKIES
-                | WINHTTP_DISABLE_AUTHENTICATION;
-            network(unsafe {
-                WinHttpSetOption(
-                    request.0,
-                    WINHTTP_OPTION_DISABLE_FEATURE,
-                    (&disabled as *const u32).cast(),
-                    size_of::<u32>() as u32,
-                )
-            })?;
-            network(unsafe {
-                WinHttpSendRequest(
-                    request.0,
-                    w!("Accept-Encoding: identity\r\n"),
-                    u32::MAX,
-                    null(),
-                    0,
-                    0,
-                    0,
-                )
-            })?;
-            network(unsafe { WinHttpReceiveResponse(request.0, null_mut()) })?;
-            let mut status = 0u32;
-            let mut length = size_of::<u32>() as u32;
-            network(unsafe {
-                WinHttpQueryHeaders(
-                    request.0,
-                    WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-                    null(),
-                    (&mut status as *mut u32).cast(),
-                    &mut length,
-                    null_mut(),
-                )
-            })?;
+            let (status, response) = self.get(host, path)?;
             if status == 200 {
-                return Ok(Response {
-                    request,
-                    _connection: connection,
-                });
+                return Ok(response);
             }
             if !matches!(status, 301 | 302 | 303 | 307 | 308) {
                 return Err(Failure::Network);
@@ -232,7 +239,7 @@ impl Internet {
             let mut length = size_of_val(&location) as u32;
             let success = unsafe {
                 WinHttpQueryHeaders(
-                    request.0,
+                    response.request.0,
                     WINHTTP_QUERY_LOCATION,
                     null(),
                     location.as_mut_ptr().cast(),
@@ -294,6 +301,36 @@ impl Read for Response {
         }
         Ok(count as usize)
     }
+}
+
+/// Fetch the reviewed VB-Audio ZIP directly. Do not follow CDN or cross-host redirects.
+pub(crate) fn vendor_archive() -> Outcome<Vec<u8>> {
+    let internet = Internet::new()?;
+    let (status, mut response) = internet.get(
+        "download.vb-audio.com",
+        "/Download_CABLE/VBCABLE_Driver_Pack46.zip",
+    )?;
+    if status != 200 {
+        return Err(Failure::Network);
+    }
+    let limit = crate::cable_setup::ARCHIVE_SIZE;
+    let deadline = Instant::now() + Duration::from_secs(55);
+    let mut bytes = Vec::with_capacity(limit);
+    let mut block = [0; 16384];
+    loop {
+        let n = response.read(&mut block).map_err(|_| Failure::Network)?;
+        if Instant::now() >= deadline || n > limit - bytes.len() {
+            return Err(Failure::Invalid);
+        }
+        if n == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&block[..n]);
+    }
+    if bytes.len() != limit {
+        return Err(Failure::Invalid);
+    }
+    Ok(bytes)
 }
 
 struct Release<'a> {

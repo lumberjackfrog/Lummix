@@ -12,6 +12,32 @@ use winreg::{RegKey, RegValue};
 const RUN: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 const APPROVAL: &str = r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run";
 const NAME: &str = "Lummix";
+const RESUME: &str = "Lummix Setup Resume";
+
+pub(crate) fn resume_registration(exe: &Path, enable: bool) -> io::Result<bool> {
+    with_startup(exe, |mut startup| {
+        startup.name = RESUME;
+        startup.argument = "--resume-setup";
+        startup.change(enable).map(|state| state == State::Enabled)
+    })
+}
+
+pub(crate) fn refresh_resume(exe: &Path) -> io::Result<()> {
+    with_startup(exe, |mut startup| {
+        startup.name = RESUME;
+        startup.argument = "--resume-setup";
+        startup.refresh()
+    })
+}
+
+pub(crate) fn resume_enabled(exe: &Path) -> bool {
+    with_startup(exe, |mut startup| {
+        startup.name = RESUME;
+        startup.argument = "--resume-setup";
+        startup.state().map(|state| state == State::Enabled)
+    })
+    .unwrap_or(false)
+}
 
 #[derive(Debug, PartialEq, Eq)]
 enum State {
@@ -85,6 +111,8 @@ fn with_startup<T>(
     let hive = RegKey::predef(HKEY_CURRENT_USER);
     callback(Startup {
         hive: &hive,
+        name: NAME,
+        argument: "--startup",
         run: RUN,
         approval: APPROVAL,
         executable: exe.to_owned(),
@@ -94,6 +122,8 @@ fn with_startup<T>(
 
 struct Startup<'a> {
     hive: &'a RegKey,
+    name: &'static str,
+    argument: &'static str,
     run: &'a str,
     approval: &'a str,
     executable: PathBuf,
@@ -139,12 +169,14 @@ fn release_folder(path: &Path, root: &Path) -> bool {
             .all(|field| !field.is_empty() && field.bytes().all(|b| b.is_ascii_digit()))
 }
 
-fn target(value: &str) -> &Path {
+fn target<'a>(value: &'a str, argument: &str) -> &'a Path {
     if let Some((path, suffix)) = value
         .strip_prefix('"')
         .and_then(|quoted| quoted.split_once('"'))
     {
-        if suffix.is_empty() || suffix == " --startup" {
+        if (suffix.is_empty() && argument == "--startup")
+            || suffix.strip_prefix(' ') == Some(argument)
+        {
             return Path::new(path);
         }
     }
@@ -156,7 +188,7 @@ impl Startup<'_> {
         optional(
             self.hive
                 .open_subkey_with_flags(key, KEY_READ)
-                .and_then(|key| key.get_raw_value(NAME)),
+                .and_then(|key| key.get_raw_value(self.name)),
         )
     }
 
@@ -167,7 +199,7 @@ impl Startup<'_> {
         let Ok(text) = String::from_reg_value(value) else {
             return false;
         };
-        let target = target(&text);
+        let target = target(&text, self.argument);
         same_path(target, &self.executable)
             || (lummix_executable(target)
                 && release_folder(target, &self.install_root)
@@ -204,11 +236,17 @@ impl Startup<'_> {
             let (key, _) = self
                 .hive
                 .create_subkey_with_flags(self.run, KEY_SET_VALUE)?;
-            let command = format!("\"{}\" --startup", self.executable.display());
-            key.set_value(NAME, &command)?;
+            let command = format!("\"{}\" {}", self.executable.display(), self.argument);
+            if command.encode_utf16().count() >= 260 {
+                return Err(io::Error::new(
+                    ErrorKind::InvalidInput,
+                    "Lummix startup path is too long for Windows",
+                ));
+            }
+            key.set_value(self.name, &command)?;
         } else if value.is_some() {
             let key = self.hive.open_subkey_with_flags(self.run, KEY_SET_VALUE)?;
-            optional(key.delete_value(NAME))?;
+            optional(key.delete_value(self.name))?;
         }
         self.state()
     }
@@ -266,13 +304,38 @@ mod tests {
         let (root, _) = hive.create_subkey(&fixture).unwrap();
         let startup = Startup {
             hive: &root,
+            name: NAME,
+            argument: "--startup",
             run: "Run",
             approval: "Approval",
             executable: current.to_owned(),
             install_root: install_root.to_owned(),
         };
         assert_eq!(startup.state().unwrap(), State::Disabled);
+        let continuation = Startup {
+            name: RESUME,
+            argument: "--resume-setup",
+            executable: current.to_owned(),
+            install_root: install_root.to_owned(),
+            hive: &root,
+            run: "Run",
+            approval: "Approval",
+        };
+        assert_eq!(continuation.change(true).unwrap(), State::Enabled);
+        assert_eq!(startup.state().unwrap(), State::Disabled);
         let (run, _) = root.create_subkey("Run").unwrap();
+        assert_eq!(
+            run.get_value::<String, _>(RESUME).unwrap(),
+            format!("\"{}\" --resume-setup", current.display())
+        );
+        assert_eq!(continuation.change(false).unwrap(), State::Disabled);
+        run.set_value(RESUME, &r#""C:\Unrelated\App.exe" --resume-setup"#)
+            .unwrap();
+        assert_eq!(continuation.change(false).unwrap(), State::Occupied);
+        assert!(run
+            .get_value::<String, _>(RESUME)
+            .unwrap()
+            .contains("Unrelated"));
         run.set_value(
             NAME,
             &r#""c:/users/fixture/programs/lummix/1.0.8/LUMMIX.EXE" --startup"#,

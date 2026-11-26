@@ -34,4 +34,8 @@ if ($code -notmatch '^\{[0-9a-fA-F-]{36}\}$' -or $version -notmatch '^\d+\.\d+\.
 $scriptFile = Join-Path $project 'setup\Lummix.nsi'
 & $MakeNsis /INPUTCHARSET UTF8 /V2 "/DSETUP_EXE=$target" "/DPAYLOAD_MSI=$payload" "/DPRODUCT_CODE=$code" "/DVERSION=$version" $scriptFile
 if ($LASTEXITCODE -ne 0) { throw "Setup compiler exited with $LASTEXITCODE." }
+$info = [Diagnostics.FileVersionInfo]::GetVersionInfo($target)
+if ($info.ProductName -ne 'Lummix' -or $info.ProductVersion -cne $version -or $info.FileVersion -cne $version) {
+    throw "Windows setup file properties do not match MSI version $version."
+}
 Get-Item -LiteralPath $target

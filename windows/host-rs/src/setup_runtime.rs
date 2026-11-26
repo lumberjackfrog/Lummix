@@ -1,6 +1,6 @@
 use crate::{
-    cable_setup as cable, endpoint_alias, private_http, vr_discovery, vr_openvr, wrist_preview,
-    xsoverlay, xsoverlay_http,
+    cable_setup as cable, endpoint_alias, private_http, sign_in, vr_discovery, vr_openvr,
+    wrist_preview, xsoverlay, xsoverlay_http,
 };
 use serde_json::{json, Value};
 use std::{
@@ -13,7 +13,10 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
     ptr::null,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
@@ -104,6 +107,64 @@ fn marker() -> PathBuf {
     )
     .join("Lummix/vb-cable-restart")
 }
+// Older installs also use the driver marker. A normal status check may consume
+// that marker but must never consume the user's request to finish setup.
+fn resume_path() -> PathBuf {
+    marker().with_file_name("setup-resume.json")
+}
+
+fn read_resume() -> Option<Value> {
+    let mut bytes = Vec::new();
+    File::open(resume_path())
+        .ok()?
+        .take(4097)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    (bytes.len() <= 4096)
+        .then(|| serde_json::from_slice(&bytes).ok())
+        .flatten()
+}
+
+#[derive(Debug, PartialEq)]
+enum ResumeBoot {
+    Same,
+    Changed,
+    Unknown,
+}
+
+fn resume_boot(pending: &Value, boot: &Value) -> ResumeBoot {
+    let comparable = pending["event"]
+        .as_str()
+        .zip(boot["event"].as_str())
+        .is_some_and(|(a, b)| !a.is_empty() && !b.is_empty())
+        || pending["ticks"]
+            .as_i64()
+            .zip(boot["ticks"].as_i64())
+            .is_some();
+    if !comparable {
+        return ResumeBoot::Unknown;
+    }
+    match cable::restart_pending(&json!({"pending":pending,"boot":boot})) {
+        Some(false) => ResumeBoot::Changed,
+        Some(true) => ResumeBoot::Same,
+        None => ResumeBoot::Unknown,
+    }
+}
+
+pub fn clear_resume(exe: &Path) {
+    let _ = sign_in::resume_registration(exe, false);
+    let _ = fs::remove_file(resume_path());
+}
+
+pub fn resume_login(exe: &Path, data: &Path) -> bool {
+    let Some(pending) = read_resume() else {
+        clear_resume(exe);
+        return false;
+    };
+    // A sign-out without rebooting must neither open the mixer nor lose the intent.
+    resume_boot(&pending, &windows_pair(data)["boot"]) != ResumeBoot::Same
+}
+
 fn needs_restart(boot: &Value, clear_expired: bool) -> bool {
     let path = marker();
     let Some(pending) = fs::read(&path)
@@ -256,13 +317,14 @@ pub fn connected_headsets() -> String {
 }
 
 struct Bundle {
+    root: PathBuf,
     folder: PathBuf,
     locks: Vec<File>,
 }
 impl Drop for Bundle {
     fn drop(&mut self) {
         self.locks.clear();
-        let _ = fs::remove_dir_all(&self.folder);
+        let _ = fs::remove_dir_all(&self.root);
     }
 }
 
@@ -304,18 +366,6 @@ fn exact_members(source: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn member(source: &Path, name: &str, size: usize, digest: &str) -> Result<Vec<u8>, String> {
-    let file = File::open(source.join(name)).map_err(display)?;
-    let mut bytes = Vec::new();
-    file.take(size as u64 + 1)
-        .read_to_end(&mut bytes)
-        .map_err(display)?;
-    if bytes.len() != size || sha(&bytes)? != digest {
-        return Err("VB-CABLE package byte verification failed".into());
-    }
-    Ok(bytes)
-}
-
 fn verify(data: &Path, folder: &Path) -> Result<Value, String> {
     let proof = powershell(data, "cable_setup_install.ps1", Some(folder))?;
     if !cable::trusted_signatures(&proof) {
@@ -325,52 +375,61 @@ fn verify(data: &Path, folder: &Path) -> Result<Value, String> {
 }
 
 fn prepare(data: &Path) -> Result<Bundle, String> {
-    let mut archive = Vec::new();
-    File::open(data.join("VBCABLE_Driver_Pack46.zip"))
-        .map_err(display)?
-        .take(1_324_681)
-        .read_to_end(&mut archive)
-        .map_err(display)?;
-    if !unsafe { cable::lummix_cable_pinned_bytes(false, archive.as_ptr(), archive.len()) } {
-        return Err("The VB-Audio archive does not match the reviewed package".into());
+    let bytes = crate::release_feed::vendor_archive()
+        .map_err(|_| "Could not download the official VB-CABLE driver")?;
+    if !unsafe { cable::lummix_cable_pinned_bytes(false, bytes.as_ptr(), bytes.len()) } {
+        return Err("The VB-Audio download differs from the reviewed driver".into());
     }
-    let source = data.join("VBCABLE");
-    exact_members(&source)?;
-    let suffix = private_http::token().ok_or("Windows could not allocate vendor staging")?;
-    let folder = env::temp_dir().join(format!("Lummix-VBCABLE-{suffix}"));
-    fs::create_dir(&folder).map_err(display)?;
+    let suffix = private_http::token().ok_or("Could not allocate vendor staging")?;
+    let root = env::temp_dir().join(format!("Lummix-VBCABLE-{suffix}"));
+    fs::create_dir(&root).map_err(display)?;
+    let folder = root.join("driver");
     let mut bundle = Bundle {
+        root,
         folder,
         locks: Vec::new(),
     };
-    for (name, size, expected) in MEMBERS {
-        let bytes = member(&source, name, size, expected)?;
-        let path = bundle.folder.join(name);
-        {
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)
-                .map_err(display)?;
-            file.write_all(&bytes).map_err(display)?;
-            file.sync_all().map_err(display)?;
-        }
-        let mut locked = OpenOptions::new()
+    fs::create_dir(&bundle.folder).map_err(display)?;
+    let archive = bundle.root.join("vendor.zip");
+    let mut output = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&archive)
+        .map_err(display)?;
+    output.write_all(&bytes).map_err(display)?;
+    drop(output);
+    let mut lock = OpenOptions::new()
+        .read(true)
+        .share_mode(1)
+        .open(&archive)
+        .map_err(display)?;
+    let mut saved = Vec::new();
+    (&mut lock)
+        .take((bytes.len() + 1) as u64)
+        .read_to_end(&mut saved)
+        .map_err(display)?;
+    if saved != bytes {
+        return Err("Driver archive changed during staging".into());
+    }
+    bundle.locks.push(lock);
+    powershell(data, "cable_setup_unpack.ps1", Some(&bundle.folder))?;
+    exact_members(&bundle.folder)?;
+    for (name, size, digest) in MEMBERS {
+        let mut file = OpenOptions::new()
             .read(true)
             .share_mode(1)
-            .open(&path)
+            .open(bundle.folder.join(name))
             .map_err(display)?;
-        let mut actual = Vec::new();
-        (&mut locked)
+        let mut contents = Vec::new();
+        (&mut file)
             .take(size as u64 + 1)
-            .read_to_end(&mut actual)
+            .read_to_end(&mut contents)
             .map_err(display)?;
-        if actual != bytes {
-            return Err("Vendor package member changed while staging".into());
+        if contents.len() != size || sha(&contents)? != digest {
+            return Err("Extracted VB-CABLE member differs from the reviewed driver".into());
         }
-        bundle.locks.push(locked);
+        bundle.locks.push(file);
     }
-    exact_members(&bundle.folder)?;
     verify(data, &bundle.folder)?;
     Ok(bundle)
 }
@@ -385,10 +444,15 @@ fn phase(state: &str) -> Value {
         "awaiting-windows"=>"Approve the Windows administrator prompt for VB-Audio to continue.",
         "cancelled"=>"Windows approval was declined.",
         "failed"=>"Setup could not be verified. No additional installation was attempted.",
-        "restart-needed"=>"Restart Windows, then reopen Lummix and choose Set up Lummix to start the mix.",
+        "restart-needed"=>"Restart Windows to finish setting up the virtual microphone.",
         _=>"Checking VB-CABLE.",
     };
-    json!({"state":state,"ready":state=="ready","restartMayBeNeeded":matches!(state,"partial"|"restart-needed"),"message":label,"endpoints":null})
+    let mut info = json!({"state":state,"ready":state=="ready","restartMayBeNeeded":matches!(state,"partial"|"restart-needed"),"message":label,"endpoints":null});
+    if state == "restart-needed" {
+        info["resumeAtSignIn"] =
+            json!(env::current_exe().is_ok_and(|exe| sign_in::resume_enabled(&exe)));
+    }
+    info
 }
 
 fn current(data: &Path) -> (Value, Value) {
@@ -439,23 +503,81 @@ struct SetupState {
     value: Option<Value>,
     checked: Instant,
     restart: bool,
+    resume: Value,
 }
 struct Controller {
     data: PathBuf,
     state: Mutex<SetupState>,
     worker: Mutex<Option<JoinHandle<()>>>,
+    closing: AtomicBool,
 }
 impl Controller {
     fn new(data: &Path) -> Arc<Self> {
-        Arc::new(Self {
+        let pending = read_resume();
+        let controller = Arc::new(Self {
             data: data.to_owned(),
             state: Mutex::new(SetupState {
                 value: None,
                 checked: Instant::now(),
                 restart: false,
+                resume: json!({"state": if pending.is_some() { "checking" } else { "none" }}),
             }),
             worker: Mutex::new(None),
-        })
+            closing: AtomicBool::new(false),
+        });
+        if let Some(pending) = pending {
+            let own = controller.clone();
+            match thread::Builder::new()
+                .name("Lummix setup continuation".into())
+                .spawn(move || own.resume(pending))
+            {
+                Ok(handle) => *controller.worker.lock().unwrap() = Some(handle),
+                Err(_) => controller.set_resume(json!({"state":"attention"})),
+            }
+        }
+        controller
+    }
+    fn set_resume(&self, result: Value) {
+        if let Ok(mut state) = self.state.lock() {
+            state.resume = result;
+        }
+    }
+    fn resume(&self, pending: Value) {
+        let (mut detected, boot) = current(&self.data);
+        let timing = resume_boot(&pending, &boot);
+        if timing == ResumeBoot::Same {
+            self.set_resume(json!({"state":"none"}));
+            return;
+        }
+        // Audio endpoints can arrive later than Explorer at logon. Only detect and
+        // name the cable here. Opening the microphone remains a mixer button action.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while timing == ResumeBoot::Changed
+            && detected["state"] != "ready"
+            && Instant::now() < deadline
+        {
+            for _ in 0..8 {
+                if self.closing.load(Ordering::Acquire) {
+                    return;
+                }
+                thread::sleep(Duration::from_millis(250));
+            }
+            detected = current(&self.data).0;
+        }
+        if self.closing.load(Ordering::Acquire) {
+            return;
+        }
+        let result = if timing == ResumeBoot::Changed && detected["state"] == "ready" {
+            let label = ensure_alias(&self.data);
+            json!({"state":"ready", "captureName":label["captureName"].as_str().or(detected["endpoints"]["capture"].as_str())})
+        } else {
+            json!({"state":"attention"})
+        };
+        if let Ok(exe) = env::current_exe() {
+            clear_resume(&exe);
+        }
+        self.remember(detected);
+        self.set_resume(result);
     }
     fn remember(&self, value: Value) {
         if let Ok(mut state) = self.state.lock() {
@@ -544,9 +666,17 @@ impl Controller {
                 write_marker(&path, &boot)?;
                 marked = true;
             }
-            self.remember(phase("awaiting-windows"));
             exact_members(&bundle.folder)?;
             let proof = verify(&self.data, &bundle.folder)?;
+            if marked {
+                if let Ok(exe) = env::current_exe() {
+                    // Arm before UAC: the vendor could reboot the computer itself.
+                    if write_marker(&resume_path(), &boot).is_ok() {
+                        let _ = sign_in::resume_registration(&exe, true);
+                    }
+                }
+            }
+            self.remember(phase("awaiting-windows"));
             let code = cable::start_installer(bundle.folder.clone(), &proof);
             if code == u32::MAX {
                 return Err("Windows could not start the signed vendor installer".into());
@@ -569,11 +699,15 @@ impl Controller {
                 state.restart = true;
             }
         } else if marked {
+            if let Ok(exe) = env::current_exe() {
+                clear_resume(&exe);
+            }
             let _ = fs::remove_file(path);
         }
         self.remember(result);
     }
     fn join(&self) {
+        self.closing.store(true, Ordering::Release);
         if let Some(worker) = self.worker.lock().ok().and_then(|mut worker| worker.take()) {
             let _ = worker.join();
         }
@@ -635,6 +769,7 @@ pub fn run_mode(mode: &str, args: &[OsString], data: &Path) -> Result<bool, Stri
                         0 => state.status(),
                         1 => state.begin(),
                         2 => device_scan(),
+                        3 => state.state.lock().ok()?.resume.clone(),
                         _ => return None,
                     })
                 },
@@ -695,6 +830,24 @@ pub fn run_mode(mode: &str, args: &[OsString], data: &Path) -> Result<bool, Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_signout_is_not_a_reboot_and_missing_boot_evidence_is_explicit() {
+        let before = json!({"event":"previous", "ticks":100_000_000});
+        assert_eq!(resume_boot(&before, &before), ResumeBoot::Same);
+        assert_eq!(
+            resume_boot(&before, &json!({"event":"next", "ticks":100_000_000})),
+            ResumeBoot::Changed
+        );
+        assert_eq!(
+            resume_boot(&before, &json!({"ticks":110_000_000})),
+            ResumeBoot::Same
+        );
+        assert_eq!(
+            resume_boot(&before, &json!({"ticks":900_000_000})),
+            ResumeBoot::Changed
+        );
+        assert_eq!(resume_boot(&before, &json!({})), ResumeBoot::Unknown);
+    }
     #[test]
     fn vendor_member_pins_are_complete_unique_and_match_reviewed_size_constraints() {
         use std::collections::BTreeSet;

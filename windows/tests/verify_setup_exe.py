@@ -14,6 +14,7 @@ import uuid
 import zipfile
 
 import psutil
+import win32api
 import win32con
 import win32event
 import win32gui
@@ -27,6 +28,13 @@ def checksum(path):
         return sha256(stream.read()).hexdigest()
 
 
+def verify_windows_version(path, version):
+    language, codepage = win32api.GetFileVersionInfo(str(path), r"\VarFileInfo\Translation")[0]
+    prefix = f"\\StringFileInfo\\{language:04x}{codepage:04x}\\"
+    for key, expected in (("ProductName", "Lummix"), ("ProductVersion", version), ("FileVersion", version)):
+        assert win32api.GetFileVersionInfo(str(path), prefix + key) == expected, (path.name, key)
+
+
 def main(setup, silent=False):
     setup = setup.resolve(strict=True)
     archive = setup.with_name("Lummix for Windows.zip")
@@ -38,6 +46,11 @@ def main(setup, silent=False):
     view.Execute(None)
     product = view.Fetch().GetString(1)
     view.Close()
+    view = db.OpenView("SELECT Value FROM Property WHERE Property = 'ProductVersion'")
+    view.Execute(None)
+    version = view.Fetch().GetString(1)
+    view.Close()
+    verify_windows_version(setup, version)
     del view, db
     cache = Path(os.environ["LOCALAPPDATA"]) / "Lummix/Installer" / product / "Lummix.msi"
     programs = Path(os.environ["LOCALAPPDATA"]) / "Programs/Lummix"
@@ -81,6 +94,7 @@ def main(setup, silent=False):
             assert product_state(product) == 5 and shortcut.is_file()
             executable = Path(shell.CreateShortcut(str(shortcut)).TargetPath)
             assert executable.is_relative_to(programs) and executable.is_file()
+            verify_windows_version(executable, version)
             assert desktop_link.is_file() and Path(shell.CreateShortcut(str(desktop_link)).TargetPath) == executable
             if not silent:
                 deadline = time.monotonic() + 30
@@ -95,6 +109,9 @@ def main(setup, silent=False):
                 win32gui.PostMessage(windows[0], win32con.WM_COMMAND, 0x7140, 0)
                 studio.wait(timeout=20)
             with zipfile.ZipFile(archive) as z:
+                names = {name.lower() for name in z.namelist()}
+                assert any(name.endswith("/licenses/lummix.txt") for name in names)
+                assert not any("/vbcable/" in name or name.endswith((".cat", ".sys", ".zip")) for name in names)
                 for entry in z.infolist():
                     path = executable.parent / Path(entry.filename).relative_to("Lummix")
                     assert path.read_bytes() == z.read(entry), entry.filename
@@ -111,7 +128,7 @@ def main(setup, silent=False):
         if desktop:
             user.CloseDesktop(desktop)
     assert product_state(product) < 1 and not shortcut.exists() and not desktop_link.exists() and not cache.exists()
-    print(json.dumps({"exeSha256": checksum(setup), "installedFiles": payload_count,
+    print(json.dumps({"exeSha256": checksum(setup), "windowsProductVersion": version, "installedFiles": payload_count,
                       "normalLaunchOpenedStudio": None if silent else True, "repair": True,
                       "uninstallRemovedShortcutAndCachedMsi": True}, indent=2))
 

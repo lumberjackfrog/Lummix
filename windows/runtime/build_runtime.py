@@ -1,7 +1,5 @@
 """Stage the x64 Rust desktop executable and its verified Windows resources."""
-import ast
 import hashlib
-import json
 import os
 from importlib import metadata
 from pathlib import Path
@@ -27,13 +25,9 @@ SDK_VERSION = "1.0.4370.26"
 SDK_HASH = "1c0dacac84b70109b3fd42f90c53a0ba942abc3a87590d7a4e0ccd86e4a06cf4"
 LOADER_HASH = "37996d81f0f3a13e93549f74f722fce25d70b00e93e4a470c34b75d7231bfd1d"
 PORTAUDIO_HASH = "ec080194f01e4095c7fb43dbd7ed05af922c5b34295056a9ff56782741d65481"
-CABLE_ARCHIVE = "VBCABLE_Driver_Pack46.zip"
-CABLE_SIZE = 1_324_680
-CABLE_HASH = "bc44e8974191a5a2427d6c979e2dab08dbb09925f3f435dfa2f0ba3e45b6eb90"
-CABLE_URL = f"https://download.vb-audio.com/Download_CABLE/{CABLE_ARCHIVE}"
 
 RESOURCE_NAMES = (
-    "wrist-tile.html", "wrist-fixture.js", "cable_setup_install.ps1", "cable_setup_status.ps1",
+    "wrist-tile.html", "wrist-fixture.js", "cable_setup_install.ps1", "cable_setup_status.ps1", "cable_setup_unpack.ps1",
     "xsoverlay-icon.png", "xsoverlay-live.js", "xsoverlay-panel.html",
 )
 
@@ -98,43 +92,10 @@ def webview_sdk():
     return folder
 
 
-def stage_cable(data):
-    archive = BUILD / CABLE_ARCHIVE
-    pinned_download(archive, CABLE_URL, CABLE_HASH, CABLE_SIZE, CABLE_SIZE)
-    members = (SRC / "host-rs/src/cable_members.in").read_text(encoding="ascii")
-    expected = {name: (size, expected_hash)
-                for name, size, expected_hash in ast.literal_eval(members.split("\n", 1)[1])}
-    folder = data / "VBCABLE"
-    folder.mkdir()
-    with zipfile.ZipFile(archive) as package:
-        entries = package.infolist()
-        if len(entries) != len(expected) or {entry.filename for entry in entries} != set(expected):
-            raise RuntimeError("Unexpected VB-Audio package layout")
-        for entry in entries:
-            name = entry.filename
-            size, expected_hash = expected[name]
-            if Path(name).name != name or entry.is_dir() or entry.file_size != size:
-                raise RuntimeError(f"Unexpected VB-Audio package member {name}")
-            payload = package.read(entry)
-            if len(payload) != size or digest(payload) != expected_hash:
-                raise RuntimeError(f"VB-Audio member hash mismatch for {name}")
-            with (folder / name).open("xb") as member:
-                member.write(payload)
-    powershell = system_powershell()
-    proof = subprocess.check_output(
-        [str(powershell), "-NoProfile", "-NonInteractive", "-File", str(SRC / "cable_setup_install.ps1"),
-         "-Folder", str(folder)],
-        timeout=30, env={**os.environ, "PSModulePath": str(powershell.parent / "Modules")},
-    )
-    evidence = json.loads(proof)
-    if (evidence.get("installerStatus"), evidence.get("catalogStatus")) != ("Valid", "Valid"):
-        raise RuntimeError("VB-Audio installer and driver catalog must pass Windows trust checks")
-    shutil.copy2(archive, data / CABLE_ARCHIVE)
-
-
 def write_notices(destination, webview):
     notices = destination / "licenses"
     notices.mkdir()
+    shutil.copy2(SRC.parent / "LICENSE", notices / "Lummix.txt")
     copy_rust_notices(notices)
     shutil.copy2(SRC / "packaging/PortAudio-LICENSE.txt", notices / "PortAudio.txt")
     shutil.copy2(SRC / "packaging/Rust-LICENSE-MIT.txt", notices / "Rust.txt")
@@ -145,7 +106,7 @@ def write_notices(destination, webview):
     (notices / "COMPONENTS.txt").write_text(
         f"Bundled Windows x64 runtime\nLummix Rust desktop executable and WebAssembly controls\n"
         f"Microsoft.Web.WebView2 loader {SDK_VERSION}\nPortAudio x64 WASAPI ({PORTAUDIO_HASH})\n"
-        "VB-Audio VB-CABLE Pack46 (original archive and matching extracted members)\n",
+        "VB-Audio VB-CABLE Pack46 (downloaded from VB-Audio on first setup when missing)\n",
         encoding="utf-8",
     )
 
@@ -164,7 +125,6 @@ def stage(destination, native, webview):
         shutil.copy2(source, data / source.name)
     for name in RESOURCE_NAMES:
         shutil.copy2(SRC / name, data / name)
-    stage_cable(data)
     studio = destination / "studio"
     studio.mkdir()
     for entry in (HERE / "studio-assets.txt").read_text(encoding="ascii").split():
