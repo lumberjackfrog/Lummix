@@ -150,6 +150,7 @@ def measure_setup(installer, exe):
         version=view.Fetch().GetString(1)
         view.Close()
         db.Close()
+        del view, db  # MSI retains the view handle until the Python object is released.
     query=ctypes.windll.msi.MsiQueryProductStateW
     query.argtypes=[ctypes.c_wchar_p]
     query.restype=ctypes.c_int
