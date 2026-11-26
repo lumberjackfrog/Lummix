@@ -270,7 +270,7 @@ jobs:
             }
             if (Test-Path -LiteralPath (@($exe, $cache[0].FullName) + $shortcuts) | Where-Object { $_ }) { throw 'Uninstall left a release file behind.' }
             if ([version]$version -ge [version]'1.0.7' -and
-                (Get-ItemPropertyValue -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name Lummix -ErrorAction SilentlyContinue)) {
+                $null -ne [Microsoft.Win32.Registry]::GetValue('HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run','Lummix',$null)) {
               throw 'Uninstall left an automatic Lummix launch behind.'
             }
             if ($cycles -gt 1) {

@@ -140,7 +140,11 @@ def main():
         mode.remove("--parent-stdin")
     if mode == ["--startup"]:
         from sign_in import SignIn
-        if not SignIn().state()["enabled"]:
+        try:
+            enabled = SignIn().state()["enabled"]
+        except OSError:
+            return  # Windows owns the sign-in decision on a managed account.
+        if not enabled:
             return
         mode = ["launch"]
     if mode == ["launch"] or (not mode and EXECUTABLE.stem.lower() == "lummix"):
@@ -149,12 +153,18 @@ def main():
         return
     if mode == ["refresh-startup"]:
         from sign_in import SignIn
-        SignIn().refresh_after_upgrade()
+        try:
+            SignIn().refresh_after_upgrade()
+        except PermissionError:
+            pass  # A policy protecting startup entries must not block the app upgrade.
         return
     if mode == ["remove-addon"]:
         from sign_in import SignIn
         from xsoverlay_install import AddonInstall
-        SignIn().change(False)
+        try:
+            SignIn().change(False)
+        except PermissionError:
+            pass
         addon = AddonInstall(wrist_sources, DATA)
         if addon.status().get("canRemove"):
             addon.change("remove")
