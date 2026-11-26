@@ -13,7 +13,7 @@ from urllib.error import URLError
 from urllib.request import urlopen
 import winreg
 
-from playwright.sync_api import TimeoutError as BrowserTimeout, expect, sync_playwright
+from playwright.sync_api import expect, sync_playwright
 import win32con
 import win32gui
 import win32process
@@ -28,7 +28,7 @@ def run_entry():
 
 
 @contextmanager
-def settings(command, profile, chromium, *, return_frame=False):
+def mixer_frame(command, profile, chromium):
     with socket.socket() as reserved:
         reserved.bind(("127.0.0.1", 0))
         port = reserved.getsockname()[1]
@@ -53,23 +53,8 @@ def settings(command, profile, chromium, *, return_frame=False):
         page = next(p for context in browser.contexts for p in context.pages if p.url.startswith("http://127.0.0.1:41835/"))
         page.bring_to_front()
         frame = page.frame_locator("#canvas")
-        # The button is painted before the deferred native controls finish initializing.
-        switch = frame.get_by_role("switch", name="Start with Windows")
-        try:
-            expect(frame.locator("html.native-window")).to_be_attached(timeout=30000)
-            frame.get_by_role("button", name="Settings", exact=True).click(timeout=30000)
-            expect(frame.locator("#settings-dialog[open]")).to_be_visible(timeout=30000)
-            expect(switch).to_be_enabled(timeout=30000)
-        except (AssertionError, BrowserTimeout):
-            print("Settings readiness:", page.locator("#canvas").evaluate("""canvas => {
-                const doc = canvas.contentDocument;
-                return {document:doc?.readyState, visible:doc?.visibilityState,
-                    native:doc?.documentElement.classList.contains('native-window'),
-                    dialogOpen:doc?.getElementById('settings-dialog')?.open,
-                    startupDisabled:doc?.getElementById('start-with-windows')?.disabled};
-            }"""), flush=True)
-            raise
-        yield frame if return_frame else switch
+        expect(frame.locator("html.native-window")).to_be_attached(timeout=30000)
+        yield frame
     finally:
         if proc.poll() is None:
             hwnd = win32gui.FindWindow("LumMixStudioHost", None)
@@ -81,6 +66,25 @@ def settings(command, profile, chromium, *, return_frame=False):
                 proc.kill()
                 proc.wait()
         assert proc.returncode == 0
+
+
+@contextmanager
+def settings(command, profile, chromium, *, return_frame=False):
+    with mixer_frame(command, profile, chromium) as frame:
+        button = frame.get_by_role("button", name="Settings", exact=True)
+        dialog = frame.locator("#settings-dialog[open]")
+        button.click(timeout=30000)
+        try:
+            expect(dialog).to_be_visible(timeout=2500)
+        except AssertionError:
+            # WebView2 may use the first pointer press to activate a newly restored window.
+            # Exercise the button's normal keyboard action when the dialog is still closed.
+            if not dialog.is_visible():
+                button.press("Enter", timeout=10000)
+            expect(dialog).to_be_visible(timeout=10000)
+        switch = frame.get_by_role("switch", name="Start with Windows")
+        expect(switch).to_be_enabled(timeout=30000)
+        yield frame if return_frame else switch
 
 
 def verify(exe, upgraded, with_updates=False):

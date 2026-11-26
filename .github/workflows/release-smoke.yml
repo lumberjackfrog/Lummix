@@ -319,7 +319,7 @@ jobs:
           }
 
       - name: Install Spotify from the desktop setup control as a new standard user
-        if: inputs.first_driver
+        if: ${{ !cancelled() && inputs.first_driver && steps.package.outcome == 'success' }}
         run: |
           $version = $env:RELEASE_TAG.Substring(1)
           if ([version]$version -ge [version]'1.0.9') {

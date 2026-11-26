@@ -13,10 +13,10 @@ import win32api
 import win32con
 import win32profile
 import win32security
-from verify_sign_in import settings
+from verify_sign_in import mixer_frame
 
 
-def verify(folder, version):
+def verify(exe):
     assert not ctypes.windll.shell32.IsUserAnAdmin(), "Spotify setup must run as a standard user"
     # Secondary logon can inherit the runner administrator's environment even with a loaded user hive.
     token = win32security.OpenProcessToken(win32api.GetCurrentProcess(), win32con.TOKEN_QUERY | win32con.TOKEN_DUPLICATE)
@@ -35,13 +35,9 @@ def verify(folder, version):
     print("Using the new standard account's own Windows profile.", flush=True)
     candidates = (roaming/"Spotify/Spotify.exe", local/"Spotify/Spotify.exe", local/"Programs/Spotify/Spotify.exe")
     assert not any(p.is_file() for p in candidates)
-    subprocess.run([str(folder/"Lummix.Setup.exe"), "/S"], check=True, timeout=90)
-    exe = local/"Programs/Lummix"/version/"Lummix.exe"
     assert exe.is_file()
-    print("Lummix installed for the new account.", flush=True)
     with sync_playwright() as pw:
-        with settings([str(exe)], str(local), pw.chromium, return_frame=True) as frame:
-            frame.get_by_role("button", name="Close settings").click()
+        with mixer_frame([str(exe)], str(local), pw.chromium) as frame:
             frame.locator("#connect-spotify").click()
             action = frame.locator("#install-player")
             expect(action).to_be_visible(timeout=30000)
@@ -49,9 +45,14 @@ def verify(folder, version):
             print("Clicked Install Spotify desktop in the installed mixer.", flush=True)
             # No credentials, playback, VRChat or driver installation are required for this path.
             end = time.monotonic()+185
+            seen = None
             while time.monotonic()<end and not any(p.is_file() for p in candidates):
+                message = frame.locator("#player-setup-status").text_content()
+                if seen != message:
+                    print("Spotify setup:", message, flush=True)
+                    seen = message
                 if frame.locator("#setup-player-help").evaluate("link=>!link.hidden"):
-                    raise RuntimeError("Spotify setup reported: "+frame.locator("#player-setup-status").text_content())
+                    raise RuntimeError("Spotify setup reported: "+message)
                 time.sleep(1)
             player = next((p for p in candidates if p.is_file()), None)
             assert player, "Spotify's website installation did not appear: "+frame.locator("#player-setup-status").text_content()
@@ -71,12 +72,12 @@ if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.GetNameInfo('SimpleName',
 
 
 if __name__=="__main__":
-    root,version=Path(sys.argv[1]).resolve(),sys.argv[2]
+    root,exe=Path(sys.argv[1]).resolve(),Path(sys.argv[2])
     with (root/"first-spotify.log").open("w",encoding="utf-8",buffering=1) as log:
         sys.stdout=sys.stderr=log
         try:
             print(datetime.now(timezone.utc).isoformat(),flush=True)
-            verify(root,version)
+            verify(exe)
         except BaseException:
             traceback.print_exc()
             sys.exit(1)

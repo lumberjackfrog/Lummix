@@ -79,6 +79,9 @@ Section
   ${ElseIf} $0 = 1618
     MessageBox MB_ICONINFORMATION|MB_OK "Another Windows installation is running. Open Lummix Setup again when it finishes." /SD IDOK
     Quit
+  ${ElseIf} $0 = 1625
+    MessageBox MB_ICONINFORMATION|MB_OK "Your Windows administrator restricts app installations on this PC. Ask them to approve Lummix Setup." /SD IDOK
+    Quit
   ${ElseIf} $0 != 0
     MessageBox MB_ICONSTOP|MB_OK "Windows Installer could not finish (error $0). Open Lummix Setup again to retry." /SD IDOK
     Quit
