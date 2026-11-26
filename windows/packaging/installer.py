@@ -89,7 +89,7 @@ def main(archive, target):
     add("InstallExecuteSequence", [(name,cond,n) for name,cond,n in sequence.InstallExecuteSequence if name in actions]+
         [("RemoveExistingProducts","LUMMIX_OLD",1501),
          ("RemoveWristAddon",'REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE',3100),
-         ("RefreshStartup","LUMMIX_OLD AND NOT REMOVE",5850),
+         ("RefreshStartup","LUMMIX_OLD AND NOT REMOVE",6650),
          ("LaunchStudio",'NOT Installed AND NOT REMOVE AND UILevel >= 3 AND NOT LUMMIX_NO_LAUNCH',6700)])
     add("InstallUISequence",[(name,cond,n) for name,cond,n in sequence.InstallUISequence if name in
                             {"AppSearch","FindRelatedProducts","LaunchConditions","CostInitialize","FileCost","CostFinalize","ExecuteAction"}])

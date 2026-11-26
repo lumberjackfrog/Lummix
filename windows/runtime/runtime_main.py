@@ -115,7 +115,12 @@ def helper_streams():
     for name, number, mode in (("stdin", -10, "r"), ("stdout", -11, "w"), ("stderr", -12, "w")):
         if getattr(sys, name) is not None:
             continue
-        handle = _winapi.GetStdHandle(number)
+        try:
+            handle = _winapi.GetStdHandle(number)
+        except OSError as error:
+            if error.winerror != 6:  # ERROR_INVALID_HANDLE
+                raise
+            handle = None
         if handle and handle != -1:
             process = _winapi.GetCurrentProcess()
             copy = _winapi.DuplicateHandle(process, handle, process, 0, False, _winapi.DUPLICATE_SAME_ACCESS)
@@ -142,12 +147,21 @@ def main():
         from lummix_window import launch
         launch()
         return
-    if getattr(sys, "frozen", False):
-        helper_streams()
     if mode == ["refresh-startup"]:
         from sign_in import SignIn
         SignIn().refresh_after_upgrade()
-    elif mode == ["name-cable"]:
+        return
+    if mode == ["remove-addon"]:
+        from sign_in import SignIn
+        from xsoverlay_install import AddonInstall
+        SignIn().change(False)
+        addon = AddonInstall(wrist_sources, DATA)
+        if addon.status().get("canRemove"):
+            addon.change("remove")
+        return
+    if getattr(sys, "frozen", False):
+        helper_streams()
+    if mode == ["name-cable"]:
         from cable_alias import ensure
         result=ensure()
         print(json.dumps(result))
@@ -162,13 +176,6 @@ def main():
     elif mode == ["addon"]:
         from xsoverlay_service import make_server
         serve(make_server(wrist_sources, DATA, bind), linked)
-    elif mode == ["remove-addon"]:
-        from sign_in import SignIn
-        SignIn().change(False)
-        from xsoverlay_install import AddonInstall
-        addon = AddonInstall(wrist_sources, DATA)
-        if addon.status().get("canRemove"):
-            addon.change("remove")
     elif mode == ["spotify"]:
         helper = importlib.import_module("spotify-helper")
         if linked:
