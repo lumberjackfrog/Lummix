@@ -185,6 +185,7 @@ def main(args):
         for i in range(6):
             trials=(("before",old),("after",new))
             for name,exe in (trials if i%2==0 else reversed(trials)):
+                print(f"Media service · pair {i + 1}/6 · {name}", flush=True)
                 result=measure_media(exe,work/f"profile-{name}-{i}")
                 measurements[name].append(result)
         medians={k:{metric:statistics.median(row[metric] for row in group)
@@ -197,12 +198,13 @@ def main(args):
         pairs=(("before",args.before,old),("after",args.after,new))
         for i in range(4):
             for tag,installer,exe in (pairs if i%2==0 else reversed(pairs)):
+                print(f"Install and verify · pair {i + 1}/4 · {tag}", flush=True)
                 setup[tag].append(measure_setup(installer.resolve(),exe))
         report["setup_trials"]=setup
         report["setup_medians"]={tag:{key:statistics.median(row[key] for row in rows)
                                       for key in rows[0]} for tag,rows in setup.items()}
         args.output.write_text(json.dumps(report,indent=2),encoding="utf-8")
-        report["desktop"]=compare_desktop(old,new,work)
+        report["desktop"]=compare_desktop(old,new,work,args.output.parent)
         args.output.write_text(json.dumps(report,indent=2),encoding="utf-8")
         print(json.dumps(medians,indent=2),flush=True)
 
